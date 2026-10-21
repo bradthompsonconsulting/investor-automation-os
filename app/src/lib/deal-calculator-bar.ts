@@ -25,6 +25,10 @@
 
 import type { Board8Economics, ExpectedSpread } from "./underwriting/board8-economics";
 import type { AssignmentModeName } from "./underwriting/resolver-types";
+import {
+  KNOWN_REPAIRS_INCOMPLETE_LABEL, PROVISIONAL_HEADLINE, PROVISIONAL_SPREAD_LABEL, provisionalSupportText,
+  type RepairCompleteness,
+} from "./provisional-repairs";
 
 export type DealCalcBarCellValue =
   | { kind: "value"; text: string }
@@ -65,11 +69,18 @@ export type DealCalcBarInput = {
   board8: Board8Economics | null;
   /** B8-03's own output, computed with referenceKind "test_price". Null before any economics have been computed. */
   expectedSpread: ExpectedSpread | null;
+  /** The repair estimate's own `incomplete` flag (never inferred from an amount). Relabels; changes no number. */
+  repairsIncomplete?: boolean;
 };
 
 /** The exact six labels, in order -- asserted by the deterministic harness. */
 export const DEAL_CALC_BAR_LABELS: readonly string[] = [
   "ARV", "Repairs", "Test Price", "Target", "Max", "Spread",
+];
+
+/** The same six cells while repairs are incomplete (Jess ruling 2026-10-21). */
+export const DEAL_CALC_BAR_LABELS_REPAIRS_INCOMPLETE: readonly string[] = [
+  "ARV", KNOWN_REPAIRS_INCOMPLETE_LABEL, "Test Price", "Target", "Max", PROVISIONAL_SPREAD_LABEL,
 ];
 
 /**
@@ -106,13 +117,14 @@ export function buildDealCalculatorBarCells(input: DealCalcBarInput): DealCalcBa
             : "Not yet calculated",
         };
 
+  const labels = input.repairsIncomplete ? DEAL_CALC_BAR_LABELS_REPAIRS_INCOMPLETE : DEAL_CALC_BAR_LABELS;
   return [
-    factCell("arv", "ARV", input.arv, "Not yet entered"),
-    factCell("repairs", "Repairs", input.repairs, "Not yet entered"),
-    factCell("test_price", "Test Price", input.testPrice, "Not yet entered"),
-    { key: "target", label: "Target", value: target },
-    { key: "max", label: "Max", value: max },
-    { key: "spread", label: "Spread", value: spread },
+    factCell("arv", labels[0], input.arv, "Not yet entered"),
+    factCell("repairs", labels[1], input.repairs, "Not yet entered"),
+    factCell("test_price", labels[2], input.testPrice, "Not yet entered"),
+    { key: "target", label: labels[3], value: target },
+    { key: "max", label: labels[4], value: max },
+    { key: "spread", label: labels[5], value: spread },
   ];
 }
 
@@ -141,6 +153,14 @@ export function buildDealCalculatorBarCells(input: DealCalcBarInput): DealCalcBa
  *                                               net-profit check
  *   neutral   any input not calculated         no implied success; names
  *                                               the input(s) actually missing
+ *
+ * Incomplete repairs (Jess ruling 2026-10-21, B15-26 with B15-01): while the
+ * repair estimate is incomplete the spread rests on known repairs only, so
+ * it is never presented as a pass. What would have been `meets` becomes
+ * `provisional` (amber) and carries NO "meets" wording; `negative` and
+ * `short` keep their full warning, wrapped in the provisional headline and
+ * supporting text; `neutral` (an Unknown input) is returned unchanged. The
+ * classification itself and every number are unchanged.
  */
 export type SpreadRequirement = "standard_minimum" | "assignment_mode";
 
@@ -155,7 +175,8 @@ export type SpreadStatus =
   | { kind: "neutral"; text: string }
   | { kind: "negative"; text: string }
   | { kind: "short"; text: string; shortfalls: SpreadShortfall[] }
-  | { kind: "meets"; text: string };
+  | { kind: "meets"; text: string }
+  | { kind: "provisional"; text: string };
 
 /** The active assignment mode and its resolved required spread (`figures.assignmentSpread`). */
 export type ActiveSpreadRequirement = { mode: AssignmentModeName; requiredSpread: number };
@@ -215,6 +236,21 @@ export function buildSpreadStatus(
   active: ActiveSpreadRequirement | null,
   /** The page's selected assignment mode, known even when the engine has not resolved. */
   selectedMode: AssignmentModeName | null = null,
+  /** The repair estimate's completeness; null/absent or complete leaves the status exactly as before. */
+  repairs: RepairCompleteness | null = null,
+): SpreadStatus {
+  const status = classifySpread(board8, expectedSpread, active, selectedMode);
+  if (!repairs || !repairs.incomplete || status.kind === "neutral") return status;
+  const support = provisionalSupportText(money(repairs.knownRepairs));
+  if (status.kind === "meets") return { kind: "provisional", text: `${PROVISIONAL_HEADLINE} ${support}` };
+  return { ...status, text: `${PROVISIONAL_HEADLINE} ${status.text} ${support}` };
+}
+
+function classifySpread(
+  board8: Board8Economics | null,
+  expectedSpread: ExpectedSpread | null,
+  active: ActiveSpreadRequirement | null,
+  selectedMode: AssignmentModeName | null,
 ): SpreadStatus {
   if (!board8 || board8.status !== "calculated" || !active) {
     return { kind: "neutral", text: missingInputsText(board8, selectedMode) };

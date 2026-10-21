@@ -34,6 +34,7 @@
  */
 
 import type { ExpectedSpread } from "./underwriting/board8-economics";
+import { PROVISIONAL_NET_LABEL, provisionalSupportText, type RepairCompleteness } from "./provisional-repairs";
 
 export type TransactionType = "assignment" | "double_close";
 
@@ -133,7 +134,21 @@ export function computeNetProceeds(args: {
 }
 
 /** The one-line status the panel shows. Text always, never color alone. */
-export function netProceedsText(result: NetProceeds, money: (n: number) => string): string {
+/** The result's accessible name: provisional only when there is an estimated net resting on incomplete repairs. */
+export function netResultLabel(result: NetProceeds, repairs: RepairCompleteness | null = null): string {
+  return result.kind === "estimated" && repairs?.incomplete ? PROVISIONAL_NET_LABEL : NET_RESULT_LABEL;
+}
+
+/* Incomplete repairs (Jess ruling 2026-10-21, B15-26 with B15-01): an
+   estimated net built on a known-repairs-only spread is labelled
+   "Provisional estimated net" and says so; the amounts are unchanged. Every
+   not-estimated result (no type, no gross, Unknown costs) reads exactly as
+   before -- the provisional label never stands in for an Unknown. */
+export function netProceedsText(result: NetProceeds, money: (n: number) => string, repairs: RepairCompleteness | null = null): string {
+  if (result.kind === "estimated" && repairs?.incomplete) {
+    return `${PROVISIONAL_NET_LABEL}: ${money(result.net)}${result.net < 0 ? " (below zero)" : ""} = provisional gross spread ${money(result.grossSpread)} - your costs ${money(result.totalCosts)}. `
+      + provisionalSupportText(money(repairs.knownRepairs));
+  }
   switch (result.kind) {
     case "no_type":
       return "Net not estimated: choose Assignment or Double close.";
