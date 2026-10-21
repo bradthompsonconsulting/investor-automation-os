@@ -34,7 +34,9 @@ export type SystemNoteSummary = {
    * distinct). `value` is the stored value with underscores read as spaces
    * ("provider accepted pending readback", "ambiguous", "withdrawn"). Null
    * when the record has no status line; the page then says so, so a title
-   * such as "Contract send" never reads as a success.
+   * such as "Contract send" never reads as a success. The one exception is
+   * a Disposition stored as one of three exact JSON shapes, which is shown
+   * as its plain words (see dispositionWords); the full record is unchanged.
    */
   status: { label: string; value: string } | null;
 };
@@ -51,13 +53,54 @@ export const STATUS_LABELS = ["Status", "Outcome", "Event kind", "Decision", "Ki
 /** Longer values are cut for the one-line summary; the full record keeps them. */
 const STATUS_VALUE_MAX = 80;
 
+/** Same wording and zone as the note cards' own dates (ContactWorkspace formatNoteDate). */
+function formatDispositionDate(iso: string): string | null {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toLocaleString("en-US", {
+    timeZone: "America/Chicago", month: "short", day: "numeric", year: "numeric",
+    hour: "numeric", minute: "2-digit",
+  });
+}
+
+const exactKeys = (v: Record<string, unknown>, keys: string[]) =>
+  Object.keys(v).length === keys.length && keys.every((k) => Object.prototype.hasOwnProperty.call(v, k));
+
+/**
+ * B15-17 follow-up (Spock, Addendum 2): the seller equitable-interest and
+ * attorney/manual-field writers store Disposition as JSON. The three shapes
+ * seen on Test read as words: {"kind":"not_applicable"} "Not applicable",
+ * {"kind":"not_yet_made"} "Not yet made", {"kind":"made","at":ISO} "Made on
+ * <date>" (just "Made" when the date does not parse). The writers' two
+ * other kinds read the same way: {"kind":"attorney_will_draft"} "Attorney
+ * will draft", {"kind":"provided_verbatim","text":...} "Provided verbatim"
+ * -- the supplied text is NOT put in the summary; it stays in the full
+ * record. Anything else returns null and is quoted as before.
+ */
+function dispositionWords(raw: string): string | null {
+  if (!raw.startsWith("{")) return null;
+  let v: unknown;
+  try { v = JSON.parse(raw); } catch { return null; }
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  if (o.kind === "not_applicable" && exactKeys(o, ["kind"])) return "Not applicable";
+  if (o.kind === "not_yet_made" && exactKeys(o, ["kind"])) return "Not yet made";
+  if (o.kind === "attorney_will_draft" && exactKeys(o, ["kind"])) return "Attorney will draft";
+  if (o.kind === "provided_verbatim" && exactKeys(o, ["kind", "text"]) && typeof o.text === "string") return "Provided verbatim";
+  if (o.kind === "made" && exactKeys(o, ["kind", "at"]) && typeof o.at === "string") {
+    const when = formatDispositionDate(o.at);
+    return when ? `Made on ${when}` : "Made";
+  }
+  return null;
+}
+
 function statusLine(lines: string[]): SystemNoteSummary["status"] {
   for (const label of STATUS_LABELS) {
     const line = lines.find((l) => l.startsWith(label + ": "));
     if (!line) continue;
     const raw = line.slice(label.length + 2).trim();
     if (!raw) continue;
-    const value = raw.replace(/_/g, " ");
+    const value = (label === "Disposition" ? dispositionWords(raw) : null) ?? raw.replace(/_/g, " ");
     return { label, value: value.length > STATUS_VALUE_MAX ? value.slice(0, STATUS_VALUE_MAX - 1) + "…" : value };
   }
   return null;
