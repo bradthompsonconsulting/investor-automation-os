@@ -9,8 +9,9 @@
  * Underwriting estimator and the Deal Calculator's itemized mode render these
  * same components (asserted by source at the end).
  *
- *   1. Itemized, nothing answered: Known $0, Unanswered $66,000, Preliminary
- *      $66,000, Windows visibly unresolved.
+ *   1. Itemized, nothing answered (2026-10-07 policy, superseding the
+ *      2026-10-04 $66,000): Known $0, the provisional $20,000 starting
+ *      estimate, Provisional total $20,000, said to be provisional.
  *   2. Miscellaneous uses the same operator model and is counted once.
  *   3. Possible whole-house electrical / panel overlap is shown beside the
  *      preliminary total, unconfirmed, nothing deducted -- and not shown when
@@ -70,13 +71,12 @@ const answer = (system, condition) => M.applyCondition(rowOf(system), condition)
 {
   const html = render(est({}));
   check('1 untouched: Known repairs renders $0', testIdText(html, 'repair-known-subtotal'), '$0');
-  check('1 untouched: Unanswered allowances renders $66,000', testIdText(html, 'repair-unanswered-subtotal'), '$66,000');
-  check('1 untouched: Preliminary total renders $66,000', testIdText(html, 'repair-preliminary-total'), '$66,000');
-  check('1 untouched: the total says one row is excluded', /Preliminary total<!-- --> \(excludes 1 unresolved\)/.test(html) || /Preliminary total \(excludes 1 unresolved\)/.test(html), true);
-  check('1 untouched: Windows is visibly unresolved, with its reason',
-    /data-testid="repair-unresolved-windows"[^>]*>[\s\S]*?Windows[\s\S]*?window count/.test(html), true);
+  check('1 untouched: no provisional reserve is rendered', testIdText(html, 'repair-provisional-estimate'), null);
+  check('1 untouched: the total renders $0', testIdText(html, 'repair-preliminary-total'), '$0');
+  check('1 untouched: the total is labelled incomplete', testIdText(html, 'repair-total-label'), 'Known repairs — estimate incomplete (excludes 7 unknown or unresolved)');
+  check('1 untouched: it says estimate incomplete', testIdText(html, 'repair-estimate-status'), 'Known repairs: $0 — estimate incomplete');
   check('1 untouched: the preliminary-policy notice renders', html.includes(C.PRELIMINARY_ALLOWANCE_NOTICE), true);
-  check('1 untouched: no $20,000 fallback anywhere', /20,000/.test(html), false);
+  check('1 untouched: unanswered rows are visibly unknown', /data-testid="repair-unresolved"/.test(html), true);
 }
 
 // ── 2. Miscellaneous, same operator model, counted once ─────────────────────
@@ -100,12 +100,13 @@ const answer = (system, condition) => M.applyCondition(rowOf(system), condition)
 
 // ── 3. Possible electrical overlap beside the total ─────────────────────────
 {
-  const untouched = render(est({}));
-  check('3 overlap: shown when both electrical allowances apply (untouched)',
-    untouched.includes(C.ELECTRICAL_OVERLAP_NOTE), true);
+  /* 2026-10-07: untouched carries no per-row amounts, so the overlap needs
+     both electrical rows answered with amounts. */
+  const untouched = render(est({ electrical_whole_house: answer('electrical_whole_house', 'severe'), electrical_panel: answer('electrical_panel', 'repair') }));
+  check('3 overlap: not shown untouched (no per-row amounts)', render(est({})).includes(C.ELECTRICAL_OVERLAP_NOTE), false);
   check('3 overlap: worded as unconfirmed with nothing deducted',
     /Unconfirmed — nothing has been deducted\./.test(C.ELECTRICAL_OVERLAP_NOTE) && /may cover/.test(C.ELECTRICAL_OVERLAP_NOTE), true);
-  check('3 overlap: the total is NOT reduced for it', testIdText(untouched, 'repair-preliminary-total'), '$66,000');
+  check('3 overlap: the total is NOT reduced for it', testIdText(untouched, 'repair-preliminary-total'), '$14,000');
   const both = render(est({ electrical_whole_house: answer('electrical_whole_house', 'severe'), electrical_panel: answer('electrical_panel', 'repair') }));
   check('3 overlap: shown when both electrical rows are answered with amounts', both.includes(C.ELECTRICAL_OVERLAP_NOTE), true);
   const panelGood = render(est({ electrical_panel: answer('electrical_panel', 'good') }));

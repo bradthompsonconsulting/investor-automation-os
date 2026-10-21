@@ -21,7 +21,8 @@ import { buildDealCalculatorBarCells, buildSpreadStatus, type DealCalcBarCell, t
 import { parseAcquisitionPriceInput } from "../lib/seller-call-negotiation";
 import {
   OPERATOR_ROWS, EMPTY_ANSWER, applyCondition, applyAmount, applyQuantity,
-  quantitySpecFor, operatorEstimate, EMPTY_MISC,
+  quantitySpecFor, operatorEstimate, EMPTY_MISC, clearRepairAnswers, transferQuickTotal,
+  parseKnownAmount, UNANSWERED_ALLOWANCE_LABEL,
   type Answers, type MiscAnswer, type OperatorCondition,
 } from "../lib/repair-estimation/operator-model";
 import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstimateSummary";
@@ -221,12 +222,7 @@ export default function DealCalculator() {
     [repairAnswers, repairMisc],
   );
 
-  /* Quick entry stays the default and stays blank until typed. Selecting the
-     itemized mode uses Brad's 2026-10-04 itemized allowances AT ONCE: with
-     nothing answered that is Known $0 + Unanswered $66,000 = Preliminary
-     $66,000, Windows unresolved -- the same figure Underwriting shows (PR
-     #124 review, Jess ruling item 1). The old "untouched itemizer = no
-     figure" scratchpad rule is retired with the $20,000 fallback. */
+  /* October 19: itemized sums only known amounts, initially zero/incomplete. */
   const repairs =
     repairsMode === "quick"
       ? (repairsQuickParsed.kind === "value" ? repairsQuickParsed.value : null)
@@ -234,6 +230,44 @@ export default function DealCalculator() {
 
   function bumpRepairRevision() {
     setRepairRevision((r) => r + 1);
+  }
+
+  /* B15-01 (2026-10-07): quick -> itemized moves the quick total into
+     Miscellaneous, preserving the total; it never lands beside existing
+     itemized answers (no double counting), and the operator is told when
+     it did not move. Itemized -> quick changes nothing. */
+  const [repairTransferNote, setRepairTransferNote] = useState<string | null>(null);
+  function handleRepairsModeToggle() {
+    if (repairsMode === "detailed") {
+      setRepairTransferNote(null);
+      setRepairsMode("quick");
+      return;
+    }
+    const quick = repairsQuickParsed.kind === "value" ? repairsQuickParsed.value : null;
+    const moved = transferQuickTotal(quick, repairAnswers, repairMisc);
+    if (moved) {
+      setRepairMisc(moved);
+      bumpRepairRevision();
+      setRepairTransferNote(`Your quick total (${money(quick!)}) moved to Miscellaneous.`);
+    } else {
+      setRepairTransferNote(quick !== null
+        ? `Itemized answers already exist, so your quick total (${money(quick)}) was not added to them.`
+        : null);
+    }
+    setRepairsMode("detailed");
+  }
+
+  /* B15-01 repair-only Clear (2026-10-07): back to the known-only $0.
+     ARV and Test Price are untouched; the Miscellaneous description is kept
+     and its amount reset, so retained text cannot restore an old amount.
+     The quick figure is a repair amount too, so it is cleared as well. */
+  function handleRepairClear() {
+    const cleared = clearRepairAnswers(repairMisc);
+    setRepairAnswers(cleared.answers);
+    setRepairMisc(cleared.misc);
+    setRepairsQuickInput("");
+    setRepairTransferNote(null);
+    bumpRepairRevision();
   }
 
   function handleRowCondition(system: string, condition: OperatorCondition) {
@@ -451,7 +485,7 @@ export default function DealCalculator() {
             <span style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8" }}>Repairs</span>
             <button
               data-testid="deal-calc-repairs-mode-toggle"
-              onClick={() => setRepairsMode((m) => (m === "quick" ? "detailed" : "quick"))}
+              onClick={handleRepairsModeToggle}
               style={{ ...COMPACT_BUTTON_STYLE, fontSize: "10px", padding: "4px 8px" }}
             >
               {repairsMode === "quick" ? "Itemize repairs ▾" : "Quick number"}
@@ -508,12 +542,18 @@ export default function DealCalculator() {
                         placeholder="Known amount"
                         style={{ ...INPUT_STYLE, width: "100px", fontSize: "11px" }}
                       />
+                      {/* Explanation, last (B15-02 field order). */}
+                      {answer.condition === "not_asked" && parseKnownAmount(answer.amount).kind === "blank" ? (
+                        <span data-testid={`deal-calc-repair-${row.system}-unknown`} style={{ fontSize: "10px", color: "#F59E0B", alignSelf: "center" }}>
+                          {UNANSWERED_ALLOWANCE_LABEL} · unknown
+                        </span>
+                      ) : null}
                     </div>
                   </div>
                 );
               })}
               {/* PR #124 review: the same Miscellaneous row and the same
-                  Known / Unanswered / Preliminary summary Underwriting renders. */}
+                  summary Underwriting renders. */}
               <MiscRepairRow
                 misc={repairMisc}
                 onChange={(next) => { setRepairMisc(next); bumpRepairRevision(); }}
@@ -521,6 +561,19 @@ export default function DealCalculator() {
               />
               <div data-testid="deal-calc-repairs-detailed-total">
                 <RepairEstimateSummary result={detailedEstimate} />
+              </div>
+              {repairTransferNote ? (
+                <div data-testid="deal-calc-repairs-transfer-note" style={{ fontSize: "10px", color: "#94A3B8" }}>{repairTransferNote}</div>
+              ) : null}
+              <button
+                data-testid="deal-calc-repairs-clear"
+                onClick={handleRepairClear}
+                style={{ ...COMPACT_BUTTON_STYLE, fontSize: "10px", padding: "4px 8px", alignSelf: "flex-start" }}
+              >
+                <RotateCcw size={11} /> Clear repairs
+              </button>
+              <div style={{ fontSize: "10px", color: "#475569" }}>
+                Clear repairs returns to the known-only $0 and keeps ARV, Test Price and the Miscellaneous description.
               </div>
             </div>
           )}
