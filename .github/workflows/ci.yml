@@ -318,7 +318,7 @@ jobs:
         run: node app/scripts/test-mailer-week.cjs
 
       # B15 bundle excluding B15-04 (accepted heads 5280263, 88e5f70, f0f4269, c0f33bc, 6e3bbde, 744be99,
-      # contact-isolation 3259aca). Offline. No B15-04 / supplemental-read-budget step: that code is not here.
+      # contact-isolation 3259aca + 23770f6). Offline. No B15-04 / supplemental-read-budget step: that code is not here.
       - name: System note summaries (INV-126, B15-17)
         run: node app/scripts/test-system-note-summary.cjs
       - name: Repair policy, known-only zero start (INV-100, B15-01/02)
@@ -351,8 +351,9 @@ jobs:
         run: node app/scripts/test-b15-18-map-settings-redirect.cjs
       - name: Deal Calculator itemized repairs, both Clears and transfer-once, real page (INV-100, B15-01)
         run: node app/scripts/test-deal-calculator-interaction.cjs
-      # Both Production negotiation settings against the real write scope and barrier rules; floor 101.
-      - name: Contact isolation and Production write scope, real pages (B14-12, B14-13) — 101 checks
+      # Both Production negotiation settings against the real write scope and barrier rules; floor 105
+      # (NB6-NB8: a live, unspent reservation for A's deal is refused on B, then writes A once; 23770f6).
+      - name: Contact isolation and Production write scope, real pages (B14-12, B14-13) — 105 checks
         run: node app/scripts/test-contact-isolation.cjs
 
       # Not a counted runner — a typecheck. No floor, and it must not be given
