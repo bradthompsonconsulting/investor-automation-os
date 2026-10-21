@@ -21,8 +21,8 @@ const path = require('node:path');
 
 const APP = path.resolve(__dirname, '..');
 const TMP = path.join(APP, '.tmp-b15-26-provisional-repairs-test');
-/** Literal check() call-site count in this file (Part A 22 + Part B 31), never back-filled from a passing run. */
-const FLOOR = 53;
+/** Literal check() call-site count in this file (Part A 23 + Part B 32), never back-filled from a passing run. */
+const FLOOR = 55;
 const HEADLINE = 'Provisional — repairs incomplete.';
 const support = (x) => `Based on known repairs of ${x}. Complete the repair estimate before assessing profitability.`;
 
@@ -94,7 +94,9 @@ function partA() {
   const plain = bar.buildDealCalculatorBarCells(cellsIn);
   const inc = bar.buildDealCalculatorBarCells({ ...cellsIn, repairsIncomplete: true });
   check('A11 complete cells keep the original six labels', same(plain.map((c) => c.label), ['ARV', 'Repairs', 'Test Price', 'Target', 'Max', 'Spread']));
-  check('A12 incomplete cells: "Known repairs (incomplete)" and "Provisional spread"', same(inc.map((c) => c.label), ['ARV', 'Known repairs (incomplete)', 'Test Price', 'Target', 'Max', 'Provisional spread']));
+  check('A12 incomplete cells: "Known repairs (incomplete)", "Provisional target", "Provisional max", "Provisional spread"', same(inc.map((c) => c.label), ['ARV', 'Known repairs (incomplete)', 'Test Price', 'Provisional target', 'Provisional max', 'Provisional spread']));
+  check('A12b Target and Max: provisional labels, values identical to the complete cells', inc[3].label === 'Provisional target' && inc[4].label === 'Provisional max'
+    && same(inc[3].value, plain[3].value) && same(inc[4].value, plain[4].value) && plain[3].label === 'Target' && plain[4].label === 'Max', { inc: inc.slice(3, 5), plain: plain.slice(3, 5) });
   check('A13 incomplete cells: every key and value identical (numbers unchanged)', same(inc.map((c) => [c.key, c.value]), plain.map((c) => [c.key, c.value])));
   check('A14 repairsIncomplete false = absent (byte-identical cells)', same(bar.buildDealCalculatorBarCells({ ...cellsIn, repairsIncomplete: false }), plain));
 
@@ -173,7 +175,7 @@ async function partB() {
     const SYSTEMS = ['roof', 'hvac', 'electrical_whole_house', 'electrical_panel', 'plumbing_sewer', 'foundation', 'windows'];
     const AMBER = 'rgb(245, 158, 11)', GREEN = 'rgb(34, 197, 94)';
     const PLAIN = ['ARV', 'Repairs', 'Test Price', 'Target', 'Max', 'Spread'];
-    const PROV = ['ARV', 'Known repairs (incomplete)', 'Test Price', 'Target', 'Max', 'Provisional spread'];
+    const PROV = ['ARV', 'Known repairs (incomplete)', 'Test Price', 'Provisional target', 'Provisional max', 'Provisional spread'];
 
     // B0 -- quick mode, nothing entered: Repairs Unknown keeps the neutral "enter Repairs" status.
     await fresh();
@@ -199,7 +201,10 @@ async function partB() {
     check('B2 all unknown: status kind provisional, amber, never meets', all.st.kind === 'provisional' && all.st.color === AMBER, all.st);
     check('B3 all unknown: exact ruled headline + supporting text ($0 known)', all.st.text === `${HEADLINE} ${support('$0')}`, all.st.text);
     check('B4 all unknown: no "Meets"/"minimum" on the page status', !/meets|minimum/i.test(all.st.text));
-    check('B5 all unknown: bar labels "Known repairs (incomplete)" and "Provisional spread"', same(all.bar.map((c) => c.label), PROV), all.bar);
+    check('B5 all unknown: bar labels "Known repairs (incomplete)", "Provisional target", "Provisional max", "Provisional spread"', same(all.bar.map((c) => c.label), PROV), all.bar);
+    check('B5b rendered Target and Max read provisional with values identical to the complete quick-$0 reference',
+      all.bar[3].label === 'Provisional target' && all.bar[4].label === 'Provisional max' && all.bar[3].value === ref0.bar[3].value && all.bar[4].value === ref0.bar[4].value
+        && ref0.bar[3].label === 'Target' && ref0.bar[4].label === 'Max', { all: all.bar.slice(3, 5), ref: ref0.bar.slice(3, 5) });
     check('B6 all unknown: every bar value identical to the quick-$0 reference (numbers unchanged)', same(all.bar.map((c) => c.value), ref0.bar.map((c) => c.value)), { all: all.bar, ref: ref0.bar });
     check('B7 all unknown: the repair summary still reads the Oct 19 "Known repairs: $0 — estimate incomplete"',
       (await T('repair-estimate-status').textContent()).trim() === 'Known repairs: $0 — estimate incomplete');

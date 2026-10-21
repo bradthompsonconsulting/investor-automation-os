@@ -26,7 +26,8 @@
 import type { Board8Economics, ExpectedSpread } from "./underwriting/board8-economics";
 import type { AssignmentModeName } from "./underwriting/resolver-types";
 import {
-  KNOWN_REPAIRS_INCOMPLETE_LABEL, PROVISIONAL_HEADLINE, PROVISIONAL_SPREAD_LABEL, provisionalSupportText,
+  KNOWN_REPAIRS_INCOMPLETE_LABEL, PROVISIONAL_HEADLINE, PROVISIONAL_MAX_LABEL, PROVISIONAL_SPREAD_LABEL,
+  PROVISIONAL_TARGET_LABEL, provisionalSupportText,
   type RepairCompleteness,
 } from "./provisional-repairs";
 
@@ -78,9 +79,9 @@ export const DEAL_CALC_BAR_LABELS: readonly string[] = [
   "ARV", "Repairs", "Test Price", "Target", "Max", "Spread",
 ];
 
-/** The same six cells while repairs are incomplete (Jess ruling 2026-10-21). */
+/** The same six cells while repairs are incomplete (Jess ruling 2026-10-21; Target/Max per Brad's follow-up). */
 export const DEAL_CALC_BAR_LABELS_REPAIRS_INCOMPLETE: readonly string[] = [
-  "ARV", KNOWN_REPAIRS_INCOMPLETE_LABEL, "Test Price", "Target", "Max", PROVISIONAL_SPREAD_LABEL,
+  "ARV", KNOWN_REPAIRS_INCOMPLETE_LABEL, "Test Price", PROVISIONAL_TARGET_LABEL, PROVISIONAL_MAX_LABEL, PROVISIONAL_SPREAD_LABEL,
 ];
 
 /**

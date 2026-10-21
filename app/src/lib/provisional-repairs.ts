@@ -16,6 +16,10 @@ export type RepairCompleteness = { incomplete: boolean; knownRepairs: number };
 export const PROVISIONAL_HEADLINE = "Provisional — repairs incomplete.";
 export const KNOWN_REPAIRS_INCOMPLETE_LABEL = "Known repairs (incomplete)";
 export const PROVISIONAL_SPREAD_LABEL = "Provisional spread";
+/* Brad's presentation ruling 2026-10-21 (follow-up): Target and Max are
+   also built on known repairs only, so they are labelled provisional too. */
+export const PROVISIONAL_TARGET_LABEL = "Provisional target";
+export const PROVISIONAL_MAX_LABEL = "Provisional max";
 export const PROVISIONAL_NET_LABEL = "Provisional estimated net";
 
 /** `knownRepairsText` is the already-formatted known-only total, e.g. "$0". */
