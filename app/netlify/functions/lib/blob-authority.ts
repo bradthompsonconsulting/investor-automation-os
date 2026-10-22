@@ -26,6 +26,11 @@
  * nothing moves ADMITTED to IDLE except abandonUndispatched for an admission
  * that provably never sent a TARGET request. An uncertain TARGET leaves the
  * scope blocking; no time-based, assertion-based or generic release exists.
+ * A fake (loopback) transport never pairs with a real authority client, nor
+ * the production transport with a loopback one: dispatch, verification and
+ * the reader refuse a mismatch before any TARGET request, and CLOSE refuses
+ * it again. A note POST whose response lacks a usable note id halts the
+ * admission (blocking, never retried); verification binds to that exact id.
  *
  * Uncertain admissions return an opaque handle backed by a private,
  * process-local registry. Unknown, forged, copied, transferred or
@@ -40,8 +45,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { getStore } from "@netlify/blobs";
 import {
-  type RepairPayload, canonicalCurrency, notesForOperation, notesListComplete, parseEvidence,
-  payloadDigest, readExactlyOneField, renderEvidence, validatePayload,
+  type NotesContract, type RepairPayload, LOOPBACK_NOTES_CONTRACT, canonicalCurrency, notesForOperation, notesListComplete,
+  parseEvidence, payloadDigest, readExactlyOneField, renderEvidence, usableNoteId, validatePayload,
 } from "./repair-evidence";
 
 export const AUTHORITY_STORE = "iaos-write-receipts";
@@ -430,7 +435,8 @@ export const READER_TEXT = Object.freeze({
 // ------------------------------------------------------------- transports ---
 
 type FieldIds = { repairEstimate: string; repairApprovalId: string };
-type TransportConfig = { mode: "ghl" | "fake"; origin: string; token: string; fetchImpl: typeof fetch; fieldIds: FieldIds; timeoutMs: number };
+/** notesContract: the only notes-list response contract this transport's reads may prove completeness under (null = none). */
+type TransportConfig = { mode: "ghl" | "fake"; origin: string; token: string; fetchImpl: typeof fetch; fieldIds: FieldIds; timeoutMs: number; notesContract: NotesContract | null };
 const transports = new WeakMap<object, TransportConfig>();
 
 /** Opaque transport. It exposes no request method; only this module's operations use it. */
@@ -456,7 +462,8 @@ export function createProductionTargetTransport(options: { fieldIds: FieldIds })
   const token = process.env.GHL_PRIVATE_API_KEY;
   if (!nonEmpty(token)) throw new Error("target transport: server GHL credential unavailable");
   const t = Object.freeze({ __targetTransport: true as const });
-  transports.set(t, { mode: "ghl", origin: GHL_ORIGIN, token, fetchImpl: globalThis.fetch, fieldIds, timeoutMs: DEFAULT_TIMEOUT_MS });
+  // No GHL notes-list contract is established: real notes reads never prove completeness (HOLD / evidence_unavailable).
+  transports.set(t, { mode: "ghl", origin: GHL_ORIGIN, token, fetchImpl: globalThis.fetch, fieldIds, timeoutMs: DEFAULT_TIMEOUT_MS, notesContract: null });
   return t;
 }
 
@@ -471,7 +478,7 @@ export function createFakeTargetTransport(options: { fetch: typeof fetch; origin
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("fake transport: invalid timeout");
   const t = Object.freeze({ __targetTransport: true as const });
-  transports.set(t, { mode: "fake", origin: options.origin, token: "synthetic-fake-transport", fetchImpl: options.fetch, fieldIds, timeoutMs });
+  transports.set(t, { mode: "fake", origin: options.origin, token: "synthetic-fake-transport", fetchImpl: options.fetch, fieldIds, timeoutMs, notesContract: LOOPBACK_NOTES_CONTRACT });
   return t;
 }
 
@@ -502,7 +509,12 @@ const isDefinite = (s: number | null) => s !== null && s >= 200 && s < 300;
 
 // --------------------------------------------------------- admission records ---
 
-type DispatchState = "NONE" | "NOTE_RESERVED" | "NOTE_SENDING" | "NOTE_DEFINITE" | "FIELDS_RESERVED" | "FIELDS_SENDING" | "FIELDS_DEFINITE" | "HALTED_NOT_SENT" | "UNCERTAIN" | "RETIRED";
+/**
+ * NOTE_UNBOUND: the note POST was 2xx but its response carried no usable note
+ * id. The note may exist, so this is terminal and blocking exactly like
+ * UNCERTAIN: no fields dispatch, no verification, no abandonment, no retry.
+ */
+type DispatchState = "NONE" | "NOTE_RESERVED" | "NOTE_SENDING" | "NOTE_DEFINITE" | "NOTE_UNBOUND" | "FIELDS_RESERVED" | "FIELDS_SENDING" | "FIELDS_DEFINITE" | "HALTED_NOT_SENT" | "UNCERTAIN" | "RETIRED";
 type Binding = Readonly<{ client: object; cfg: ClientConfig; scope: string; key: string; opId: string; eAdm: string; P: string; op: AuthorityOp }>;
 type AdmissionState = {
   dispatch: DispatchState;
@@ -552,11 +564,15 @@ export type DispatchResult =
   | { kind: "definite"; status: number }
   | { kind: "not_sent"; reason: string }
   | { kind: "uncertain" }
+  | { kind: "halted"; reason: "created_note_id_unusable" }
   | { kind: "refused"; reason: string };
 
 /**
  * Shared dispatch. Everything before the first `await` runs synchronously in
- * the caller's turn: handle, payload and state checks, then the RESERVATION.
+ * the caller's turn: handle, transport, transport/authority MODE, payload and
+ * state checks, then the RESERVATION. A mode mismatch (fake transport with a
+ * real authority client, or the production transport with a loopback one) is
+ * refused here, before any reservation or request.
  * After the D1 strong read, the send gate re-checks the reserved state and
  * moves to SENDING with no await in between, then calls the transport.
  */
@@ -567,6 +583,7 @@ function dispatchKind(admission: unknown, kind: "note" | "fields", transport: un
   const tObj = kind === "note" ? transport : st.transport;
   const t = typeof tObj === "object" && tObj !== null ? transports.get(tObj) : undefined;
   if (!t) return Promise.resolve({ kind: "refused", reason: "unknown_transport" });
+  if (!modesMatch(b.cfg, t)) return Promise.resolve({ kind: "refused", reason: "transport_mode_mismatch" });
   const p = payloadForAdmission(b, payload);
   if (!p) return Promise.resolve({ kind: "refused", reason: "payload_mismatch" });
   const need: DispatchState = kind === "note" ? "NONE" : "NOTE_DEFINITE";
@@ -592,7 +609,8 @@ function dispatchKind(admission: unknown, kind: "note" | "fields", transport: un
     if (!isDefinite(reply.status)) { st.dispatch = "UNCERTAIN"; return { kind: "uncertain" }; }
     if (kind === "note") {
       const note = isPlainObject(reply.json) && isPlainObject(reply.json.note) ? reply.json.note : null;
-      st.createdNoteId = note && nonEmpty(note.id) ? note.id : null;
+      if (!note || !usableNoteId(note.id)) { st.dispatch = "NOTE_UNBOUND"; return { kind: "halted", reason: "created_note_id_unusable" }; }
+      st.createdNoteId = note.id;
       st.dispatch = "NOTE_DEFINITE";
     } else {
       st.dispatch = "FIELDS_DEFINITE";
@@ -619,6 +637,7 @@ type PassOutcome = { kind: "match"; observed: Observed } | { kind: "missing"; re
 
 /** One complete pass: strong read A -> Opportunity read -> full notes read -> strong read A. */
 async function verifyPass(b: Binding, t: TransportConfig, p: RepairPayload, createdNoteId: string | null): Promise<PassOutcome> {
+  if (!usableNoteId(createdNoteId)) return { kind: "terminal", reason: "mismatch" }; // unreachable: FIELDS_DEFINITE implies a bound id
   const a1 = await readOwnAdmission(b);
   if (a1.kind !== "ok") return { kind: "terminal", reason: a1.kind === "unreadable" ? "unreadable" : "authority_changed" };
   let missing: string | null = null;
@@ -638,7 +657,7 @@ async function verifyPass(b: Binding, t: TransportConfig, p: RepairPayload, crea
   if (est.kind === "none" || appr.kind === "none") missing = "missing_field";
 
   const nr = await ghlCall(t, "GET", `/contacts/${encodeURIComponent(b.op.target.contactId)}/notes`);
-  if (nr.status !== 200 || !notesListComplete(nr.json)) return { kind: "terminal", reason: "unreadable" };
+  if (nr.status !== 200 || !notesListComplete(nr.json, t.notesContract)) return { kind: "terminal", reason: "unreadable" };
   const mine = notesForOperation(nr.json.notes, b.opId);
   let noteId: string | null = null;
   if (mine.length > 1) return { kind: "terminal", reason: "duplicate_evidence" };
@@ -649,7 +668,7 @@ async function verifyPass(b: Binding, t: TransportConfig, p: RepairPayload, crea
     if (!e || !nonEmpty(n.id)) return { kind: "terminal", reason: "mismatch" };
     const pe = payloadDigest(e.payload);
     if (e.opId !== b.opId || e.admittedAt !== b.op.admittedAt || pe !== b.P || e.digestLine !== pe || pe !== payloadDigest(p)) return { kind: "terminal", reason: "mismatch" };
-    if (createdNoteId !== null && n.id !== createdNoteId) return { kind: "terminal", reason: "mismatch" };
+    if (n.id !== createdNoteId) return { kind: "terminal", reason: "mismatch" }; // bound to the exact created id
     noteId = n.id as string;
   }
 
@@ -688,6 +707,7 @@ export function verifyRepairTarget(admission: AdmissionHandle, payload: RepairPa
   if (!p) { st.verify = "HOLD"; st.holdReason = "mismatch"; return Promise.resolve({ kind: "hold", reason: "mismatch" }); } // r1 A21: a payload not matching A is terminal
   const t = st.transport ? transports.get(st.transport) : undefined;
   if (!t) return Promise.resolve({ kind: "refused", reason: "unknown_transport" });
+  if (!modesMatch(b.cfg, t)) return Promise.resolve({ kind: "refused", reason: "transport_mode_mismatch" }); // before any read
   const start = b.cfg.now();
   if (st.passes >= VERIFY_MAX_PASSES || (st.passes > 0 && start >= st.firstPassStart + VERIFY_WINDOW_MS)) {
     st.verify = "HOLD"; st.holdReason = "missing_after_window";
@@ -842,7 +862,7 @@ export async function readRepairApproval(client: AuthorityClient, transport: Tar
   if (appr.value !== op.opId || est.value !== c.observedTotal || c.observedId !== op.opId) return nv("evidence_mismatch", c.observedTotal);
 
   const nr = await ghlCall(t, "GET", `/contacts/${encodeURIComponent(op.target.contactId)}/notes`);
-  if (nr.status !== 200 || !notesListComplete(nr.json)) return nv("evidence_unavailable", c.observedTotal);
+  if (nr.status !== 200 || !notesListComplete(nr.json, t.notesContract)) return nv("evidence_unavailable", c.observedTotal);
   const mine = notesForOperation(nr.json.notes, op.opId);
   if (mine.length > 1) return nv("evidence_ambiguous", c.observedTotal);
   if (mine.length === 0) return nv("evidence_mismatch", c.observedTotal);

@@ -10,7 +10,8 @@
  * exercised only against a replaced global fetch that never reaches a network.
  *
  * Shows OUR module's behaviour only. It cannot prove GHL multi-field
- * atomicity, notes-list completeness/pagination, read-after-write visibility,
+ * atomicity, GHL notes-list completeness/pagination (no GHL contract is supported:
+ * real-shaped lists are shown BLOCKED, not complete), read-after-write visibility,
  * Netlify ETag distinctness (A1) or deployed-runtime behaviour.
  */
 'use strict';
@@ -24,7 +25,7 @@ const path = require('node:path');
 const APP = path.resolve(__dirname, '..');
 const TMP = path.join(APP, '.tmp-repair-completion-test');
 /** Literal count of check() executions below (loops expanded by hand); never back-filled from a run. */
-const FLOOR = 91; // 90 at run 2; +1 B19b (coverage gap found by control K9)
+const FLOOR = 116; // 91 at c1b9de6; -3 old B4 (CLOSE-only mode checks), +28 T1-T2 / N1-N4 / I1-I4 (Bones findings 1-3)
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -167,6 +168,7 @@ function startGhl() {
           if (rule && rule.storeTwice) notes.get(target).push({ id: `note-${++noteN}`, body: note.body });
         }
         if (rule && rule.reset) return req.socket.destroy();
+        if (rule && rule.respond) return send(rule.status || 201, rule.respond(note)); // response body override (stored note unchanged)
         return send(rule && rule.status ? rule.status : 201, { note });
       }
       if (kind === 'oppPut') {
@@ -192,9 +194,10 @@ function startGhl() {
         if (rule && rule.reset) return req.socket.destroy();
         if (rule && rule.status) return send(rule.status, {});
         const list = (notes.get(p[1]) || []).map((x) => ({ ...x }));
-        if (rule && rule.hide) return send(200, { notes: [] });
-        if (rule && rule.meta) return send(200, { notes: list, meta: rule.meta });
-        return send(200, { notes: list });
+        // Default: the loopback test contract (iaos-loopback-notes-v1), NOT a claim about GHL's shape.
+        if (rule && rule.hide) return send(200, { notes: [], meta: { total: 0, complete: true } });
+        if (rule && rule.shape) return send(200, rule.shape(list));
+        return send(200, { notes: list, meta: { total: list.length, complete: true } });
       }
       return send(404, {});
     });
@@ -231,6 +234,7 @@ async function main() {
   const realFetch = globalThis.fetch;
   const blocked = [];
   globalThis.fetch = (url, init) => { const u = new URL(String(url)); if (u.hostname !== '127.0.0.1') { blocked.push(u.origin); return Promise.reject(new Error('network guard: blocked ' + u.origin)); } return realFetch(url, init); };
+  const guardFetch = globalThis.fetch; // fixed reference: later per-test stubs of globalThis.fetch never reach the Blob fake
   let M = loadModule();
   const blobs = await startBlobs();
   const ghl = await startGhl();
@@ -239,6 +243,9 @@ async function main() {
   const now = () => clock;
   const client = M.createAuthorityClient({ siteID: SITE, token: TOKEN, apiURL: blobs.origin, timeoutMs: 500, now });
   const transport = M.createFakeTargetTransport({ fetch: globalThis.fetch, origin: ghl.origin, fieldIds: FIELDS, timeoutMs: 400 });
+  // A real-mode authority client (non-loopback apiURL, so the module treats it as real) whose traffic is routed to the Blob fake.
+  const routing = (url, init) => guardFetch(String(url).replace('https://api.netlify.com', blobs.origin), init);
+  const realMode = M.createAuthorityClient({ siteID: SITE, token: TOKEN, apiURL: 'https://api.netlify.com', fetch: routing, timeoutMs: 500, now });
   const STORE = 'site:' + M.AUTHORITY_STORE;
   const keyOf = (scope) => `${SITE}|${STORE}|${M.authorityKey(scope)}`;
   const stored = (scope) => { const s = blobs.store.get(keyOf(scope)); return s ? JSON.parse(s.text) : null; };
@@ -383,7 +390,7 @@ async function main() {
       ['opportunity GET 500', { kind: 'oppGet', status: 500 }],
       ['notes GET reset', { kind: 'notesGet', reset: true }],
       ['opportunity GET malformed JSON', { kind: 'oppGet', malformed: true }],
-      ['notes list with nextPage (not provably complete)', { kind: 'notesGet', meta: { nextPage: 2 } }],
+      ['notes list with a nextPage key (outside the supported contract)', { kind: 'notesGet', shape: (l) => ({ notes: l, meta: { total: l.length, complete: true, nextPage: 2 } }) }],
     ]) {
       const fx = fixture(); const a = await toFieldsDefinite(fx);
       ghl.script([rule]);
@@ -477,7 +484,7 @@ async function main() {
         try { M.createProductionTargetTransport({ fieldIds: FIELDS }); } catch (e) { thrown = e.message; }
         check('B2 production transport refuses without the server credential', /credential unavailable/.test(thrown || ''), thrown);
         process.env.GHL_PRIVATE_API_KEY = 'synthetic-server-ghl-credential';
-        const fx = fixture(); const a = await admit(fx);
+        const fx = fixture(); const a = await admit(fx, realMode); // the production transport pairs only with a real-mode authority client
         globalThis.fetch = async (url, init) => { seen.push({ url: String(url), init }); return new Response(JSON.stringify(String(url).endsWith('/notes') ? { note: { id: 'note-prod-1' } } : { opportunity: {} }), { status: 200 }); };
         prod = M.createProductionTargetTransport({ fieldIds: FIELDS }); // created AFTER the stub: it captures the stub
         const d1 = await M.dispatchNote(a.admission, prod, fx.payload);
@@ -490,33 +497,38 @@ async function main() {
           && seen[0].init.headers.Authorization === 'Bearer synthetic-server-ghl-credential' && seen[0].init.headers.Version === '2021-07-28' && seen[0].init.redirect === 'manual', seen[0] && { url: seen[0].url, body: seen[0].init.body });
         check('B2 production fields request: PUT /opportunities/{id}, exactly the two binding fields', d2.kind === 'definite' && seen[1].url === `https://services.leadconnectorhq.com/opportunities/${fx.opportunityId}` && seen[1].init.method === 'PUT' && seen[1].init.body === expectedPut, seen[1] && seen[1].init.body);
       } finally { globalThis.fetch = saved; if (savedKey === undefined) delete process.env.GHL_PRIVATE_API_KEY; else process.env.GHL_PRIVATE_API_KEY = savedKey; }
-      // B4 (reverse): a production-transport token cannot close a loopback (test) authority record.
+      // T1 (Bones finding 2): the production transport with a LOOPBACK authority client -> refused before any TARGET request.
       const fx = fixture(); const a = await admit(fx);
       process.env.GHL_PRIVATE_API_KEY = 'synthetic-server-ghl-credential';
-      globalThis.fetch = (url, init) => saved(String(url).replace('https://services.leadconnectorhq.com', ghl.origin), init);
-      const prod2 = M.createProductionTargetTransport({ fieldIds: FIELDS }); // created AFTER the routing stub
-      let c;
+      const prodSeen = [];
+      globalThis.fetch = (url, init) => { prodSeen.push(String(url)); return saved(String(url).replace('https://services.leadconnectorhq.com', ghl.origin), init); };
+      const prod2 = M.createProductionTargetTransport({ fieldIds: FIELDS }); // created AFTER the routing stub: any request it made would be counted
+      const before = ghl.log.length; const gets = blobs.gets(); const r = {};
       try {
-        await M.dispatchNote(a.admission, prod2, fx.payload); await M.dispatchFields(a.admission, fx.payload);
-        const v = await M.verifyRepairTarget(a.admission, fx.payload);
-        c = v.kind === 'verified' ? await M.closeVerified(v.token) : v;
+        r.note = await M.dispatchNote(a.admission, prod2, fx.payload);
+        r.fields = await M.dispatchFields(a.admission, fx.payload);
+        r.verify = await M.verifyRepairTarget(a.admission, fx.payload);
+        r.reader = await M.readRepairApproval(client, prod2, fx.scope, fx.opportunityId);
       } finally { globalThis.fetch = saved; if (savedKey === undefined) delete process.env.GHL_PRIVATE_API_KEY; else process.env.GHL_PRIVATE_API_KEY = savedKey; }
-      check('B4 a production-transport ("ghl") token presented for a loopback authority client -> refused transport_mode_mismatch; A unchanged', c.kind === 'refused' && c.reason === 'transport_mode_mismatch' && stored(fx.scope).state === 'ADMITTED', c);
+      check('T1 production transport + loopback authority: dispatchNote refused transport_mode_mismatch at entry (no D1 read, no reservation)', r.note.kind === 'refused' && r.note.reason === 'transport_mode_mismatch' && blobs.gets() === gets, r.note);
+      check('T1 zero TARGET requests: the production transport made no request and the fake GHL saw none (dispatch, fields, verify, reader)', prodSeen.length === 0 && ghl.log.length === before && r.fields.kind === 'refused' && r.verify.kind === 'refused' && r.reader.kind === 'refused' && r.reader.reason === 'transport_mode_mismatch', { prodSeen, ghl: ghl.log.length - before, r });
+      const ab = await M.abandonUndispatched(a.admission);
+      check('T1 the refused admission never sent: it stays NONE and abandonUndispatched releases it', ab.kind === 'released' && stored(fx.scope).state === 'IDLE', ab);
+    }
+    { // T2 (Bones finding 2): a FAKE transport with a real-mode (non-loopback apiURL) authority client -> refused before any TARGET request.
+      const fx = fixture(); const a = await admit(fx, realMode); const before = ghl.log.length; const gets = blobs.gets();
+      const d1 = await M.dispatchNote(a.admission, transport, fx.payload);
+      const d2 = await M.dispatchFields(a.admission, fx.payload);
+      const v = await M.verifyRepairTarget(a.admission, fx.payload);
+      check('T2 fake transport + real-mode authority: dispatchNote refused transport_mode_mismatch at entry; no D1 read', d1.kind === 'refused' && d1.reason === 'transport_mode_mismatch' && blobs.gets() === gets, d1);
+      check('T2 zero TARGET requests: fields and verify refused, the fake GHL saw nothing; A unchanged', d2.kind === 'refused' && v.kind === 'refused' && ghl.log.length === before && stored(fx.scope).state === 'ADMITTED', { d2, v, ghl: ghl.log.length - before });
+      const rd = await M.readRepairApproval(realMode, transport, fx.scope, fx.opportunityId);
+      check('T2 the reader also refuses a mode mismatch, with no request', rd.kind === 'refused' && rd.reason === 'transport_mode_mismatch' && ghl.log.length === before, rd);
+      check('T2 the refused admission never sent: abandonUndispatched releases it', (await M.abandonUndispatched(a.admission)).kind === 'released' && stored(fx.scope).state === 'IDLE');
     }
     { let t1 = null; try { M.createFakeTargetTransport({ fetch: globalThis.fetch, origin: 'https://services.leadconnectorhq.com', fieldIds: FIELDS }); } catch (e) { t1 = e.message; }
       let t2 = null; try { M.createFakeTargetTransport({ fetch: globalThis.fetch, origin: 'http://10.0.0.5:80', fieldIds: FIELDS }); } catch (e) { t2 = e.message; }
       check('B3 fake transport with a non-loopback origin refused at the factory', /loopback/.test(t1 || '') && /loopback/.test(t2 || ''), [t1, t2]);
-    }
-    { // B4: a fake-transport token presented to a real-mode (non-loopback apiURL) authority client.
-      const routing = (url, init) => globalThis.fetch(String(url).replace('https://api.netlify.com', blobs.origin), init);
-      const realMode = M.createAuthorityClient({ siteID: SITE, token: TOKEN, apiURL: 'https://api.netlify.com', fetch: routing, timeoutMs: 500, now });
-      const fx = fixture(); const a = await toFieldsDefinite(fx, realMode, transport);
-      const v = await M.verifyRepairTarget(a.admission, fx.payload);
-      const puts = blobs.puts();
-      const c = await M.closeVerified(v.token);
-      check('B4 a fake-transport token for a real-mode authority client -> refused transport_mode_mismatch; no write', v.kind === 'verified' && c.kind === 'refused' && c.reason === 'transport_mode_mismatch' && blobs.puts() === puts && stored(fx.scope).state === 'ADMITTED', { v: v.kind, c });
-      const rd = await M.readRepairApproval(realMode, transport, fx.scope, fx.opportunityId);
-      check('B4 the reader also refuses a mode mismatch', rd.kind === 'refused' && rd.reason === 'transport_mode_mismatch', rd);
     }
     // ===================================================== B: ordering ===
     { const fx = fixture(); const a = await admit(fx); const before = ghl.log.length;
@@ -705,6 +717,83 @@ async function main() {
       clock += 11_000;
       const v2 = await M.verifyRepairTarget(a.admission, fxV.payload);
       check('B28 zero repair_approval_id entries with E present -> reader evidence_mismatch; verifier pending missing_field, then HOLD', r.kind === 'not_verified' && r.reason === 'evidence_mismatch' && v1.kind === 'pending' && v1.reason === 'missing_field' && v2.kind === 'hold', { r, v1, v2 });
+    }
+    // ======================= N: notes completeness only under a supported contract (Bones finding 1) ===
+    for (const [label, shape] of [
+      ['a bare { notes } list (the shape GHL is assumed to return; no completeness evidence)', (l) => ({ notes: l })],
+      ['meta.total present but no completeness marker', (l) => ({ notes: l, meta: { total: l.length } })],
+      ['meta.complete === false', (l) => ({ notes: l, meta: { total: l.length, complete: false } })],
+      ['meta.total exceeds the returned notes', (l) => ({ notes: l, meta: { total: l.length + 1, complete: true } })],
+      ['an unfamiliar top-level key beside a valid contract body', (l) => ({ notes: l, meta: { total: l.length, complete: true }, traceId: 't-1' })],
+      ['meta.total as a string', (l) => ({ notes: l, meta: { total: String(l.length), complete: true } })],
+      ['a note element without a string id', (l) => ({ notes: l.concat([{ id: 7, body: 'other' }]), meta: { total: l.length + 1, complete: true } })],
+    ]) {
+      const fx = fixture(); const a = await toFieldsDefinite(fx);
+      ghl.script([{ kind: 'notesGet', shape }]);
+      const v = await M.verifyRepairTarget(a.admission, fx.payload);
+      check(`N1 verifier: ${label} -> terminal HOLD unreadable, no token`, v.kind === 'hold' && v.reason === 'unreadable', v);
+    }
+    { const fx = fixture(); await completed(fx);
+      ghl.script([{ kind: 'notesGet', shape: (l) => ({ notes: l }) }]);
+      const r = await M.readRepairApproval(client, transport, fx.scope, fx.opportunityId);
+      check('N2 reader: a bare { notes } list for a COMPLETED record -> could not be verified (evidence_unavailable)', r.kind === 'not_verified' && r.reason === 'evidence_unavailable' && r.text === 'Repair approval could not be verified', r);
+    }
+    { const good = { notes: [{ id: 'n1', body: 'x' }], meta: { total: 1, complete: true } };
+      check('N3 pure rule: the exact loopback-contract body is complete only under that contract; with no contract (the GHL transport) it is not',
+        EV.notesListComplete(good, EV.LOOPBACK_NOTES_CONTRACT) === true && EV.notesListComplete(good, null) === false && EV.notesListComplete(good, 'ghl-notes-v1') === false);
+    }
+    { // N4: the PRODUCTION transport (no supported notes contract) against a fake GHL that answers with the loopback contract exactly.
+      const saved = globalThis.fetch; const savedKey = process.env.GHL_PRIVATE_API_KEY; const prodSeen = [];
+      const fx = fixture(); const a = await admit(fx, realMode);
+      process.env.GHL_PRIVATE_API_KEY = 'synthetic-server-ghl-credential';
+      globalThis.fetch = (url, init) => { prodSeen.push(String(url)); return saved(String(url).replace('https://services.leadconnectorhq.com', ghl.origin), init); };
+      let d1, d2, v;
+      try {
+        const prod = M.createProductionTargetTransport({ fieldIds: FIELDS });
+        d1 = await M.dispatchNote(a.admission, prod, fx.payload); d2 = await M.dispatchFields(a.admission, fx.payload);
+        v = await M.verifyRepairTarget(a.admission, fx.payload);
+      } finally { globalThis.fetch = saved; if (savedKey === undefined) delete process.env.GHL_PRIVATE_API_KEY; else process.env.GHL_PRIVATE_API_KEY = savedKey; }
+      check('N4 production transport: even a body matching the loopback contract does not prove completeness -> HOLD unreadable; A stays ADMITTED',
+        d1.kind === 'definite' && d2.kind === 'definite' && v.kind === 'hold' && v.reason === 'unreadable' && stored(fx.scope).state === 'ADMITTED' && prodSeen.every((u) => u.startsWith('https://services.leadconnectorhq.com/')), { d1, d2, v, prodSeen });
+    }
+    // ===================== I: a usable created-note id is required and bound (Bones finding 3) ===
+    { const fx = fixture(); const a = await admit(fx); const before = ghl.log.length;
+      ghl.script([{ kind: 'notePost', respond: () => ({ note: {} }) }]);
+      const d1 = await M.dispatchNote(a.admission, transport, fx.payload);
+      const d2 = await M.dispatchFields(a.admission, fx.payload);
+      const v = await M.verifyRepairTarget(a.admission, fx.payload);
+      check('I1 note 2xx without an id -> halted created_note_id_unusable; fields refused with no PUT; verify refused (no token)',
+        d1.kind === 'halted' && d1.reason === 'created_note_id_unusable' && d2.kind === 'refused' && v.kind === 'refused' && ghl.log.slice(before).every((e) => e.kind !== 'oppPut'), { d1, d2, v });
+      const again = await M.dispatchNote(a.admission, transport, fx.payload);
+      const ab = await M.abandonUndispatched(a.admission);
+      check('I1 the note may exist: never re-created (second note dispatch refused, one POST) and abandonment refused', again.kind === 'refused' && ab.kind === 'refused' && ghl.log.slice(before).filter((e) => e.kind === 'notePost').length === 1, { again, ab });
+      const rd = await M.readRepairApproval(client, transport, fx.scope, fx.opportunityId);
+      check('I1 the admission keeps blocking: A stays ADMITTED; reader needs_review', stored(fx.scope).state === 'ADMITTED' && rd.kind === 'needs_review', rd);
+    }
+    for (const [label, respond] of [
+      ['no note object', () => ({ id: 'note-top-level' })],
+      ['a numeric id', () => ({ note: { id: 123 } })],
+      ['an empty id', () => ({ note: { id: '' } })],
+      ['an id with a space', () => ({ note: { id: 'note 1' } })],
+      ['a 129-character id', () => ({ note: { id: 'n'.repeat(129) } })],
+      ['a non-JSON body', () => 'created'],
+    ]) {
+      const fx = fixture(); const a = await admit(fx); const before = ghl.log.length;
+      ghl.script([{ kind: 'notePost', respond }]);
+      const d1 = await M.dispatchNote(a.admission, transport, fx.payload);
+      const d2 = await M.dispatchFields(a.admission, fx.payload);
+      check(`I2 note 2xx with ${label} -> halted; no fields PUT`, d1.kind === 'halted' && d2.kind === 'refused' && ghl.log.slice(before).every((e) => e.kind !== 'oppPut'), { d1, d2 });
+    }
+    { const fx = fixture(); const a = await admit(fx);
+      ghl.script([{ kind: 'notePost', respond: (note) => ({ note: { id: 'note-reported-elsewhere', body: note.body } }) }]);
+      const d1 = await M.dispatchNote(a.admission, transport, fx.payload);
+      const d2 = await M.dispatchFields(a.admission, fx.payload);
+      const v = await M.verifyRepairTarget(a.admission, fx.payload);
+      check('I3 created id differs from the id of the one matching E in the list -> HOLD mismatch, no token', d1.kind === 'definite' && d2.kind === 'definite' && v.kind === 'hold' && v.reason === 'mismatch', { d1, d2, v });
+    }
+    { const fx = fixture(); await completed(fx);
+      const created = ghl.notes.get(fx.contactId)[0].id;
+      check('I4 COMPLETED records exactly the created note id', stored(fx.scope).completion.noteId === created, { created, recorded: stored(fx.scope).completion.noteId });
     }
     // ======================================================= A17 / hygiene ===
     { const ill = blobs.transitions.filter((t) => !(

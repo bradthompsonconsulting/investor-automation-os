@@ -2,14 +2,16 @@
  * Repair-save completion evidence -- pure formatting and parsing (B15-26 B1
  * completion contract r1 + r2 + r3 + r4). No I/O, no network, no clock.
  *
- * Owns three exact rules shared by the same-process verifier and the
+ * Owns the exact rules shared by the same-process verifier and the
  * cross-session reader in blob-authority.ts:
  *   - the canonical repair payload and its opId-free digest P (r1 §1);
  *   - the evidence note E: deterministic rendering, and a STRICT parse that
  *     re-renders and requires byte equality (r3 C1);
  *   - "exactly one entry" for each binding custom field before any value is
  *     compared; duplicates (even identical) and ambiguous values are never
- *     resolved by picking an entry (r4 D2).
+ *     resolved by picking an entry (r4 D2);
+ *   - notes-list completeness only under a supported response contract, and
+ *     the usable created-note id (Bones findings 1 and 3 on c1b9de6).
  *
  * The durable copy of the payload is E itself (r3 C1). The per-line repair
  * answers are not retained anywhere; the binding is to basisDigest only.
@@ -141,19 +143,36 @@ export function readExactlyOneField(customFields: unknown, fieldId: string, type
 }
 
 /**
- * Whether a GHL notes-list response is provably the complete list. A
- * provider dependency (pagination is undocumented here): any sign of more
- * pages or a count exceeding the returned notes -> not provably complete.
+ * Notes-list response contracts under which a response AFFIRMATIVELY shows it
+ * is the complete list. Closed list. No GHL contract is on it: GHL's notes
+ * pagination/completeness behaviour is not established, so no real GHL
+ * response shape can prove completeness, and every real read is "not
+ * provably complete" (verifier HOLD unreadable / reader evidence_unavailable)
+ * until a documented provider contract is added here under review.
+ *
+ * LOOPBACK_NOTES_CONTRACT is the offline test fakes' contract only, bound to
+ * fake (loopback) transports; it is not a claim about GHL:
+ *   exactly { notes: [...], meta: { total, complete } }, complete === true,
+ *   total === notes.length, every note a plain object with string id and body.
  */
-export function notesListComplete(body: unknown): body is { notes: unknown[] } {
-  if (!isPlain(body) || !Array.isArray(body.notes)) return false;
-  const meta = isPlain(body.meta) ? body.meta : {};
-  for (const k of ["nextPage", "nextPageUrl", "startAfter", "startAfterId"]) {
-    if ((body as Record<string, unknown>)[k] != null || (meta as Record<string, unknown>)[k] != null) return false;
-  }
-  for (const k of ["total", "count"]) {
-    const t = (body as Record<string, unknown>)[k] ?? (meta as Record<string, unknown>)[k];
-    if (t !== undefined && (typeof t !== "number" || t !== body.notes.length)) return false;
-  }
-  return true;
+export const LOOPBACK_NOTES_CONTRACT = "iaos-loopback-notes-v1";
+export type NotesContract = typeof LOOPBACK_NOTES_CONTRACT;
+
+/**
+ * True only for a response that matches `contract` exactly. A null contract
+ * (no supported contract), a missing or unfamiliar key, a missing or
+ * non-affirmative completeness marker, or a count mismatch -> false.
+ */
+export function notesListComplete(body: unknown, contract: NotesContract | null): body is { notes: unknown[] } {
+  if (contract !== LOOPBACK_NOTES_CONTRACT) return false;
+  if (!isPlain(body) || !exactKeys(body, ["notes", "meta"]) || !Array.isArray(body.notes)) return false;
+  const meta = body.meta;
+  if (!isPlain(meta) || !exactKeys(meta, ["total", "complete"]) || meta.complete !== true) return false;
+  if (typeof meta.total !== "number" || !Number.isSafeInteger(meta.total) || meta.total !== body.notes.length) return false;
+  return body.notes.every((n) => isPlain(n) && typeof n.id === "string" && typeof n.body === "string");
+}
+
+/** A usable GHL note id from a create-note response: one bounded token of [A-Za-z0-9_-]. */
+export function usableNoteId(v: unknown): v is string {
+  return typeof v === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(v);
 }
