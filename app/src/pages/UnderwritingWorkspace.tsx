@@ -55,7 +55,7 @@ import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstima
 import { persistApprovedRepairTotalToOpportunity, persistGate } from "../lib/repair-estimation/persist";
 import type { PersistResult, RepairApproval } from "../lib/repair-estimation/persist";
 import { REPAIR_APPROVAL_CONFIG } from "../../shared/repair-approval-config";
-import { REPAIR_APPROVAL_APPROVE_LABEL, REPAIR_APPROVAL_SAVING_TEXT, fetchRepairApprovalStatus, saveRepairApproval, type RepairApprovalSaveResult, type RepairApprovalStatus } from "../lib/repair-approval-client";
+import { REPAIR_APPROVAL_APPROVE_LABEL, REPAIR_APPROVAL_SAVING_TEXT, draftBasisKey, fetchRepairApprovalStatus, recordedRepairTotalText, repairApprovalDraftNotice, repairApprovalReasonText, saveRepairApproval, type RepairApprovalSaveResult, type RepairApprovalStatus } from "../lib/repair-approval-client";
 import { PROVISIONAL_HEADLINE } from "../lib/provisional-repairs";
 import ArvCompsWorkspace from "../components/ArvCompsWorkspace";
 
@@ -736,7 +736,7 @@ function RepairEstimator({ opportunityId, onPersisted }: {
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "14px", flexWrap: "wrap" }}>
           {REPAIR_APPROVAL_CONFIG.enabled ? (
-            <RepairApprovalActions opportunityId={opportunityId} answers={answers} misc={misc} incomplete={result.incomplete} revision={revision} onPersisted={onPersisted} />
+            <RepairApprovalActions opportunityId={opportunityId} answers={answers} misc={misc} total={total} incomplete={result.incomplete} revision={revision} onPersisted={onPersisted} />
           ) : (
           <>
           <button
@@ -824,13 +824,18 @@ function RepairEstimator({ opportunityId, onPersisted }: {
  * while REPAIR_APPROVAL_CONFIG.enabled). The browser sends the answers; the
  * server recomputes, writes, verifies and closes. Texts come from the server
  * (accepted wording); a blocked or unconfirmed save is never retried from
- * here, and an incomplete estimate cannot be submitted.
+ * here, and an incomplete estimate cannot be submitted. The recorded total is
+ * the reader's, labelled as recorded, and is kept apart from the editable
+ * estimate (Jess, 2026-10-22).
  */
-function RepairApprovalActions({ opportunityId, answers, misc, incomplete, revision, onPersisted }: {
-  opportunityId: string; answers: Answers; misc: MiscAnswer; incomplete: boolean; revision: number; onPersisted: () => void;
+function RepairApprovalActions({ opportunityId, answers, misc, total, incomplete, revision, onPersisted }: {
+  opportunityId: string; answers: Answers; misc: MiscAnswer; total: number; incomplete: boolean; revision: number; onPersisted: () => void;
 }) {
   const [save, setSave] = useState<{ status: "idle" } | { status: "saving" } | { status: "done"; result: RepairApprovalSaveResult; revision: number }>({ status: "idle" });
   const [status, setStatus] = useState<RepairApprovalStatus | null>(null);
+  /* The answers and total this visit submitted and saw verified: the only
+     recorded basis the page knows answer by answer. */
+  const [verified, setVerified] = useState<{ key: string; total: number } | null>(null);
   const inFlight = useRef(false);
   /* One "visit" per opportunity shown. The page can move from deal A to deal
      B (or back to A) without remounting this component, so every save and
@@ -853,6 +858,7 @@ function RepairApprovalActions({ opportunityId, answers, misc, incomplete, revis
     inFlight.current = false;
     setSave({ status: "idle" });
     setStatus(null);
+    setVerified(null);
     void refreshStatus(thisVisit);
     return () => { visit.current += 1; };
   }, [opportunityId]);
@@ -861,11 +867,12 @@ function RepairApprovalActions({ opportunityId, answers, misc, incomplete, revis
     const thisVisit = visit.current;
     inFlight.current = true;
     setSave({ status: "saving" });
+    const submitted = draftBasisKey(answers, misc); // the answers this click sends, not whatever is on screen when it returns
     const result = await saveRepairApproval(opportunityId, answers, misc);
     if (visit.current !== thisVisit) return; // the deal on screen changed (or this view closed): drop the stale completion
     setSave({ status: "done", result, revision });
     inFlight.current = false;
-    if (result.outcome === "verified") onPersisted();
+    if (result.outcome === "verified") { setVerified({ key: submitted, total: result.total }); onPersisted(); }
     await refreshStatus(thisVisit);
   }
   const saving = save.status === "saving";
@@ -873,6 +880,8 @@ function RepairApprovalActions({ opportunityId, answers, misc, incomplete, revis
   const settled = done !== null && done.outcome !== "not_sent"; // verified, blocked or unknown: no second submit of this estimate
   const blockedNow = status?.kind === "needs_review";
   const disabled = saving || incomplete || blockedNow || settled;
+  const reasonText = status?.kind === "not_verified" ? repairApprovalReasonText(status.reason) : null;
+  const draftNotice = repairApprovalDraftNotice(status, { key: draftBasisKey(answers, misc), total, incomplete, edited: revision > 0 }, verified);
   return (
     <>
       <button
@@ -903,9 +912,13 @@ function RepairApprovalActions({ opportunityId, answers, misc, incomplete, revis
       {status && status.kind !== "none" ? (
         <span data-testid="repair-approval-status" style={{ fontSize: "12px", color: status.kind === "checked" ? "#22C55E" : status.kind === "needs_review" ? "#EF4444" : "#F59E0B" }}>
           {status.kind === "unavailable" ? "Repair approval could not be verified" : status.text}
-          {status.kind === "not_verified" ? ` (${status.reason})` : null}
+          {reasonText ? `. ${reasonText}` : null}
         </span>
       ) : null}
+      {status?.kind === "checked" ? (
+        <span data-testid="repair-approval-recorded-total" style={{ fontSize: "12px", color: "#94A3B8" }}>{recordedRepairTotalText(status.total)}</span>
+      ) : null}
+      {draftNotice ? <span data-testid="repair-approval-draft-notice" style={{ fontSize: "12px", color: "#F59E0B" }}>{draftNotice}</span> : null}
     </>
   );
 }
