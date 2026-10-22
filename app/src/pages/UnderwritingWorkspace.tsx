@@ -1026,6 +1026,23 @@ export default function UnderwritingWorkspace() {
     }
   }, [contact, opps, policyValues, selected]);
 
+  /* B15-26 B1 (Jess ruling): repair answers and approval state belong to the
+     opportunity being edited. Keyed by the opportunity, so a different deal
+     always gets a fresh estimator (answers, Miscellaneous, revision, approval
+     and save state together), on the enabled and the legacy path alike; and
+     not rendered at all while the page still holds the previous contact's
+     data after a direct navigation, so nothing from that deal can be shown or
+     submitted under the new one. Nothing is derived from a saved total. A save
+     already dispatched is not cancelled; its late result lands on the
+     unmounted estimator and changes nothing on screen. */
+  const repairEstimatorFor = (opportunityId: string) => (contact?.id === contactId ? (
+    <RepairEstimator
+      key={opportunityId}
+      opportunityId={opportunityId}
+      onPersisted={() => setReloadTick((t) => t + 1)}
+    />
+  ) : null);
+
   const screen: ScreenState = toViewModel({
     loading,
     fetchError,
@@ -1299,10 +1316,7 @@ export default function UnderwritingWorkspace() {
           {/* INV-12. Repairs is a Gate 1 input, so an unresolved deal is
               frequently unresolved BECAUSE the repair number does not exist
               yet. This is the surface that produces one during the call. */}
-          <RepairEstimator
-            opportunityId={screen.opportunity.id}
-            onPersisted={() => setReloadTick((t) => t + 1)}
-          />
+          {repairEstimatorFor(screen.opportunity.id)}
         </>
       ) : null}
 
@@ -1421,10 +1435,7 @@ export default function UnderwritingWorkspace() {
           {/* INV-12, resolved-state placement. Beside the mode selector, in
               the same revise-the-inputs zone: a resolved deal can still have
               its repair allowance worked during the call. */}
-          <RepairEstimator
-            opportunityId={screen.opportunity.id}
-            onPersisted={() => setReloadTick((t) => t + 1)}
-          />
+          {repairEstimatorFor(screen.opportunity.id)}
         </>
       ) : null}
     </Shell>
