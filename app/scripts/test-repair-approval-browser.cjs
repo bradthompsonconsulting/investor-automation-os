@@ -32,7 +32,7 @@ const APP = path.resolve(__dirname, '..');
 const HARNESS = path.join(APP, 'scripts', 'harness', 'repair-approval');
 const ENABLED_CONFIG = path.join(HARNESS, 'enabled-config.ts');
 /** Literal check() call-site count in this file, never back-filled from a run. */
-const FLOOR = 62;
+const FLOOR = 75;
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -181,6 +181,7 @@ async function main() {
   const unmodeled = [];
   let statusHolds = [];       // gates applied to the NEXT status responses, in order (handler runs first; the reply waits)
   let statusUnconfigured = false;
+  let statusOverride = null;  // harness-fabricated body for the NEXT status response (only RC5: a reason code the reader never returns today)
   const readCookie = () => `__Host-iaos_read=${issueReadSession(OPERATOR, appReadConfig()).token}`;
   const pipelineFor = () => ({
     pipelineId: config.pipelines.sellerLeads, stages: [],
@@ -217,6 +218,7 @@ async function main() {
   const legacyWrites = []; let legacyHold = null;
   const browser = await chromium.launch();
   const pageErrors = [];
+  const seenBodies = [];
 
   async function adapter(route, viewer) {
     const req = route.request(); const url = req.url();
@@ -251,6 +253,7 @@ async function main() {
       const event = { httpMethod: method, isBase64Encoded: false, headers, queryStringParameters: Object.fromEntries(u.searchParams), body: req.postData() ?? null };
       let opp = u.searchParams.get('opportunityId'); try { if (!opp && req.postData()) opp = JSON.parse(req.postData()).opportunityId; } catch { /* not JSON */ }
       const call = { fn, method, opp }; calls.push(call);
+      if (fn === 'repair-approval-status' && statusOverride) { const b = statusOverride; statusOverride = null; call.status = 200; call.kind = b.kind; return fulfill(200, b); }
       let r;
       if (fn === 'repair-approval-status' && statusUnconfigured) {
         const saved = process.env.IAOS_REPAIR_AUTHORITY_TOKEN; delete process.env.IAOS_REPAIR_AUTHORITY_TOKEN;
@@ -289,6 +292,13 @@ async function main() {
   const saves = () => calls.filter((c) => c.fn === 'repair-approval-save');
   const text = async (loc) => ((await loc.count()) ? (await loc.textContent()).trim() : null);
   const waitText = (loc, re, timeout = 15000) => loc.filter({ hasText: re }).first().waitFor({ timeout }).then(() => true, () => false);
+  const usd = (v) => v.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const recordedLine = (v) => `Recorded repair total: ${usd(v)}.`;
+  const EDITS_NOT_APPROVED = 'Current edits have not been approved.';
+  const EDITS_NOT_CHECKED = 'Current edits have not been checked against the recorded approval.';
+  const CHECKED_EXACT = /^Recorded repair approval — checked as of \S+$/;
+  /** Row 1 to Repair, then its Known Amount typed as 0: different answers, the same total. */
+  const sameTotalEdit = async (page) => { await pick(page, 1, 'Repair'); await page.getByPlaceholder('Known amount').nth(1).fill('0'); };
 
   try {
     // ------------------------------------------------------------- harness ---
@@ -326,6 +336,9 @@ async function main() {
       check('S3 verified: the result is the accepted checked text', ok, await text(T('repair-approval-result')));
       await waitText(T('repair-approval-status'), /^Recorded repair approval — checked as of /);
       check('S4 the status line re-read after the save shows checked (one read on load + one after the save)', /^Recorded repair approval — checked as of /.test(await text(T('repair-approval-status'))) && calls.filter((c) => c.fn === 'repair-approval-status').length === 2);
+      const recorded = await text(T('repair-approval-recorded-total'));
+      check('DT1 checked: the accepted sentence is unchanged and the reader\'s total is labelled on its own line ("Recorded repair total: $X."); no draft notice for the answers just verified',
+        CHECKED_EXACT.test(await text(T('repair-approval-status'))) && recorded === recordedLine(total) && (await T('repair-approval-draft-notice').count()) === 0, { recorded, total });
       const a = stored(fx);
       check('S5 GHL holds the shown total and the approval id; one note; the authority record is COMPLETED for that op', oppValue(fx, F_EST) === total && a && a.state === 'COMPLETED' && oppValue(fx, APPROVAL_FIELD) === a.op.opId && notesOf(fx) === 1, { total, ghl: oppValue(fx, F_EST), state: a && a.state, notes: notesOf(fx) });
       check('S6 settled: Approve stays disabled for the same estimate (no second submit of a verified approval)', await btn.isDisabled());
@@ -336,7 +349,8 @@ async function main() {
       const total2 = await shownTotal(page);
       check('R1 an edit re-enables Approve and clears the previous result, without sending anything', !(await btn.isDisabled()) && (await T('repair-approval-result').count()) === 0 && saves().length === before && total2 !== total);
       const stale = await text(T('repair-approval-status'));
-      check('R2 OBSERVED (D-3 decision): after the edit the status line still reads the PREVIOUS checked approval and names no total, beside a different on-screen total', /^Recorded repair approval — checked as of /.test(stale) && !stale.includes('$'), stale);
+      check('R2 after a changed-total edit: the status keeps the accepted sentence, the recorded total still names the APPROVED total (never the draft), and "Current edits have not been approved." is shown',
+        CHECKED_EXACT.test(stale) && (await text(T('repair-approval-recorded-total'))) === recordedLine(total) && (await text(T('repair-approval-draft-notice'))) === EDITS_NOT_APPROVED, { stale, total, total2 });
       await btn.click();
       const ok2 = await waitText(T('repair-approval-result'), /^Recorded repair approval — checked as of /);
       const a2 = stored(fx);
@@ -390,8 +404,48 @@ async function main() {
     { const fx = fixture(); ghl.opps.get(fx.opp).customFields.push({ id: F_EST, fieldValue: 41000 });
       const { page, context, T } = await open(fx); await settle(page);
       const s = await text(T('repair-approval-status'));
-      check('U3 a legacy total with no authority record (D-5): "Repair approval could not be verified (no_recorded_approval)"', s === `${NOT_VERIFIED} (no_recorded_approval)`, s);
+      check('U3 a legacy total with no authority record (D-5): the lead sentence plus "No recorded approval is available for this total."; no raw code, no recorded-total line',
+        s === `${NOT_VERIFIED}. No recorded approval is available for this total.` && (await T('repair-approval-recorded-total').count()) === 0, s);
+      seenBodies.push(await page.locator('body').innerText());
       await context.close();
+    }
+
+    // ------------------------- reason codes in plain language (Jess 2026-10-22) ---
+    const completedDeal = async () => { const fx = fixture(); const { page, context, T } = await open(fx); await completeEstimate(page); await T('repair-approval-approve').click();
+      await waitText(T('repair-approval-result'), /^Recorded repair approval — checked as of /); await context.close(); return fx; };
+    const reasonView = async (fx, before) => { const { page, context, T } = await open(fx); if (before) await before(); await waitText(T('repair-approval-status'), /./); await settle(page);
+      const r = { s: await text(T('repair-approval-status')), recorded: await T('repair-approval-recorded-total').count(), notice: await T('repair-approval-draft-notice').count() };
+      seenBodies.push(await page.locator('body').innerText()); await context.close(); return r; };
+    const plain = (r, sentence) => r.s === `${NOT_VERIFIED}. ${sentence}` && r.recorded === 0 && r.notice === 0;
+    { const fx = await completedDeal(); ghl.reset(); ghl.script([{ kind: 'noteGet', hide: true }]);
+      const r = await reasonView(fx); ghl.reset();
+      check('RC1 evidence_unavailable (the recorded note reads 404): "The approval evidence could not be read."', plain(r, 'The approval evidence could not be read.'), r);
+    }
+    { const fx = await completedDeal(); const o = ghl.opps.get(fx.opp);
+      o.customFields = o.customFields.map((f) => (f.id === APPROVAL_FIELD ? { ...f, fieldValue: 'opSomeoneElseSynthetic' } : f));
+      const r = await reasonView(fx);
+      check('RC2 evidence_mismatch (the approval id on the deal changed): "The saved details do not match the recorded approval."', plain(r, 'The saved details do not match the recorded approval.'), r);
+    }
+    { const fx = fixture(); ghl.opps.get(fx.opp).customFields.push({ id: F_EST, fieldValue: 41000 }, { id: F_EST, fieldValue: 42000 });
+      const r = await reasonView(fx);
+      check('RC3 evidence_ambiguous (two Repairs values on the deal): "The saved approval details are ambiguous."', plain(r, 'The saved approval details are ambiguous.'), r);
+    }
+    { const fx = await completedDeal(); const held = gate(); ghl.reset(); ghl.script([{ kind: 'noteGet', hold: held.promise }]);
+      const notesBefore = ghl.log.filter((x) => x.kind === 'noteGet').length;
+      const r = await reasonView(fx, async () => {
+        for (let i = 0; i < 100 && ghl.log.filter((x) => x.kind === 'noteGet').length === notesBefore; i++) await new Promise((q) => setTimeout(q, 50));
+        const k = BA.authorityKey(fx.scope); blobs.store.set(k, { ...blobs.store.get(k), etag: '"changed-mid-check"' }); held.open();
+      });
+      ghl.reset();
+      check('RC4 record_changed (the authority record changed between the two reads): "The approval record changed during the check."', plain(r, 'The approval record changed during the check.'), r);
+    }
+    { const fx = fixture(); statusOverride = { kind: 'not_verified', reason: 'some_future_reason', text: NOT_VERIFIED, total: 1234 };
+      const r = await reasonView(fx); statusOverride = null;
+      check('RC5 a reason this page does not know (harness-fabricated response): the lead sentence alone; the code is not shown', r.s === NOT_VERIFIED && r.recorded === 0, r);
+    }
+    { const codes = ['no_recorded_approval', 'evidence_unavailable', 'evidence_mismatch', 'evidence_ambiguous', 'record_changed', 'some_future_reason'];
+      const shown = seenBodies.flatMap((b) => codes.filter((c) => b.includes(c)));
+      check('RC6 no raw reason code appears anywhere on the page in U3 or RC1-RC5', seenBodies.length === 6 && shown.length === 0, { pages: seenBodies.length, shown });
     }
 
     // -------------------------------------------------------- view-only ---
@@ -449,7 +503,46 @@ async function main() {
       check('E1 an edit during the save does not change what is saved: GHL holds the SUBMITTED total, not the edited one', oppValue(fx, F_EST) === submitted && edited !== submitted);
       check('E2 OBSERVED (D-3): the result for the superseded estimate is not shown; the status line reads checked (the submitted total) beside the edited total, and Approve is enabled for the edit',
         (await T('repair-approval-result').count()) === 0 && /^Recorded repair approval — checked as of /.test(await text(T('repair-approval-status'))) && !(await T('repair-approval-approve').isDisabled()));
+      check('E3 the recorded total names the SUBMITTED total, not the edited draft, and the edit reads "Current edits have not been approved."',
+        (await text(T('repair-approval-recorded-total'))) === recordedLine(submitted) && (await text(T('repair-approval-draft-notice'))) === EDITS_NOT_APPROVED);
       await context.close();
+    }
+    { const fx = fixture(); calls.length = 0; const { page, context, T } = await open(fx);
+      await completeEstimate(page); const submitted = await shownTotal(page);
+      const hold = gate(); ghl.reset(); ghl.script([{ kind: 'notePost', hold: hold.promise }]);
+      await T('repair-approval-approve').click();
+      await page.getByText('Saving the repair approval to this deal').waitFor();
+      await sameTotalEdit(page);
+      hold.open();
+      for (let i = 0; i < 60 && !(stored(fx) && stored(fx).state === 'COMPLETED'); i++) await settle(page, 100);
+      await waitText(T('repair-approval-recorded-total'), /Recorded repair total/); await settle(page);
+      check('E4 a SAME-total edit during an outstanding save: once the submitted answers verify, the edited answers read "Current edits have not been approved." (compared with what was submitted, not only the total); Approve enabled; one save',
+        oppValue(fx, F_EST) === submitted && (await shownTotal(page)) === submitted && (await text(T('repair-approval-recorded-total'))) === recordedLine(submitted)
+        && (await text(T('repair-approval-draft-notice'))) === EDITS_NOT_APPROVED && !(await T('repair-approval-approve').isDisabled()) && saves().length === 1);
+      await context.close();
+    }
+
+    // ------------------- same total, different answers; a later visit (Jess 2026-10-22) ---
+    { const fx = fixture(); calls.length = 0; const { page, context, T } = await open(fx);
+      await completeEstimate(page); const total = await shownTotal(page);
+      await T('repair-approval-approve').click();
+      await waitText(T('repair-approval-result'), /^Recorded repair approval — checked as of /);
+      await waitText(T('repair-approval-recorded-total'), /Recorded repair total/);
+      const before = saves().length;
+      await sameTotalEdit(page); await settle(page);
+      check('DS1 same total, different answers after a verified save: "Current edits have not been approved.", recorded total unchanged, Approve enabled, nothing sent',
+        (await shownTotal(page)) === total && (await text(T('repair-approval-draft-notice'))) === EDITS_NOT_APPROVED && (await text(T('repair-approval-recorded-total'))) === recordedLine(total)
+        && !(await T('repair-approval-approve').isDisabled()) && saves().length === before);
+      await context.close();
+      const v = await open(fx); await waitText(v.T('repair-approval-recorded-total'), /Recorded repair total/); await settle(v.page);
+      check('DF1 a fresh visit with no edits: the recorded total is shown and no draft notice', (await text(v.T('repair-approval-recorded-total'))) === recordedLine(total) && (await v.T('repair-approval-draft-notice').count()) === 0);
+      await completeEstimate(v.page); await settle(v.page);
+      check('DF2 LIMITATION (disclosed): the same answers re-entered on a later visit cannot be compared with the recorded answers -- "have not been checked against the recorded approval", never a match claim',
+        (await shownTotal(v.page)) === total && (await text(v.T('repair-approval-draft-notice'))) === EDITS_NOT_CHECKED);
+      await pick(v.page, 1, 'Repair'); await settle(v.page);
+      check('DF3 a changed total on that later visit: "Current edits have not been approved."; the recorded total still names the approved total',
+        (await shownTotal(v.page)) !== total && (await text(v.T('repair-approval-draft-notice'))) === EDITS_NOT_APPROVED && (await text(v.T('repair-approval-recorded-total'))) === recordedLine(total));
+      await v.context.close();
     }
 
     // ------------------------------------------------- out-of-order status reads ---

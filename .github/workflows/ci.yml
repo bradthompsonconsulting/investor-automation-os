@@ -363,7 +363,7 @@ jobs:
         run: node app/scripts/test-deal-calculator-interaction.cjs
       - name: Incomplete repairs read as provisional, never a green Meets; numbers unchanged, real page (INV-134 B15-26, INV-100 B15-01) — 55 checks
         run: node app/scripts/test-b15-26-provisional-repairs.cjs
-      - name: B1 repair approval ENABLED path on the real page, offline (switch aliased on for this test only; committed switch stays disabled) (INV-134) — 62 checks
+      - name: B1 repair approval ENABLED path on the real page, offline (switch aliased on for this test only; committed switch stays disabled) (INV-134) — 75 checks
         run: node app/scripts/test-repair-approval-browser.cjs
       # Both Production negotiation settings against the real write scope and barrier rules; floor 105
       # (NB6-NB8: a live, unspent reservation for A's deal is refused on B, then writes A once; 23770f6).
