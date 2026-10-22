@@ -55,7 +55,7 @@ import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstima
 import { persistApprovedRepairTotalToOpportunity, persistGate } from "../lib/repair-estimation/persist";
 import type { PersistResult, RepairApproval } from "../lib/repair-estimation/persist";
 import { REPAIR_APPROVAL_CONFIG } from "../../shared/repair-approval-config";
-import { REPAIR_APPROVAL_SAVING_TEXT, fetchRepairApprovalStatus, saveRepairApproval, type RepairApprovalSaveResult, type RepairApprovalStatus } from "../lib/repair-approval-client";
+import { REPAIR_APPROVAL_APPROVE_LABEL, REPAIR_APPROVAL_SAVING_TEXT, fetchRepairApprovalStatus, saveRepairApproval, type RepairApprovalSaveResult, type RepairApprovalStatus } from "../lib/repair-approval-client";
 import { PROVISIONAL_HEADLINE } from "../lib/provisional-repairs";
 import ArvCompsWorkspace from "../components/ArvCompsWorkspace";
 
@@ -866,7 +866,7 @@ function RepairApprovalActions({ opportunityId, answers, misc, incomplete, revis
           color: disabled ? "#334155" : "#22C55E",
         }}
       >
-        {saving ? "Saving…" : "Approve and save repair total"}
+        {saving ? "Saving…" : REPAIR_APPROVAL_APPROVE_LABEL}
       </button>
       {incomplete ? <span data-testid="repair-approval-incomplete" style={{ fontSize: "12px", color: "#F59E0B" }}>{PROVISIONAL_HEADLINE}</span> : null}
       {saving ? (

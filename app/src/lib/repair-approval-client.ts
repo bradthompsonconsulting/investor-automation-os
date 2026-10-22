@@ -14,6 +14,8 @@ import type { Answers, MiscAnswer } from "./repair-estimation/operator-model";
 
 export const REPAIR_APPROVAL_SAVE_ENDPOINT = "/.netlify/functions/repair-approval-save";
 export const REPAIR_APPROVAL_STATUS_ENDPOINT = "/.netlify/functions/repair-approval-status";
+/** The enabled path's button label: the same words as the existing control (only one of the two ever renders). */
+export const REPAIR_APPROVAL_APPROVE_LABEL = "Approve and save repair total";
 /** Shown while the single save request is in flight (one request: write, then verify in GHL). */
 export const REPAIR_APPROVAL_SAVING_TEXT = "Saving the repair approval to this deal, then verifying it in GHL…";
 
