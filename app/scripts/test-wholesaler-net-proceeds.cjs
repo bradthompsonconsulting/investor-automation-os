@@ -183,7 +183,7 @@ check('earnest money is not a cost line', !COST_LINES.assignment.concat(COST_LIN
 
 // ── 7. Wiring ────────────────────────────────────────────────────────────────
 const lib = read('src/lib/wholesaler-net-proceeds.ts');
-check('module imports only the ExpectedSpread type', (lib.match(/^import .*$/gm) || []).join('\n') === 'import type { ExpectedSpread } from "./underwriting/board8-economics";');
+check('module imports only the ExpectedSpread type and the provisional-repairs wording', (lib.match(/^import .*$/gm) || []).join('\n') === 'import type { ExpectedSpread } from "./underwriting/board8-economics";\nimport { PROVISIONAL_NET_LABEL, provisionalSupportText, type RepairCompleteness } from "./provisional-repairs";');
 const panel = read('src/components/NetProceedsPanel.tsx');
 check('panel: no GHL, fetch or write', !/\bghl\b|fetch\(|appWriteFetch|notes\.create|localStorage|sessionStorage/.test(panel));
 check('panel: no transaction type preselected', panel.includes('useState<TransactionType | null>(null)'));
@@ -191,13 +191,13 @@ check('panel: Not applicable control per line', panel.includes('deal-calc-net-${
 check('panel: conversion goes through costEntryFromInput with the page parser', panel.includes('return costEntryFromInput(input, parseNonNegativeAmountInput);'));
 check('panel: punctuation-only earnest is not an amount', panel.includes('hasAmountDigit(earnestRaw) ? parseNonNegativeAmountInput(earnestRaw)'));
 check('module: empty/invalid input is Unknown, never zero', /parsed\.kind === "value" \? \{ kind: "amount", amount: parsed\.value \} : \{ kind: "unknown" \}/.test(lib) && lib.includes('if (!hasAmountDigit(input.raw)) return { kind: "unknown" };'));
-check('panel: result rendered as text status', panel.includes('netProceedsText(result, formatWholeDollars)') && panel.includes('role="status"'));
+check('panel: result rendered as text status', panel.includes('netProceedsText(result, formatWholeDollars, repairs)') && panel.includes('role="status"'));
 check('panel: earnest money outside the net', panel.includes('EARNEST_MONEY_NOTE') && !/earnest[\s\S]{0,80}computeNetProceeds/.test(panel));
 const page = read('src/pages/DealCalculator.tsx');
 check('page imports panel', page.includes('import { NetProceedsPanel } from "../components/NetProceedsPanel";'));
-check('page passes only the existing Expected Spread', page.includes('<NetProceedsPanel key={netPanelRevision} grossSpread={expectedSpread} />'));
+check('page passes only the existing Expected Spread (and the repair estimate completeness)', page.includes('<NetProceedsPanel key={netPanelRevision} grossSpread={expectedSpread} repairs={repairCompleteness} />'));
 check('Clear resets the panel', /function handleClear\(\) \{[\s\S]*setNetPanelRevision\(\(n\) => n \+ 1\);[\s\S]*\n  \}/.test(page));
-check('spread status still built from the engine', page.includes('buildSpreadStatus(') && page.includes('buildDealCalculatorBarCells({ arv, repairs, testPrice, board8, expectedSpread })'));
+check('spread status still built from the engine', page.includes('buildSpreadStatus(') && page.includes('buildDealCalculatorBarCells({ arv, repairs, testPrice, board8, expectedSpread, repairsIncomplete: repairCompleteness?.incomplete ?? false })'));
 
 console.log(`B15-26 net proceeds: ${checks - failures}/${checks} checks passed`);
 process.exit(failures ? 1 : 0);
