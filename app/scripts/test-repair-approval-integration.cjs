@@ -19,12 +19,11 @@ const fs = require('node:fs');
 const http = require('node:http');
 const Module = require('node:module');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const ts = require('typescript');
 
 const APP = path.resolve(__dirname, '..');
 /** Literal count of check() executions below (loops expanded by hand); never back-filled from a run. */
-const FLOOR = 44; // 38 check() call sites + 4 extra V1 iterations (5 cases) + 2 extra M1 iterations (3 cases)
+const FLOOR = 45; // 39 check() call sites + 4 extra V1 iterations (5 cases) + 2 extra M1 iterations (3 cases)
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -214,12 +213,18 @@ async function main() {
       check('D2 disabled: the existing ghl-write opportunity.repairs path is unchanged (PUT sent, readback confirmed)', w.statusCode === 200 && parse(w).confirmed === true && o.customFields.some((f) => f.id === F_EST && f.fieldValue === 4321), [w.statusCode, w.body.slice(0, 160)]);
     }
     { const now = fs.readFileSync(path.join(APP, 'src', 'pages', 'UnderwritingWorkspace.tsx'), 'utf8').replace(/\r\n/g, '\n');
-      const base = execFileSync('git', ['show', '6a96960b3b7d5791ecb713936fc845320ad6c730:app/src/pages/UnderwritingWorkspace.tsx'] /* main before this candidate (pinned; HEAD^1 moved with later commits) */, { cwd: APP, encoding: 'utf8' }).replace(/\r\n/g, '\n');
+      // Baseline = main 6a96960b3b7d5791ecb713936fc845320ad6c730:app/src/pages/UnderwritingWorkspace.tsx, committed as a fixture (CI's
+      // checkout is shallow, so git history is not available). Fail closed unless the fixture's git blob id is exactly that file's.
+      const BASE_BLOB = '724999cd8d89427b7a2583650ce5b4bc21f1ce69';
+      const baseFile = path.join(APP, 'scripts', 'fixtures', 'b15-26-underwriting-workspace-6a96960.tsx.txt');
+      const base = fs.existsSync(baseFile) ? fs.readFileSync(baseFile, 'utf8').replace(/\r\n/g, '\n') : '';
+      const baseBlob = crypto.createHash('sha1').update(`blob ${Buffer.byteLength(base)}\0`).update(base).digest('hex');
+      check('D3a baseline fixture is main 6a96960 UnderwritingWorkspace.tsx (git blob 724999cd…)', baseBlob === BASE_BLOB, baseBlob);
       const OPEN = '        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "14px", flexWrap: "wrap" }}>\n';
       const a = base.indexOf(OPEN) + OPEN.length; const d = base.indexOf('        <div style={{ marginTop: "12px", fontSize: "11px", color: "#475569", lineHeight: 1.5 }}>\n', a);
       const original = base.slice(a, d); const children = original.slice(0, original.lastIndexOf('        </div>\n'));
       check('D3 disabled UI: the original action-bar JSX is preserved verbatim in the disabled branch, gated only by REPAIR_APPROVAL_CONFIG.enabled',
-        now.includes('          ) : (\n          <>\n' + children + '          </>\n          )}\n') && /REPAIR_APPROVAL_CONFIG\.enabled \? \(\n\s+<RepairApprovalActions/.test(now));
+        baseBlob === BASE_BLOB && children.length > 0 && now.includes('          ) : (\n          <>\n' + children + '          </>\n          )}\n') && /REPAIR_APPROVAL_CONFIG\.enabled \? \(\n\s+<RepairApprovalActions/.test(now));
     }
     // =========================================================== AUTHORITY ===
     cfgMode = 'enabled';

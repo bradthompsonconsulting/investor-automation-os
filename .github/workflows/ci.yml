@@ -339,7 +339,7 @@ jobs:
       - name: B1 repair-save completion -- owned transport, dispatch reservation/send gate, verifier, single-use CLOSE, abandonment, reader (INV-134) — 134 checks
         run: node app/scripts/test-repair-completion.cjs
 
-      - name: B1 repair approval integration (default-disabled) -- save/status handlers, server recompute, auth, duplicates, blocking, display, disabled path unchanged (INV-134) — 44 checks
+      - name: B1 repair approval integration (default-disabled) -- save/status handlers, server recompute, auth, duplicates, blocking, display, disabled path unchanged (INV-134) — 45 checks
         run: node app/scripts/test-repair-approval-integration.cjs
 
       # The real-page suites (Seller Call, Contacts, Pipeline, Mailers, shell labels) need Chromium.

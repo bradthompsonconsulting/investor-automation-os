@@ -1,0 +1,1332 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import RefreshReadError from "../components/RefreshReadError";
+import { useReadRecovered } from "../components/access-status";
+import { UNNAMED_CONTACT } from "../lib/operator-display";
+import { Link, useParams } from "react-router-dom";
+import NoDealYet from "../components/NoDealYet";
+import { ArrowLeft, AlertCircle, Check, Loader2 } from "lucide-react";
+import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
+import { getRuntimeConfig } from "../../shared/ghl-config";
+import {
+  parsePolicy,
+  parseOpportunityValues,
+  parseContactSeeds,
+  parseDealOverrides,
+  resolveDealFacts,
+  resolveInputs,
+} from "../lib/underwriting/resolver";
+import { computeUnderwriting } from "../lib/underwriting/compute";
+import { toViewModel, type ApproveState, type ScreenState, type SelectedOpportunity } from "../lib/underwriting/view-model";
+/* Board #5 S2 — the selection rule moved OUT of this file so the call rail can
+   answer "which opportunity is this deal" with the same code, not a copy of it.
+   Behaviour here is unchanged: these three call sites replace inline logic with
+   calls to the identical logic. */
+import { opportunitiesForContact, opportunityCandidates, selectOpportunity } from "../lib/underwriting/selectOpportunity";
+import { OPTION_BY_MODE, ASSIGNMENT_MODE_OPTIONS } from "../lib/underwriting/resolver-types";
+import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
+import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriting/types";
+/* INV-12 — Repair Estimation V1 enters the seller call here. The calculation
+   core is accepted and unchanged; this page asks the questions and renders
+   what the core returns. It decides no pricing of its own. */
+import { computeRepairEstimate, RepairInputError } from "../lib/repair-estimation/compute";
+/* INV-14 — the approved question set, defaults and provenance names; since
+   2026-10-07 the provisional starting estimate and known-amounts rule, and
+   the Miscellaneous row (the 2026-10-04 per-row allowances are superseded). The canonical reference table and the
+   calculation core are untouched; this surface no longer reads the table
+   directly. */
+import {
+  applyAmount, applyCondition, applyQuantity, EMPTY_ANSWER, EMPTY_MISC,
+  operatorEstimate, OPERATOR_PROVENANCE_LABEL, OPERATOR_ROWS, parseKnownAmount, parseQuantity,
+  quantitySpecFor, UNANSWERED_ALLOWANCE_LABEL,
+} from "../lib/repair-estimation/operator-model";
+import type {
+  Answers, MiscAnswer, OperatorCondition, OperatorRow, RowAnswer,
+} from "../lib/repair-estimation/operator-model";
+import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstimateSummary";
+/* INV-13 — the persistence boundary. The gate and the write/readback live in
+   their own module so "unapproved cannot write" is a property of a pure
+   function a harness can exhaust, not a claim about this component. */
+/* INV-70 / B9-07A Phase 2 — Family 3's approved ruling: this workspace's
+   repair-approval flow is the real, Opportunity-bound path, so it now
+   persists to the linked Opportunity, not the Contact. See persist.ts's
+   own header comment for why this is a separate function rather than a
+   parameter on persistApprovedRepairTotal, and why DealCalculator.tsx
+   (Contact-only by its own deliberate design) is unaffected. */
+import { persistApprovedRepairTotalToOpportunity, persistGate } from "../lib/repair-estimation/persist";
+import type { PersistResult, RepairApproval } from "../lib/repair-estimation/persist";
+import ArvCompsWorkspace from "../components/ArvCompsWorkspace";
+
+/**
+ * Underwriting Workspace — UNDERWRITING_WORKSPACE_SPEC.md.
+ *
+ * Route: /contacts/:id/underwriting. A Contact-context sub-route, decided
+ * 2026-08-14: the persistent rail needs its own viewport, because Seller
+ * MAO is a guardrail during live negotiation and a guardrail that scrolls
+ * away is not one.
+ *
+ * READ ONLY. This page performs no writes of any kind. Approve is not
+ * rendered — PB-D56 prerequisite 5, the opportunity-side inert proof, is
+ * the gate and it is open. A disabled button would imply Approve is one
+ * configuration away from working; it is not.
+ *
+ * Zones 1, 2 and 4 only. Zone 3 (Work the Deal) is editing, and every edit
+ * is a write.
+ *
+ * All interpretation lives in view-model.ts. This component fetches,
+ * selects an opportunity, runs the pipeline, and renders — it decides
+ * nothing about what "unresolved" means.
+ */
+
+const CONTENT_MAX_WIDTH = "1600px";
+const CONFIG = getRuntimeConfig();
+
+const CV_IDS = CONFIG.customValues;
+const OPP_IDS = {
+  arv: CONFIG.opportunityFacts.arv,
+  repairs: CONFIG.opportunityFacts.repairs,
+  askingPrice: CONFIG.opportunityFacts.askingPrice,
+  assignmentMode: CONFIG.opportunityFields.assignmentMode,
+};
+const CONTACT_IDS = {
+  arv: CONFIG.fields.arv,
+  repairs: CONFIG.fields.estimatedRepairs,
+  askingPrice: CONFIG.fields.askingPrice,
+};
+
+/** Local, not in format.ts — one consumer, so no shared abstraction yet. */
+function money(n: number | null): string {
+  if (n === null || !Number.isFinite(n)) return "—";
+  return n.toLocaleString("en-US", {
+    style: "currency", currency: "USD",
+    minimumFractionDigits: 0, maximumFractionDigits: 0,
+  });
+}
+
+function contactName(c: ContactDetail | null): string {
+  if (!c) return "—";
+  return [c.firstName, c.lastName].filter(Boolean).join(" ") || UNNAMED_CONTACT;
+}
+
+const LEVEL_LABEL: Record<string, string> = {
+  deal_override: "Deal Override",
+  investor_policy: "Investor Policy",
+  iaos_starter: "IAOS Starter",
+};
+
+/**
+ * Operator-facing labels for the Provenance keys. Internal identifiers must
+ * never reach the screen -- the same rule the missing-input labels follow in
+ * view-model.ts. This section rendered `sellingCostPct` and six others
+ * verbatim until 2026-08-16, and survived because it only appears in the
+ * resolved state, which had no production fixture until that day.
+ *
+ * Unmapped keys fall back to the raw name rather than disappearing.
+ */
+const ASSUMPTION_LABEL: Record<string, string> = {
+  sellingCostPct: "Selling Cost Percentage",
+  closingCost: "Closing Cost Estimate",
+  monthlyCarry: "Monthly Holding Cost",
+  holdMonths: "Hold Period",
+  buyerProfitPct: "Buyer Profit Percentage",
+  standardMinimum: "Standard Minimum Assignment Spread",
+  financingEnabled: "Purchase Financing",
+  financingLtv: "Financing LTV",
+  financingRate: "Interest Rate",
+  financingPoints: "Financing Points",
+  profitSharePct: "Buyer Profit Share Percentage",
+};
+
+// ── Presentational pieces ────────────────────────────────────────────────────
+
+function Shell({ contactId, children }: { contactId: string; children: React.ReactNode }) {
+  return (
+    <div style={{ maxWidth: CONTENT_MAX_WIDTH }}>
+      <Link to={`/contacts/${contactId}`} style={{
+        display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px",
+        color: "#64748B", marginBottom: "14px", textDecoration: "none",
+      }}>
+        <ArrowLeft size={13} /> Contact
+      </Link>
+      {children}
+    </div>
+  );
+}
+
+function Notice({ tone, title, body }: { tone: "error" | "warn" | "info"; title: string; body?: string }) {
+  const color = tone === "error" ? "#EF4444" : tone === "warn" ? "#F59E0B" : "#64748B";
+  return (
+    <div style={{
+      display: "flex", gap: "12px", alignItems: "flex-start", padding: "18px 20px",
+      background: `${color}0F`, border: `1px solid ${color}33`, borderRadius: "10px",
+    }}>
+      <AlertCircle size={20} style={{ color, flexShrink: 0, marginTop: "1px" }} />
+      <div>
+        <div style={{ fontSize: "14px", fontWeight: 600, color: "#E2E8F0" }}>{title}</div>
+        {body ? <div style={{ fontSize: "13px", color: "#94A3B8", marginTop: "5px", lineHeight: 1.5 }}>{body}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+/** The persistent rail. Four numbers, per SELLER_ACQUISITION_WORKFLOW.md. */
+function Rail({ ask, arv, repairs, mao, waiting }: {
+  ask: number | null; arv: number | null; repairs: number | null;
+  mao: number | null; waiting: string | null;
+}) {
+  const cell = (label: string, value: string, accent?: string) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: "3px", minWidth: "128px" }}>
+      <span style={{ fontSize: "9px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
+      <span style={{
+        fontSize: "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace",
+        color: accent ?? "#E2E8F0",
+      }}>{value}</span>
+    </div>
+  );
+  return (
+    <div style={{
+      display: "flex", gap: "28px", flexWrap: "wrap", alignItems: "flex-start",
+      padding: "16px 20px", background: "#0F172A", border: "1px solid #1E293B",
+      borderRadius: "10px", marginBottom: "20px",
+    }}>
+      {cell("Seller Ask", money(ask))}
+      {cell("ARV", money(arv))}
+      {cell("Repairs", money(repairs))}
+      {waiting
+        ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+            <span style={{ fontSize: "9px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em" }}>Seller MAO</span>
+            <span style={{ fontSize: "13px", color: "#F59E0B", fontWeight: 600, paddingTop: "3px" }}>{waiting}</span>
+          </div>
+        )
+        : cell("Seller MAO", money(mao), "#1EC8FF")}
+    </div>
+  );
+}
+
+/**
+ * PB-D59 -- the Approve control and its outcomes.
+ *
+ * WARNINGS DO NOT BLOCK. A resolved deal carrying an out-of-parameters
+ * warning is still approvable: PB-D56 flags and never blocks, and the
+ * investor remains the decision authority. The warning renders above this
+ * control, where the operator sees it before deciding. Nobody may later
+ * tighten `disabled` to include warnings -- that would make IAOS override
+ * an operator judgment for the first time.
+ *
+ * The only condition that disables the button is a write already in
+ * flight, which prevents a second PUT over an outstanding one.
+ */
+function ApproveControl({ state, onApprove, warningCount }: {
+  state: ApproveState;
+  onApprove: () => void;
+  warningCount: number;
+}) {
+  if (state.status === "succeeded") {
+    return (
+      <div style={{
+        display: "flex", gap: "10px", alignItems: "flex-start", padding: "14px 18px",
+        background: "#22C55E0F", border: "1px solid #22C55E33", borderRadius: "10px", marginTop: "22px",
+      }}>
+        <Check size={16} style={{ color: "#22C55E", flexShrink: 0, marginTop: "1px" }} />
+        <div style={{ fontSize: "13px", color: "#E2E8F0", lineHeight: 1.5 }}>
+          <strong>Underwriting approved.</strong> End-Buyer Maximum Purchase Price,
+          Seller MAO and Assignment Mode were saved to the opportunity and
+          confirmed on read-back.
+        </div>
+      </div>
+    );
+  }
+
+  if (state.status === "partial") {
+    // Pass 1 F45: operator labels, not the carrier keys.
+    const CARRIER_LABEL: Record<string, string> = {
+      endBuyerMaxPrice: "End-Buyer Maximum Purchase Price",
+      sellerMAO:        "Seller MAO",
+      assignmentMode:   "Assignment Mode",
+    };
+    return (
+      <div style={{
+        display: "flex", flexDirection: "column", gap: "10px", padding: "16px 18px",
+        background: "#F59E0B0F", border: "1px solid #F59E0B44", borderRadius: "10px", marginTop: "22px",
+      }}>
+        <div style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
+          <AlertCircle size={18} style={{ color: "#F59E0B", flexShrink: 0, marginTop: "1px" }} />
+          <div>
+            <div style={{ fontSize: "14px", fontWeight: 600, color: "#E2E8F0" }}>
+              Partially saved — NOT approved
+            </div>
+            <div style={{ fontSize: "13px", color: "#94A3B8", marginTop: "5px", lineHeight: 1.5 }}>
+              {state.message} Review the opportunity in GHL before trying again.
+            </div>
+          </div>
+        </div>
+        <div style={{ fontFamily: "Space Grotesk, monospace", fontSize: "12px", paddingLeft: "28px" }}>
+          {state.carriers.map((c) => (
+            <div key={c.key} style={{ display: "flex", gap: "10px", padding: "2px 0" }}>
+              <span style={{ color: c.landed ? "#22C55E" : "#EF4444", width: "62px" }}>
+                {c.landed ? "saved" : "not saved"}
+              </span>
+              <span style={{ color: "#94A3B8" }}>{CARRIER_LABEL[c.key] ?? c.key}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const failed = state.status === "failed";
+  const inFlight = state.status === "in_flight";
+
+  return (
+    <div style={{ marginTop: "22px" }}>
+      {failed ? (
+        <div style={{
+          display: "flex", gap: "10px", alignItems: "flex-start", padding: "14px 18px",
+          background: "#EF44440F", border: "1px solid #EF444433", borderRadius: "10px",
+          marginBottom: "12px",
+        }}>
+          <AlertCircle size={16} style={{ color: "#EF4444", flexShrink: 0, marginTop: "1px" }} />
+          <div style={{ fontSize: "13px", color: "#94A3B8", lineHeight: 1.5 }}>
+            <span style={{ color: "#E2E8F0", fontWeight: 600 }}>Nothing was saved.</span>{" "}
+            {state.message} The opportunity is unchanged, so trying again is safe.
+          </div>
+        </div>
+      ) : null}
+
+      <button
+        onClick={onApprove}
+        disabled={inFlight}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: "8px",
+          padding: "10px 18px", borderRadius: "8px", cursor: inFlight ? "default" : "pointer",
+          background: inFlight ? "#1E293B" : "#1EC8FF",
+          color: inFlight ? "#64748B" : "#0B1220",
+          border: "none", fontSize: "13px", fontWeight: 700,
+        }}
+      >
+        {inFlight ? "Saving…" : failed ? "Try again" : "Approve underwriting"}
+      </button>
+
+      <div style={{ fontSize: "11px", color: "#475569", marginTop: "8px", lineHeight: 1.5 }}>
+        Writes End-Buyer Maximum Purchase Price, Seller MAO and Assignment Mode
+        to the opportunity. Nothing else is written — not the stage, the status,
+        or any offer field.
+        {warningCount > 0
+          ? " This deal carries a warning above; approving is permitted and the decision is yours."
+          : ""}
+      </div>
+    </div>
+  );
+}
+
+// ── Page ─────────────────────────────────────────────────────────────────────
+
+/** What a mode write is doing, for the operator. */
+type ModeWriteState =
+  | { status: "idle" }
+  | { status: "in_flight"; label: string }
+  | { status: "succeeded"; label: string }
+  | { status: "failed"; label: string; message: string }
+  | { status: "unconfirmed"; label: string; observed: string };
+
+/**
+ * Board item #2C -- the Assignment Mode selector.
+ *
+ * WHY IT LIVES IN THE UNRESOLVED STATE. Assignment Mode is a deal fact read
+ * from the Opportunity. It has no starter fallback and no policy value can
+ * supply it, so an UNSET mode is precisely what leaves underwriting unresolved
+ * -- no Seller MAO, and no End-Buyer Maximum either, the latter withheld
+ * deliberately rather than shown alone. A control placed only beside Approve
+ * would be unreachable in the exact situation it exists to fix.
+ *
+ * It renders in the RESOLVED state as well, so a mode can be changed on a deal
+ * that already resolves and the figures recomputed. That is additive; the
+ * unresolved placement is the one that makes the feature work at all.
+ *
+ * MANUAL IS OFFERED AND EXPLAINED, NEVER HIDDEN AND NEVER SILENT. There is no
+ * GHL field for the manual spread amount -- Assignment Mode records WHICH mode
+ * governs and nothing records the dollar figure -- so selecting Manual writes a
+ * true deal fact and underwriting still will not resolve. Out-of-parameters is
+ * flagged, never blocked; a control that offers a choice which quietly yields
+ * no result is worse than one that explains itself. So the option is present,
+ * the consequence is stated before the click, and it is restated after.
+ */
+function AssignmentModeSelector({ currentLabel, absentReason, state, onSelect }: {
+  currentLabel: string | null;
+  /* Why there is no current label, in the resolver's own words. "Not set" and
+     "set to something unrecognised" are different facts and the second one is
+     not an absence — asserting a single cause here would be the same
+     conflation that made Manual unreadable. */
+  absentReason: string | null;
+  state: ModeWriteState;
+  onSelect: (label: string) => void;
+}) {
+  const busy = state.status === "in_flight";
+  const pendingManual = state.status !== "idle" && state.label === "Manual";
+  const manualIsCurrent = currentLabel === "Manual" || pendingManual;
+
+  return (
+    <div
+      data-testid="assignment-mode-selector"
+      style={{
+        marginTop: "14px", padding: "16px 18px", background: "#0F172A",
+        border: "1px solid #1E293B", borderRadius: "10px",
+      }}
+    >
+      <div style={{ fontSize: "13px", fontWeight: 600, color: "#E2E8F0", marginBottom: "4px" }}>
+        Assignment Mode
+      </div>
+      <div style={{ fontSize: "12px", color: "#64748B", marginBottom: "12px" }}>
+        {currentLabel
+          ? <>Currently <span style={{ color: "#94A3B8" }}>{currentLabel}</span>. Choose a different mode to change it.</>
+          : <>{absentReason
+                ? absentReason.charAt(0).toUpperCase() + absentReason.slice(1)
+                : "Not set on this opportunity"}. Underwriting cannot resolve until a mode is set.</>}
+      </div>
+
+      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+        {ASSIGNMENT_MODE_OPTIONS.map(([label]) => {
+          const isCurrent = label === currentLabel;
+          return (
+            <button
+              key={label}
+              data-testid={`assignment-mode-option-${label.replace(/\s+/g, "-").toLowerCase()}`}
+              onClick={() => onSelect(label)}
+              disabled={busy || isCurrent}
+              title={isCurrent ? "Already the mode on this opportunity" : `Set Assignment Mode to ${label}`}
+              style={{
+                fontSize: "12px", fontWeight: 600, padding: "8px 14px", borderRadius: "8px",
+                border: `1px solid ${isCurrent ? "rgba(30,200,255,0.55)" : "rgba(30,200,255,0.35)"}`,
+                background: isCurrent ? "rgba(30,200,255,0.18)" : "rgba(30,200,255,0.08)",
+                color: "#1EC8FF",
+                cursor: busy || isCurrent ? "default" : "pointer",
+                opacity: busy && !isCurrent ? 0.6 : 1,
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Pass 1 F43 (INV-105): one line per mode, taken from what
+          underwriting/compute.ts actually computes for it. No amounts are
+          stated here; the standard minimum and buyer-profit percentages are
+          the underwriting assumptions shown elsewhere on this page. */}
+      <ul data-testid="assignment-mode-explanations" style={{ margin: "10px 0 0", padding: 0, listStyle: "none", fontSize: "11px", color: "#94A3B8", lineHeight: 1.6 }}>
+        <li><strong style={{ color: "#CBD5E1" }}>Standard Minimum</strong> — your assignment spread is the standard minimum spread.</li>
+        <li><strong style={{ color: "#CBD5E1" }}>25% of Buyer Profit</strong> — your spread is a share (25% by default) of the end buyer's required profit, but never less than the standard minimum.</li>
+        <li><strong style={{ color: "#CBD5E1" }}>Manual</strong> — you set the spread yourself. GHL can't store that amount yet, so underwriting won't calculate under Manual.</li>
+      </ul>
+
+      {/* The Manual carrier gap, stated wherever Manual is the mode in play --
+          whether it is already set, or was just chosen. */}
+      {manualIsCurrent ? (
+        <div data-testid="assignment-mode-manual-note" style={{ marginTop: "12px", fontSize: "12px", color: "#FBBF24", lineHeight: 1.5 }}>
+          Manual is a real mode and it has been recorded, but underwriting will still not
+          resolve under it. GHL holds the mode and not the manual spread amount, so there is
+          no figure to calculate from. Use Standard Minimum or 25% of Buyer Profit to
+          underwrite this deal, or set the spread in GHL once a field exists for it.
+        </div>
+      ) : null}
+
+      <div style={{ marginTop: "10px", fontSize: "12px", minHeight: "18px" }}>
+        {state.status === "in_flight" ? (
+          <span style={{ color: "#94A3B8" }}>Setting {state.label}…</span>
+        ) : null}
+        {state.status === "succeeded" ? (
+          <span data-testid="assignment-mode-saved" style={{ color: "#94A3B8" }}>Saved — {state.label} confirmed on the opportunity.</span>
+        ) : null}
+        {state.status === "unconfirmed" ? (
+          <span style={{ color: "#FBBF24" }}>
+            Write accepted but not confirmed. GHL returned {JSON.stringify(state.observed)} where {JSON.stringify(state.label)} was sent.
+          </span>
+        ) : null}
+        {state.status === "failed" ? (
+          <span style={{ color: "#F87171" }}>Could not set {state.label}: {state.message}</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// ── INV-12 / INV-14 — Repair Estimation V1 in the seller call ────────────────
+//
+// The question set, the approved defaults and the fallback live in
+// lib/repair-estimation/operator-model.ts. This file asks and renders; it
+// decides no pricing of its own.
+
+const PROVENANCE_COLOR: Record<"BOOK" | "IAOS_POLICY" | "MANUAL", string> = {
+  BOOK: "#38BDF8",
+  IAOS_POLICY: "#A78BFA",
+  MANUAL: "#94A3B8",
+};
+
+/**
+ * One system's question, as the 2026-09-04 operator review settled it.
+ *
+ * The Known Amount field is ALWAYS editable, whatever the condition says, and
+ * the number showing in it is the number the calculation uses. Selecting a
+ * condition loads that condition's approved default into it and clears any
+ * override; typing makes the amount the operator's own.
+ *
+ * A COUNTED row (B6-F1 / INV-43) carries a quantity field beside its
+ * conditions, labelled with what it counts. Typing a count loads the approved
+ * per-unit rate times that count into Known Amount, which stays editable
+ * exactly as it always was: the number in the field is still the number used.
+ *
+ * The quantity field is live only while a priced condition is selected. Under
+ * `Not asked` and `Good` there is no approved rate for it to multiply, so it
+ * is cleared and disabled rather than left to look as though it were doing
+ * something. Known Amount itself is never disabled on any row.
+ */
+function EstimatorRow({ row, answer, onCondition, onAmount, onQuantity }: {
+  row: OperatorRow;
+  answer: RowAnswer;
+  onCondition: (c: OperatorCondition) => void;
+  onAmount: (raw: string) => void;
+  onQuantity: (raw: string) => void;
+}) {
+  const parsed = parseKnownAmount(answer.amount);
+  const quantity = quantitySpecFor(row);
+  const quantityParsed = parseQuantity(answer.quantity);
+  const quantityLive = answer.condition === "repair" || answer.condition === "severe";
+  const options: { key: OperatorCondition; label: string }[] = [
+    { key: "not_asked", label: "Not asked" },
+    { key: "good", label: "Good" },
+    { key: "repair", label: "Repair" },
+    { key: "severe", label: row.severeLabel },
+  ];
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap",
+      padding: "8px 0", borderTop: "1px solid #16202F",
+    }}>
+      <div style={{ width: "180px", fontSize: "13px", color: "#94A3B8" }}>{row.label}</div>
+      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+        {options.map((o) => {
+          const active = answer.condition === o.key;
+          return (
+            <button
+              key={o.key}
+              onClick={() => onCondition(o.key)}
+              style={{
+                padding: "4px 10px", borderRadius: "6px", fontSize: "11px", cursor: "pointer",
+                border: `1px solid ${active ? "rgba(30,200,255,0.45)" : "#1E293B"}`,
+                background: active ? "rgba(30,200,255,0.12)" : "transparent",
+                color: active ? "#1EC8FF" : "#64748B",
+              }}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+      {quantity ? (
+        <label style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <span style={{
+            fontSize: "11px", color: quantityLive ? "#94A3B8" : "#475569", whiteSpace: "nowrap",
+          }}>
+            {quantity.label}
+          </span>
+          <input
+            value={answer.quantity}
+            onChange={(e) => onQuantity(e.target.value)}
+            disabled={!quantityLive}
+            inputMode="numeric"
+            placeholder="0"
+            style={{
+              width: "56px", padding: "5px 8px", fontSize: "12px", borderRadius: "6px",
+              background: quantityLive ? "#0A0E1A" : "#0B1120",
+              border: `1px solid ${quantityParsed.kind === "invalid" ? "rgba(239,68,68,0.5)" : "#1E293B"}`,
+              color: quantityLive ? "#E2E8F0" : "#475569",
+            }}
+          />
+        </label>
+      ) : null}
+      <input
+        value={answer.amount}
+        onChange={(e) => onAmount(e.target.value)}
+        placeholder="Known amount"
+        style={{
+          width: "130px", padding: "5px 8px", fontSize: "12px", borderRadius: "6px",
+          background: "#0A0E1A",
+          border: `1px solid ${parsed.kind === "invalid" ? "rgba(239,68,68,0.5)" : "#1E293B"}`,
+          color: "#E2E8F0",
+        }}
+      />
+      {answer.dirty && parsed.kind === "value" ? (
+        <span style={{ fontSize: "10px", color: PROVENANCE_COLOR.MANUAL }}>manual</span>
+      ) : null}
+      {/* 2026-10-07 policy: an unanswered row adds nothing and says so. */}
+      {answer.condition === "not_asked" && parsed.kind === "blank" ? (
+        <span data-testid={`repair-unanswered-${row.system}`} style={{ fontSize: "10px", color: "#F59E0B" }}>
+          {`${UNANSWERED_ALLOWANCE_LABEL} · unknown — not in the total`}
+        </span>
+      ) : null}
+      {row.note ? (
+        <span style={{ fontSize: "10px", color: "#475569" }}>{row.note}</span>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Repair Estimation V1, in the underwriting workspace.
+ *
+ * Approve is the single deliberate act. The 2026-09-04 review removed the
+ * acknowledgement gate: unpriced risk stays visible, but it does not stand
+ * between the operator and their own approval.
+ *
+ * Approval persists the TOTAL ONLY, to the Opportunity's Repairs carrier
+ * (`opportunityFacts.repairs`, via `persistApprovedRepairTotalToOpportunity`;
+ * the Contact-side `estimated_repairs` writer was removed by INV-70). No itemization is persisted; the Known Amounts that
+ * produced the total live only in this session, because storing them would
+ * need a carrier V1 does not have.
+ *
+ * The approved total deliberately does NOT feed the underwriting figures
+ * above from session state. GHL is the sole system of record, so after a
+ * confirmed write the page RE-READS the contact rather than patching its own
+ * copy.
+ */
+function RepairEstimator({ opportunityId, onPersisted }: {
+  /* INV-70 / B9-07A Phase 2 — the approved total now persists here, not to
+     the Contact, so this component no longer needs a contactId prop at
+     all (removed). Required (not optional): this component only ever
+     renders inside the underwriting screen, which per PB-D55 always has
+     one identified Opportunity on screen before rendering its children. */
+  opportunityId: string;
+  onPersisted: () => void;
+}) {
+  const [answers, setAnswers] = useState<Answers>({});
+  /* 2026-10-04 amendment, rule 5: Miscellaneous / Other repairs. Session
+     state only, like every Known Amount (no persisted itemization). */
+  const [misc, setMisc] = useState<MiscAnswer>(EMPTY_MISC);
+  /* The estimator's edit counter. Approval carries the revision it was given
+     for, so a stale approval is detectable rather than merely unlikely. */
+  const [revision, setRevision] = useState(0);
+  const [approval, setApproval] = useState<RepairApproval>({ kind: "none" });
+  const [persistState, setPersistState] = useState<
+    { status: "idle" } | { status: "saving" } | { status: "done"; result: PersistResult }
+  >({ status: "idle" });
+
+  /* Any edit invalidates the approval and any prior save outcome. An approval
+     that survives a changed answer is a claim about a number the operator
+     never saw, and a stale "Saved" is worse than none. */
+  function invalidate() {
+    setRevision((r) => r + 1);
+    setApproval({ kind: "none" });
+    setPersistState({ status: "idle" });
+  }
+  function commit(next: Answers) {
+    setAnswers(next);
+    invalidate();
+  }
+  function commitMisc(next: MiscAnswer) {
+    setMisc(next);
+    invalidate();
+  }
+
+  function setCondition(row: OperatorRow, condition: OperatorCondition) {
+    const current = answers[row.system] ?? EMPTY_ANSWER;
+    commit({ ...answers, [row.system]: applyCondition(row, condition, current) });
+  }
+
+  function setAmount(row: OperatorRow, raw: string) {
+    const current = answers[row.system] ?? EMPTY_ANSWER;
+    commit({ ...answers, [row.system]: applyAmount(current, raw) });
+  }
+
+  /* A counted row's quantity. The Known Amount is recalculated from the
+     approved rate and any manual override is replaced, which is B6-F1's
+     stated rule and the reason this does not go through setAmount. */
+  function setQuantity(row: OperatorRow, raw: string) {
+    const current = answers[row.system] ?? EMPTY_ANSWER;
+    commit({ ...answers, [row.system]: applyQuantity(row, current, raw) });
+  }
+
+  /* The single path to the carrier. Every caller goes through persistGate, so
+     no branch reaches the setter without an approval decision.
+     INV-70 / B9-07A Phase 2 — targets the linked Opportunity, not the
+     Contact (Family 3's approved ruling). */
+  async function persistNow(current: RepairApproval, currentTotal: number) {
+    setPersistState({ status: "saving" });
+    const result = await persistApprovedRepairTotalToOpportunity(
+      ghl, opportunityId,
+      persistGate(current, revision, currentTotal),
+    );
+    setPersistState({ status: "done", result });
+    if (result.ok && result.confidence === "saved") onPersisted();
+  }
+
+  const computed = useMemo(() => {
+    try {
+      return {
+        ok: true as const,
+        result: operatorEstimate(answers, (lines) => computeRepairEstimate({
+          /* Property context is offered, never required. Nothing on this
+             surface prices from square footage. */
+          lines, property: { squareFeet: null, bathroomCount: null },
+        }), misc),
+      };
+    } catch (e) {
+      return { ok: false as const, message: e instanceof RepairInputError ? e.message : String(e) };
+    }
+  }, [answers, misc]);
+
+  if (!computed.ok) {
+    return (
+      <div style={{ marginTop: "22px" }}>
+        <Notice tone="error" title="Repair estimate could not be assembled" body={computed.message} />
+      </div>
+    );
+  }
+
+  const result = computed.result;
+  const total = result.total;
+  const saving = persistState.status === "saving";
+  const approvalCurrent =
+    approval.kind === "approved" && approval.revision === revision && approval.total === total;
+
+  return (
+    <div style={{ marginTop: "22px" }}>
+      <div style={{ fontSize: "11px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "10px" }}>
+        Repair estimate — seller call
+      </div>
+
+      <div style={{ padding: "18px 20px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
+        <div style={{ fontSize: "11px", color: "#475569", marginBottom: "6px" }}>
+          Repairs start at $0. Only valid known amounts are totalled; unanswered rows remain unknown
+          and the estimate stays incomplete. A numeric $0 or Good is an explicit answer; blank or invalid
+          input is not. Selecting a condition loads that condition's approved amount. Where a row is
+          counted, the count loads its approved rate times that
+          count. The number in the field is the number used — type over it whenever you know better.
+        </div>
+
+        {OPERATOR_ROWS.map((row) => (
+          <EstimatorRow
+            key={row.system}
+            row={row}
+            answer={answers[row.system] ?? EMPTY_ANSWER}
+            onCondition={(c) => setCondition(row, c)}
+            onAmount={(raw) => setAmount(row, raw)}
+            onQuantity={(raw) => setQuantity(row, raw)}
+          />
+        ))}
+
+        {/* 2026-10-04 amendment, rule 5: below every table row. Shared with the
+            Deal Calculator's itemized mode (PR #124 review). */}
+        <MiscRepairRow misc={misc} onChange={commitMisc} />
+
+        {/* Known / Unanswered / Preliminary, unresolved rows and the possible
+            electrical overlap -- one shared component (PR #124 review). */}
+        <RepairEstimateSummary result={result} />
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 18px", marginTop: "12px", fontSize: "11px" }}>
+          {(["BOOK", "IAOS_POLICY", "MANUAL"] as const).map((p) => (
+            <span key={p} style={{ color: "#475569" }}>
+              <span style={{ color: PROVENANCE_COLOR[p] }}>{OPERATOR_PROVENANCE_LABEL[p]}</span>{" "}
+              {money(result.estimate.byProvenance[p])}
+            </span>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "14px", flexWrap: "wrap" }}>
+          <button
+            onClick={() => {
+              const next: RepairApproval = { kind: "approved", total, revision };
+              setApproval(next);
+              void persistNow(next, total);
+            }}
+            disabled={saving}
+            style={{
+              padding: "8px 16px", borderRadius: "8px", fontSize: "12px", fontWeight: 600,
+              cursor: saving ? "not-allowed" : "pointer",
+              border: `1px solid ${saving ? "#1E293B" : "rgba(34,197,94,0.45)"}`,
+              background: saving ? "transparent" : "rgba(34,197,94,0.12)",
+              color: saving ? "#334155" : "#22C55E",
+            }}
+          >
+            {saving ? "Saving…" : "Approve and save repair total"}
+          </button>
+
+          {saving ? (
+            <span style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748B" }}>
+              <Loader2 size={13} className="animate-spin" /> Saving the repair total to this deal, then reading GHL back…
+            </span>
+          ) : null}
+
+          {/* PB-D21 vocabulary. "Saved" is a readback, never a 2xx. Each other
+              terminal state says plainly whether a write left. */}
+          {persistState.status === "done" && persistState.result.ok
+            && persistState.result.confidence === "saved" ? (
+            <span style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#22C55E" }}>
+              <Check size={13} /> Repair total saved to this deal · {money(persistState.result.value)}
+            </span>
+          ) : null}
+
+          {persistState.status === "done" && persistState.result.ok
+            && persistState.result.confidence === "unconfirmed" ? (
+            <span style={{ fontSize: "12px", color: "#F59E0B" }}>
+              Sent {money(persistState.result.value)}, but GHL did not read back that value. Check the
+              deal (opportunity) in GHL before relying on it. The write was not repeated.
+            </span>
+          ) : null}
+
+          {persistState.status === "done" && !persistState.result.ok ? (
+            <span style={{ fontSize: "12px", color: "#EF4444" }}>
+              {persistState.result.error}
+              {persistState.result.written
+                ? " A write did leave; it was not repeated."
+                : " Nothing was written."}
+            </span>
+          ) : null}
+
+          {persistState.status === "done" && !persistState.result.ok
+            && persistState.result.stage !== "blocked" && approvalCurrent ? (
+            <button
+              onClick={() => void persistNow(approval, total)}
+              style={{
+                padding: "6px 12px", borderRadius: "6px", fontSize: "11px", cursor: "pointer",
+                border: "1px solid #1E293B", background: "transparent", color: "#94A3B8",
+              }}
+            >
+              Try saving again
+            </button>
+          ) : null}
+        </div>
+
+        <div style={{ marginTop: "12px", fontSize: "11px", color: "#475569", lineHeight: 1.5 }}>
+          Actual condition and repair scope are subject to inspection. This is an underwriting estimate,
+          not a contractor bid or a guaranteed repair cost. Approving saves the TOTAL ONLY to this deal's
+          Repairs field in GHL (on the opportunity, not the contact) — no itemization is stored and no
+          other field is touched. Nothing is written without approval, and
+          the underwriting figures above update from GHL on the next read, not from this session.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+
+export default function UnderwritingWorkspace() {
+  const { id } = useParams<{ id: string }>();
+  const contactId = id ?? "";
+
+  const [contact, setContact] = useState<ContactDetail | null>(null);
+  const [opps, setOpps] = useState<OpportunityRow[] | null>(null);
+  const [policyValues, setPolicyValues] = useState<{ id: string; value: string }[] | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [chosenId, setChosenId] = useState<string | null>(null);
+
+  /* PB-D59. The Approve attempt's state, held here because the view model
+     owns the RESULT and never the call -- the page performs the write and
+     hands the outcome in.
+
+     Nothing sets this yet and nothing renders it. PB-D59 section VI as
+     amended permits Approve to be built; this slice deliberately stops
+     before the control, so the write method, its readback parser and these
+     states are all provable before anything is browser-reachable. The
+     setter is unused until the control lands. */
+  const [approve, setApprove] = useState<ApproveState>({ status: "idle" });
+
+  /* Board item #2C. The mode write's state, and a reload counter.
+     A successful mode write changes the input the whole page is derived from,
+     so the page must re-read the opportunity rather than patch its own copy.
+     Patching would make the screen a claim about what we sent; re-reading keeps
+     it a claim about what GHL holds. */
+  const [modeWrite, setModeWrite] = useState<ModeWriteState>({ status: "idle" });
+  const [reloadTick, setReloadTick] = useState(0);
+
+  /* Board 15 cleanup (Bones, PR #131 P2): once this contact's data has
+     loaded, a failed RE-read (the refresh after read sign-in returns, or a
+     reload after a write) never replaces the workspace -- that would unmount
+     its editors and destroy their drafts and pending writes. It is reported
+     on its own line (RefreshReadError); only a first load that fails shows
+     the full-page error. */
+  const loadedFor = useRef<string | null>(null);
+  const [refreshReadError, setRefreshReadError] = useState<string | null>(null);
+  const readRecovered = useReadRecovered();
+  useEffect(() => {
+    if (!contactId) return;
+    let cancelled = false;
+    setFetchError(null);
+    if (loadedFor.current !== contactId) setRefreshReadError(null);
+    Promise.all([
+      ghl.contacts.getDetail(contactId),
+      ghl.opportunities.listPipeline(),
+      ghl.underwriting.policy(),
+    ])
+      .then(([c, pipeline, policy]) => {
+        if (cancelled) return;
+        setContact(c);
+        setOpps(opportunitiesForContact(pipeline.opportunities, contactId));
+        setPolicyValues(policy.values);
+        loadedFor.current = contactId;
+        setRefreshReadError(null);
+      })
+      .catch((e: Error) => {
+        if (cancelled) return;
+        if (loadedFor.current === contactId) setRefreshReadError(e.message);
+        else setFetchError(e.message);
+      });
+    return () => { cancelled = true; };
+    // Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse.
+  }, [contactId, reloadTick, readRecovered]);
+
+  const loading = fetchError === null && (contact === null || opps === null || policyValues === null);
+
+  const candidates: SelectedOpportunity[] = useMemo(
+    () => opportunityCandidates(opps),
+    [opps],
+  );
+
+  /**
+   * Exactly one candidate auto-selects, derived rather than set through an
+   * effect so a one-item selector never flashes. More than one requires an
+   * explicit choice — PB-D55 forbids assuming the first is the deal.
+   */
+  const selected: SelectedOpportunity | null = useMemo(
+    () => selectOpportunity(candidates, chosenId),
+    [candidates, chosenId],
+  );
+
+  const pipeline = useMemo(() => {
+    if (!contact || !opps || !policyValues || !selected) {
+      return { result: null as UnderwritingResult | null, facts: null as DealFacts | null,
+               assignment: null as AssignmentResolution | null,
+               issues: [] as PolicyParseIssue[], computeError: null as { field: string | null; message: string } | null };
+    }
+    const opp = opps.find((o) => o.id === selected.id);
+    if (!opp) {
+      return { result: null, facts: null as DealFacts | null,
+               assignment: null as AssignmentResolution | null, issues: [],
+               computeError: null as { field: string | null; message: string } | null };
+    }
+    try {
+      const { policy, issues } = parsePolicy(policyValues, CV_IDS);
+      const oppValues = parseOpportunityValues(opp.customFields, OPP_IDS);
+      const seeds = parseContactSeeds(contact.customFields, CONTACT_IDS);
+      const overrides = parseDealOverrides(opp.customFields);
+      const facts = resolveDealFacts(oppValues, seeds);
+      const inputs = resolveInputs(facts, overrides, policy);
+      /* The assignment travels alongside the result from the SAME
+         resolveInputs call. Re-deriving it separately would let the two
+         disagree -- a resolved calculation paired with an assignment that
+         did not produce it -- which the view model would then have to
+         treat as an orchestration error it could not diagnose. */
+      return { result: computeUnderwriting(inputs), facts, assignment: inputs.assignment, issues, computeError: null };
+    } catch (e: any) {
+      return {
+        result: null, facts: null as DealFacts | null,
+        assignment: null as AssignmentResolution | null, issues: [],
+        computeError: { field: null, message: e?.message ?? "A configured value could not be interpreted." },
+      };
+    }
+  }, [contact, opps, policyValues, selected]);
+
+  const screen: ScreenState = toViewModel({
+    loading,
+    fetchError,
+    computeError: pipeline.computeError,
+    candidates,
+    selected,
+    result: pipeline.result,
+    facts: pipeline.facts,
+    assignment: pipeline.assignment,
+    issues: pipeline.issues,
+    approve,
+  });
+
+  /**
+   * PB-D59 -- the Approve write. THE ONLY place in the UI that initiates
+   * an underwriting mutation.
+   *
+   * The page owns the call; the view model owns only its result. That
+   * boundary matters most here, because this is the first
+   * browser-reachable write in this feature and a pure view model cannot
+   * accidentally issue one.
+   *
+   * PROVEN INERT BEFORE IT WAS REACHABLE. PB-D58 section II and PB-D59
+   * Proofs A0, A and B: twenty proof steps, ten production mutations,
+   * every one restored, the exact three-field payload proven on a
+   * disposable fixture before this handler existed.
+   */
+  /**
+   * Board item #2C -- the Assignment Mode write. The page owns the call; the
+   * component owns only the presentation of its outcome, mirroring how Approve
+   * is arranged directly below.
+   *
+   * A 200 IS NOT SUCCESS and this handler does not treat it as one: the method
+   * re-reads the singular opportunity and reports `ok` from the readback, and a
+   * write that landed differently is shown as unconfirmed rather than saved.
+   * Only a confirmed write triggers the reload.
+   */
+  async function onSelectMode(label: string) {
+    if (screen.state !== "unresolved" && screen.state !== "resolved") return;
+    const opportunityId = screen.opportunity.id;
+    setModeWrite({ status: "in_flight", label });
+    try {
+      const result = await ghl.underwriting.setAssignmentMode(opportunityId, label);
+      if (result.ok) {
+        setModeWrite({ status: "succeeded", label });
+        setReloadTick((n) => n + 1);
+      } else {
+        setModeWrite({
+          status: "unconfirmed",
+          label,
+          observed: result.observed === null ? "nothing" : String(result.observed),
+        });
+      }
+    } catch (e: any) {
+      setModeWrite({ status: "failed", label, message: e?.message ?? "The write could not be completed." });
+    }
+  }
+
+  /* The label GHL currently holds, for the selector's "Currently ..." line.
+     Read from the RAW DEAL FACT, not from the resolution.
+
+     ⚠ THE MODE THE OPERATOR SET AND THE RESOLUTION THE MATH REACHED ARE
+     DIFFERENT FACTS, and this selector is the first surface where the gap is
+     visible. resolver.ts sets facts.assignmentMode to {kind:"value",
+     value:"manual"} whenever the picker says Manual, but manualSpread is
+     hardcoded null (the carrier gap: GHL records WHICH mode governs and nothing
+     records the dollar figure), so resolveInputs always returns an UNRESOLVED
+     assignment for Manual. Reading the resolution therefore made
+     currentModeLabel unreachable for "Manual" — an opportunity whose mode was
+     genuinely set claimed "Not set on this opportunity", the carrier-gap note
+     stopped rendering after reload, and the Manual button stayed enabled to
+     write Manual over Manual.
+
+     A set mode that cannot resolve is exactly what Manual IS. Offering it is
+     only defensible while the surface stays honest about it, and honesty here
+     means reporting what GHL holds rather than what the calculator could do
+     with it. */
+  const currentModeLabel: string | null =
+    pipeline.facts !== null && pipeline.facts.assignmentMode.kind === "value"
+      ? OPTION_BY_MODE[pipeline.facts.assignmentMode.value]
+      : null;
+
+  /* The resolver's own reason when there is no readable mode. Two distinct
+     causes — absent, and present-but-unrecognised — and the page reports which
+     rather than assuming the first. */
+  const modeAbsentReason: string | null =
+    pipeline.facts !== null && pipeline.facts.assignmentMode.kind === "unresolved"
+      ? pipeline.facts.assignmentMode.reason
+      : null;
+
+  async function onApprove() {
+    if (screen.state !== "resolved") return;
+    if (screen.approve.status === "in_flight") return;
+
+    setApprove({ status: "in_flight" });
+
+    try {
+      /* The domain discriminant maps to a GHL option label HERE, at the
+         write boundary, through the single mapping in resolver-types.ts.
+         The screen contract carries the discriminant and never the label. */
+      const result = await ghl.underwriting.saveUnderwritingFields(screen.opportunity.id, {
+        endBuyerMaxPrice: screen.figures.endBuyerMaxPrice,
+        sellerMAO: screen.figures.sellerMAO,
+        assignmentMode: OPTION_BY_MODE[screen.assignment.kind],
+      });
+
+      if (result.ok) {
+        setApprove({ status: "succeeded" });
+        return;
+      }
+
+      /* PARTIAL. Some carriers landed and some did not, so the record IS
+         changed. PB-D59 section IV: reported, never silently compensated,
+         and never represented to the operator as approved. No retry is
+         offered -- a second write over a partially applied state needs a
+         human deciding what the state should be. */
+      setApprove({
+        status: "partial",
+        message: `${result.landed} of 3 fields were saved. The opportunity has changed and is not approved.`,
+        landed: result.landed,
+        carriers: result.carriers.map((c) => ({
+          key: c.key,
+          landed: c.landed,
+          sent: c.sent,
+          observed: c.observed,
+        })),
+      });
+    } catch (e: any) {
+      /* FAILED. The PUT threw or returned non-2xx, so nothing was written
+         and the record is unchanged. A retry is meaningful and safe, which
+         is exactly what distinguishes this from partial. */
+      setApprove({
+        status: "failed",
+        message: e?.message ?? "The write could not be completed.",
+      });
+    }
+  }
+
+  return (
+    <Shell contactId={contactId}>
+      <RefreshReadError message={refreshReadError} />
+      <div style={{ marginBottom: "18px" }}>
+        <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>
+          Underwriting
+        </h1>
+        <div style={{ fontSize: "13px", color: "#64748B", marginTop: "4px" }}>
+          {contactName(contact)}
+          {/* The opportunity name falls back to the contact name when GHL
+              carries none, so the two are frequently identical. Showing
+              "Name · Name" is noise; show the deal only when it differs. */}
+          {(screen.state === "resolved" || screen.state === "unresolved" || screen.state === "configuration_error")
+            && screen.opportunity.name !== contactName(contact)
+            ? <> · <span style={{ color: "#94A3B8" }}>{screen.opportunity.name}</span></>
+            : null}
+        </div>
+      </div>
+
+      {/* B7-07 evidence workspace plus INV-25's bounded persistence boundary.
+          Comp detail stays session-only; explicit approval writes the selected
+          Opportunity ARV, then appends its Contact-note ledger. */}
+      {contact && (screen.state === "resolved" || screen.state === "unresolved" || screen.state === "configuration_error") ? (
+        <ArvCompsWorkspace contact={contact} opportunityId={screen.opportunity.id} />
+      ) : null}
+
+      {screen.state === "loading" ? (
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#64748B", fontSize: "13px" }}>
+          <Loader2 size={14} className="animate-spin" /> Loading underwriting…
+        </div>
+      ) : null}
+
+      {screen.state === "fetch_error" ? (
+        <Notice tone="error" title="Could not load underwriting" body={screen.message} />
+      ) : null}
+
+      {screen.state === "orchestration_error" ? (
+        <Notice tone="error" title="Underwriting could not be assembled" body={screen.detail} />
+      ) : null}
+
+      {screen.state === "no_opportunity" ? (
+        /* Pass 1 F19: the same explanation, plus the way to act on it. */
+        <NoDealYet
+          contactId={id ?? ""}
+          reason="Underwriting belongs to the deal, not the person. Nothing is written to the contact as a substitute."
+        />
+      ) : null}
+
+      {screen.state === "awaiting_selection" ? (
+        <div>
+          <Notice
+            tone="info"
+            title="Select the deal to underwrite"
+            body="This contact holds more than one opportunity. IAOS does not assume the first one is the deal."
+          />
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" }}>
+            {screen.candidates.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setChosenId(c.id)}
+                style={{
+                  textAlign: "left", padding: "12px 16px", background: "#0F172A",
+                  border: "1px solid #1E293B", borderRadius: "8px", color: "#E2E8F0",
+                  fontSize: "13px", cursor: "pointer",
+                }}
+              >
+                {c.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {screen.state === "configuration_error" ? (
+        <Notice
+          tone="error"
+          title="Underwriting configuration error"
+          body={`A configured value could not be interpreted safely${screen.field ? ` (${screen.field})` : ""}. ${screen.message}`}
+        />
+      ) : null}
+
+      {screen.state === "unresolved" || screen.state === "resolved" ? (
+        <>
+          {/* Known facts show whether or not underwriting resolved. Being
+              told what is missing while what is known is blank is the
+              opposite of useful during a call. */}
+          <Rail
+            ask={screen.known.askingPrice}
+            arv={screen.known.arv}
+            repairs={screen.known.repairs}
+            mao={screen.state === "resolved" ? screen.figures.sellerMAO : null}
+            waiting={screen.state === "unresolved" ? "Waiting for " + screen.missingLabels.join(", ") : null}
+          />
+
+          {screen.banner.issues.length > 0 ? (
+            <div style={{ marginBottom: "18px" }}>
+              <Notice
+                tone="warn"
+                title={`${screen.banner.issues.length} investor-policy value${screen.banner.issues.length === 1 ? "" : "s"} could not be read`}
+                body={screen.banner.issues.map((i) => `${i.key}: "${i.raw}" — ${i.reason}`).join("; ") +
+                      ". IAOS Starter policy was used for these."}
+              />
+            </div>
+          ) : null}
+        </>
+      ) : null}
+
+      {/* Operator language only -- `missing` carries internal keys and is
+          never rendered. The previous copy claimed every non-Gate-1 input
+          resolves from policy, which is false for Assignment Mode: it is a
+          deal fact read from the Opportunity, has no starter fallback, and
+          no policy value can clear it. */}
+      {screen.state === "unresolved" ? (
+        <>
+          <Notice
+            tone="warn"
+            title="Underwriting cannot begin"
+            body={
+              screen.missingLabels.length === 1
+                ? `${screen.missingLabels[0]} is not set for this opportunity.`
+                : `Not set for this opportunity: ${screen.missingLabels.join(", ")}.`
+            }
+          />
+          {/* Board item #2C. Beside the notice that names the problem, because an
+              unset Assignment Mode is one of the things that notice is naming and
+              this is the only control that fixes it. */}
+          <AssignmentModeSelector
+            currentLabel={currentModeLabel}
+            absentReason={modeAbsentReason}
+            state={modeWrite}
+            onSelect={onSelectMode}
+          />
+          {/* INV-12. Repairs is a Gate 1 input, so an unresolved deal is
+              frequently unresolved BECAUSE the repair number does not exist
+              yet. This is the surface that produces one during the call. */}
+          <RepairEstimator
+            opportunityId={screen.opportunity.id}
+            onPersisted={() => setReloadTick((t) => t + 1)}
+          />
+        </>
+      ) : null}
+
+      {screen.state === "resolved" ? (
+        <>
+          {/* Zone 2 — Decision Panel */}
+          <div style={{
+            display: "flex", gap: "36px", flexWrap: "wrap", padding: "20px",
+            background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px",
+          }}>
+            <div>
+              <div style={{ fontSize: "9px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em" }}>End-Buyer Maximum Purchase Price</div>
+              <div style={{ fontSize: "24px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#E2E8F0" }}>
+                {money(screen.figures.endBuyerMaxPrice)}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: "9px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em" }}>Seller MAO</div>
+              <div style={{ fontSize: "24px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#1EC8FF" }}>
+                {money(screen.figures.sellerMAO)}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: "9px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em" }}>Acquisition Position</div>
+              <div style={{ fontSize: "14px", fontWeight: 600, color: "#94A3B8", paddingTop: "6px" }}>
+                {screen.position.position === "asking_unknown" ? "Asking price unknown" : null}
+                {screen.position.position === "within_range"
+                  ? <span style={{ color: "#22C55E" }}>Within range · cushion {money(screen.position.acquisitionCushion)}</span> : null}
+                {screen.position.position === "above_range"
+                  ? <span style={{ color: "#F59E0B" }}>Above range · gap {money(screen.position.gapToUnderwriting)}</span> : null}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: "9px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em" }}>Assignment Spread</div>
+              <div style={{ fontSize: "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#E2E8F0", paddingTop: "3px" }}>
+                {money(screen.figures.assignmentSpread)}
+              </div>
+            </div>
+          </div>
+          <div data-testid="underwriting-figures-legend" style={{ fontSize: "11px", color: "#64748B", margin: "6px 0 0" }}>
+            These are the deal's figures. "Approve underwriting" saves the End-Buyer Maximum and Seller MAO to the
+            opportunity; the Deal Calculator is practice only and never changes them.
+          </div>
+
+          {screen.warnings.map((w) => (
+            <div key={w.code} style={{ marginTop: "14px" }}>
+              <Notice
+                tone="warn"
+                title="Outside standard parameters"
+                body={`The manual assignment spread of ${money(w.spread)} is below the configured standard minimum of ${money(w.minimum)}. This is permitted and is not blocked.`}
+              />
+            </div>
+          ))}
+
+          {/* Zone 4 — Explain the Math */}
+          <div style={{ marginTop: "22px" }}>
+            <div style={{ fontSize: "11px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "10px" }}>
+              How this was calculated
+            </div>
+            <div style={{
+              padding: "18px 20px", background: "#0F172A", border: "1px solid #1E293B",
+              borderRadius: "10px", fontFamily: "Space Grotesk, monospace", fontSize: "13px",
+            }}>
+              {screen.breakdown.map((line) => (
+                <div key={line.label} style={{
+                  display: "flex", justifyContent: "space-between", gap: "24px", padding: "4px 0",
+                  color: line.label === "Seller MAO" || line.label === "Base Buyer Capacity"
+                    || line.label === "End-Buyer Maximum Purchase Price" ? "#E2E8F0" : "#94A3B8",
+                  fontWeight: line.label === "Seller MAO" ? 700 : 400,
+                  borderTop: line.label === "Base Buyer Capacity" || line.label === "Seller MAO"
+                    ? "1px solid #1E293B" : "none",
+                  marginTop: line.label === "Base Buyer Capacity" || line.label === "Seller MAO" ? "6px" : 0,
+                  paddingTop: line.label === "Base Buyer Capacity" || line.label === "Seller MAO" ? "10px" : "4px",
+                }}>
+                  <span>{line.label}</span>
+                  <span>{money(line.amount)}</span>
+                </div>
+              ))}
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "24px", padding: "4px 0", color: "#475569", fontSize: "11px", marginTop: "8px" }}>
+                <span>financing factor</span>
+                <span>{screen.figures.financingFactor.toFixed(4)}</span>
+              </div>
+            </div>
+
+            <div style={{ marginTop: "14px", fontSize: "11px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "8px" }}>
+              Where each assumption came from
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 24px", fontSize: "12px", color: "#64748B" }}>
+              {Object.entries(screen.provenance).map(([key, level]) => (
+                <span key={key}>
+                  {ASSUMPTION_LABEL[key] ?? key}: <span style={{ color: "#94A3B8" }}>{level === null ? "not used" : LEVEL_LABEL[level] ?? level}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <ApproveControl
+            state={screen.approve}
+            onApprove={onApprove}
+            warningCount={screen.warnings.length}
+          />
+
+          {/* Board item #2C, resolved-state placement. Additive: a resolved deal
+              can have its mode changed and its figures recomputed without going
+              through GHL. The unresolved placement above is the one that makes
+              the feature reachable at all; this one makes it useful afterwards.
+              Below Approve deliberately — changing the mode changes the figures
+              Approve would write, so it reads as a revision of the inputs rather
+              than an alternative to approving. */}
+          <AssignmentModeSelector
+            currentLabel={currentModeLabel}
+            absentReason={modeAbsentReason}
+            state={modeWrite}
+            onSelect={onSelectMode}
+          />
+          {/* INV-12, resolved-state placement. Beside the mode selector, in
+              the same revise-the-inputs zone: a resolved deal can still have
+              its repair allowance worked during the call. */}
+          <RepairEstimator
+            opportunityId={screen.opportunity.id}
+            onPersisted={() => setReloadTick((t) => t + 1)}
+          />
+        </>
+      ) : null}
+    </Shell>
+  );
+}
