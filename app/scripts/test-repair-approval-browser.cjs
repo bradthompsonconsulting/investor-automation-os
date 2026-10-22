@@ -32,7 +32,7 @@ const APP = path.resolve(__dirname, '..');
 const HARNESS = path.join(APP, 'scripts', 'harness', 'repair-approval');
 const ENABLED_CONFIG = path.join(HARNESS, 'enabled-config.ts');
 /** Literal check() call-site count in this file, never back-filled from a run. */
-const FLOOR = 39;
+const FLOOR = 47;
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -230,7 +230,8 @@ async function main() {
       if (h.origin) headers.origin = h.origin === base ? ORIGIN : h.origin; // the edge: same-origin page -> the configured https origin
       if (viewer.readSession) headers.cookie = readCookie();
       const event = { httpMethod: method, isBase64Encoded: false, headers, queryStringParameters: Object.fromEntries(u.searchParams), body: req.postData() ?? null };
-      const call = { fn, method }; calls.push(call);
+      let opp = u.searchParams.get('opportunityId'); try { if (!opp && req.postData()) opp = JSON.parse(req.postData()).opportunityId; } catch { /* not JSON */ }
+      const call = { fn, method, opp }; calls.push(call);
       let r;
       if (fn === 'repair-approval-status' && statusUnconfigured) {
         const saved = process.env.IAOS_REPAIR_AUTHORITY_TOKEN; delete process.env.IAOS_REPAIR_AUTHORITY_TOKEN;
@@ -442,6 +443,66 @@ async function main() {
       const s = await text(T('repair-approval-status'));
       check('O1 a slow load-time status read ("none") answered after the post-save read never replaces the newer checked status', s !== null && /^Recorded repair approval — checked as of /.test(s), s);
       await context.close(); statusHolds = [];
+    }
+
+    // ------------- direct deal navigation A -> B inside the underwriting route (Bones P1, bf18928 REVISE) ---
+    const goDeal = (page, fx) => page.evaluate((c) => window.__iaosNavigate(`/contacts/${c}/underwriting`), fx.contact);
+    const leaks = async (T, page) => ({ status: await text(T('repair-approval-status')), result: await text(T('repair-approval-result')),
+      saving: await page.getByText('Saving the repair approval').count(), button: await text(T('repair-approval-approve')) });
+    { const fxA = fixture(); const fxB = fixture();
+      ghl.opps.get(fxA.opp).customFields.push({ id: F_EST, fieldValue: 41000 }); // A's delayed load-time read is visible if it leaks (no_recorded_approval)
+      const lateA = gate(); statusHolds = [lateA]; calls.length = 0;
+      const { page, context, T } = await open(fxA);
+      await completeEstimate(page);
+      const hold = gate(); ghl.reset(); ghl.script([{ kind: 'notePost', hold: hold.promise }]);
+      await T('repair-approval-approve').click();
+      for (let i = 0; i < 50 && !ghl.log.some((e) => e.kind === 'notePost'); i++) await settle(page, 100);
+      await goDeal(page, fxB); await page.waitForURL(new RegExp(fxB.contact)); await settle(page, 800);
+      const bStatus = calls.filter((c) => c.fn === 'repair-approval-status' && c.opp === fxB.opp);
+      const l1 = await leaks(T, page);
+      check('NAV1 A->B with A\'s save held: B\'s own status read is "none", B has no authority record, and B shows no status, result or saving state from A',
+        bStatus.length === 1 && bStatus[0].kind === 'none' && stored(fxB) === null && l1.status === null && l1.result === null && l1.saving === 0 && l1.button === 'Approve and save repair total', { bStatus, l1 });
+      hold.open();
+      for (let i = 0; i < 60 && !(stored(fxA) && stored(fxA).state === 'COMPLETED'); i++) await settle(page, 100);
+      await settle(page, 800); lateA.open(); await settle(page, 800); statusHolds = [];
+      const l2 = await leaks(T, page);
+      check('NAV2 after A\'s save verifies and A\'s delayed load-time status is answered, B still shows none of A\'s approval, errors, blocked or save state (Bones repro)',
+        page.url().includes(fxB.contact) && stored(fxA).state === 'COMPLETED' && stored(fxB) === null && l2.status === null && l2.result === null && l2.saving === 0 && l2.button === 'Approve and save repair total', l2);
+      const aAfter = calls.filter((c) => c.fn === 'repair-approval-status' && c.opp === fxA.opp);
+      check('NAV3 the stale A completion started no status request (only A\'s own load-time read exists) and B sent no save', aAfter.length === 1 && saves().filter((c) => c.opp === fxB.opp).length === 0, aAfter);
+      check('NAV4 the dispatched A write was neither cancelled nor retried: one A save, verified, one note', saves().length === 1 && saves()[0].outcome === 'verified' && notesOf(fxA) === 1);
+      await context.close();
+    }
+    { const fxA = fixture(); const fxB = fixture(); calls.length = 0;
+      const { page, context, T } = await open(fxA);
+      await completeEstimate(page);
+      const hold = gate(); ghl.reset(); ghl.script([{ kind: 'notePost', hold: hold.promise }]);
+      await T('repair-approval-approve').click();
+      for (let i = 0; i < 50 && !ghl.log.some((e) => e.kind === 'notePost'); i++) await settle(page, 100);
+      await goDeal(page, fxB); await page.waitForURL(new RegExp(fxB.contact)); await settle(page, 600);
+      await goDeal(page, fxA); await page.waitForURL(new RegExp(fxA.contact)); await settle(page, 800);
+      const back = await leaks(T, page);
+      check('NAV5 A->B->A while the first A save is open: the new A visit shows its own fresh read (needs review: ADMITTED), not the old save\'s saving state', back.status === NEEDS_REVIEW && back.saving === 0 && back.result === null, back);
+      const aReads = calls.filter((c) => c.fn === 'repair-approval-status' && c.opp === fxA.opp).length;
+      hold.open();
+      for (let i = 0; i < 60 && !(stored(fxA) && stored(fxA).state === 'COMPLETED'); i++) await settle(page, 100);
+      await settle(page, 800);
+      const after = await leaks(T, page);
+      check('NAV6 the old A operation completing does not pass on the revisit merely because the id matches again: no result text and no status request from it',
+        stored(fxA).state === 'COMPLETED' && after.result === null && after.saving === 0 && after.status === NEEDS_REVIEW && calls.filter((c) => c.fn === 'repair-approval-status' && c.opp === fxA.opp).length === aReads, { after, aReads });
+      await goDeal(page, fxB); await page.waitForURL(new RegExp(fxB.contact)); await settle(page, 400);
+      await goDeal(page, fxA); await page.waitForURL(new RegExp(fxA.contact)); await settle(page, 800);
+      check('NAV7 the next A visit reads checked (its own fresh read); exactly one save was ever sent', /^Recorded repair approval — checked as of /.test(await text(T('repair-approval-status'))) && saves().length === 1);
+      await context.close();
+    }
+    { const fxA = fixture(); const fxB = fixture(); calls.length = 0;
+      ghl.opps.get(fxA.opp).customFields.push({ id: F_EST, fieldValue: 41000 }); // A's held read answers not_verified: visible if it leaks
+      const lateA = gate(); statusHolds = [lateA];
+      const { page, context, T } = await open(fxA);
+      await goDeal(page, fxB); await page.waitForURL(new RegExp(fxB.contact)); await settle(page, 600);
+      lateA.open(); await settle(page, 800); statusHolds = [];
+      check('NAV8 a delayed A status read (no save involved) answered after A->B never reaches B', (await text(T('repair-approval-status'))) === null);
+      await context.close();
     }
 
     check('X1 no page errors or console errors in any scenario', pageErrors.length === 0, pageErrors);
