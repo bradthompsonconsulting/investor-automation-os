@@ -10,8 +10,15 @@
  *   - "exactly one entry" for each binding custom field before any value is
  *     compared; duplicates (even identical) and ambiguous values are never
  *     resolved by picking an entry (r4 D2);
- *   - notes-list completeness only under a supported response contract, and
- *     the usable created-note id (Bones findings 1 and 3 on c1b9de6).
+ *   - the usable created-note id (Bones finding 3 on c1b9de6) and the
+ *     well-formed-identifier rule used to classify a by-ID note readback
+ *     (contract r5.1 K1: missing/malformed = unreadable; present, well-formed
+ *     but unequal = mismatch).
+ *
+ * r5.1 (N0): evidence is reached ONLY through the note id recorded for the
+ * op. There is deliberately no helper here that lists notes or finds E by
+ * its text (the c1b9de6/566001c notes-list contract and Operation-line
+ * search are removed).
  *
  * The durable copy of the payload is E itself (r3 C1). The per-line repair
  * answers are not retained anywhere; the binding is to basisDigest only.
@@ -115,12 +122,6 @@ export function parseEvidence(body: unknown): ParsedEvidence | null {
   return { opId, admittedAt, payload, digestLine };
 }
 
-/** Notes whose body carries exactly the line "Operation: <opId>" (any other evidence notes are ignored). */
-export function notesForOperation(notes: unknown[], opId: string): { id: unknown; body: unknown }[] {
-  const marker = `Operation: ${opId}`;
-  return notes.filter((n) => isPlain(n) && typeof n.body === "string" && n.body.split("\n").includes(marker)) as { id: unknown; body: unknown }[];
-}
-
 export type FieldRead =
   | { kind: "one"; value: number | string }
   | { kind: "none" }
@@ -142,34 +143,9 @@ export function readExactlyOneField(customFields: unknown, fieldId: string, type
   return typeof raw === "string" && raw.length > 0 && raw.length <= 512 && raw === raw.trim() ? { kind: "one", value: raw } : { kind: "ambiguous" };
 }
 
-/**
- * Notes-list response contracts under which a response AFFIRMATIVELY shows it
- * is the complete list. Closed list. No GHL contract is on it: GHL's notes
- * pagination/completeness behaviour is not established, so no real GHL
- * response shape can prove completeness, and every real read is "not
- * provably complete" (verifier HOLD unreadable / reader evidence_unavailable)
- * until a documented provider contract is added here under review.
- *
- * LOOPBACK_NOTES_CONTRACT is the offline test fakes' contract only, bound to
- * fake (loopback) transports; it is not a claim about GHL:
- *   exactly { notes: [...], meta: { total, complete } }, complete === true,
- *   total === notes.length, every note a plain object with string id and body.
- */
-export const LOOPBACK_NOTES_CONTRACT = "iaos-loopback-notes-v1";
-export type NotesContract = typeof LOOPBACK_NOTES_CONTRACT;
-
-/**
- * True only for a response that matches `contract` exactly. A null contract
- * (no supported contract), a missing or unfamiliar key, a missing or
- * non-affirmative completeness marker, or a count mismatch -> false.
- */
-export function notesListComplete(body: unknown, contract: NotesContract | null): body is { notes: unknown[] } {
-  if (contract !== LOOPBACK_NOTES_CONTRACT) return false;
-  if (!isPlain(body) || !exactKeys(body, ["notes", "meta"]) || !Array.isArray(body.notes)) return false;
-  const meta = body.meta;
-  if (!isPlain(meta) || !exactKeys(meta, ["total", "complete"]) || meta.complete !== true) return false;
-  if (typeof meta.total !== "number" || !Number.isSafeInteger(meta.total) || meta.total !== body.notes.length) return false;
-  return body.notes.every((n) => isPlain(n) && typeof n.id === "string" && typeof n.body === "string");
+/** A well-formed identifier value in a readback (e.g. a note's contactId): one line of printable text, bounded. */
+export function wellFormedId(v: unknown): v is string {
+  return lineSafe(v);
 }
 
 /** A usable GHL note id from a create-note response: one bounded token of [A-Za-z0-9_-]. */

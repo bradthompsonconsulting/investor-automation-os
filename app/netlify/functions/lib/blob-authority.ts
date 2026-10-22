@@ -31,6 +31,9 @@
  * the reader refuse a mismatch before any TARGET request, and CLOSE refuses
  * it again. A note POST whose response lacks a usable note id halts the
  * admission (blocking, never retried); verification binds to that exact id.
+ * Repair evidence is read ONLY by that id (contract r5.1, N0): no notes list
+ * is read and no note is found by its text, so a duplicate or conflicting
+ * note elsewhere on the contact is never consulted (and never detected).
  *
  * Uncertain admissions return an opaque handle backed by a private,
  * process-local registry. Unknown, forged, copied, transferred or
@@ -45,8 +48,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { getStore } from "@netlify/blobs";
 import {
-  type NotesContract, type RepairPayload, LOOPBACK_NOTES_CONTRACT, canonicalCurrency, notesForOperation, notesListComplete,
-  parseEvidence, payloadDigest, readExactlyOneField, renderEvidence, usableNoteId, validatePayload,
+  type RepairPayload, canonicalCurrency, parseEvidence, payloadDigest, readExactlyOneField, renderEvidence,
+  usableNoteId, validatePayload, wellFormedId,
 } from "./repair-evidence";
 
 export const AUTHORITY_STORE = "iaos-write-receipts";
@@ -435,8 +438,7 @@ export const READER_TEXT = Object.freeze({
 // ------------------------------------------------------------- transports ---
 
 type FieldIds = { repairEstimate: string; repairApprovalId: string };
-/** notesContract: the only notes-list response contract this transport's reads may prove completeness under (null = none). */
-type TransportConfig = { mode: "ghl" | "fake"; origin: string; token: string; fetchImpl: typeof fetch; fieldIds: FieldIds; timeoutMs: number; notesContract: NotesContract | null };
+type TransportConfig = { mode: "ghl" | "fake"; origin: string; token: string; fetchImpl: typeof fetch; fieldIds: FieldIds; timeoutMs: number };
 const transports = new WeakMap<object, TransportConfig>();
 
 /** Opaque transport. It exposes no request method; only this module's operations use it. */
@@ -462,8 +464,7 @@ export function createProductionTargetTransport(options: { fieldIds: FieldIds })
   const token = process.env.GHL_PRIVATE_API_KEY;
   if (!nonEmpty(token)) throw new Error("target transport: server GHL credential unavailable");
   const t = Object.freeze({ __targetTransport: true as const });
-  // No GHL notes-list contract is established: real notes reads never prove completeness (HOLD / evidence_unavailable).
-  transports.set(t, { mode: "ghl", origin: GHL_ORIGIN, token, fetchImpl: globalThis.fetch, fieldIds, timeoutMs: DEFAULT_TIMEOUT_MS, notesContract: null });
+  transports.set(t, { mode: "ghl", origin: GHL_ORIGIN, token, fetchImpl: globalThis.fetch, fieldIds, timeoutMs: DEFAULT_TIMEOUT_MS });
   return t;
 }
 
@@ -478,7 +479,7 @@ export function createFakeTargetTransport(options: { fetch: typeof fetch; origin
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("fake transport: invalid timeout");
   const t = Object.freeze({ __targetTransport: true as const });
-  transports.set(t, { mode: "fake", origin: options.origin, token: "synthetic-fake-transport", fetchImpl: options.fetch, fieldIds, timeoutMs, notesContract: LOOPBACK_NOTES_CONTRACT });
+  transports.set(t, { mode: "fake", origin: options.origin, token: "synthetic-fake-transport", fetchImpl: options.fetch, fieldIds, timeoutMs });
   return t;
 }
 
@@ -633,9 +634,33 @@ export function dispatchFields(admission: AdmissionHandle, payload: RepairPayloa
 // --------------------------------------------------------------- verifier ---
 
 type Observed = { observedId: string; observedTotal: number; noteId: string };
+
+/**
+ * r5.1 §2: one GET of the exact note, classified per K1. 404 is reported as
+ * not_found (undocumented status; the caller decides: verifier = R1 retry
+ * trigger, reader = evidence_unavailable). Any other non-200 / thrown /
+ * timeout / 3xx, a non-object body, or a missing or malformed note, id,
+ * contactId or body -> unreadable. A present, well-formed but unequal id or
+ * contactId -> mismatch. The path is built only from module state.
+ */
+type NoteRead = { kind: "ok"; body: string } | { kind: "not_found" } | { kind: "unreadable" } | { kind: "mismatch" };
+async function readNoteById(t: TransportConfig, contactId: string, noteId: string): Promise<NoteRead> {
+  const r = await ghlCall(t, "GET", `/contacts/${encodeURIComponent(contactId)}/notes/${encodeURIComponent(noteId)}`);
+  if (r.status === 404) return { kind: "not_found" };
+  if (r.status !== 200) return { kind: "unreadable" };
+  const n = isPlainObject(r.json) && isPlainObject(r.json.note) ? r.json.note : null;
+  if (!n || !usableNoteId(n.id) || !wellFormedId(n.contactId) || typeof n.body !== "string") return { kind: "unreadable" };
+  if (n.id !== noteId || n.contactId !== contactId) return { kind: "mismatch" };
+  return { kind: "ok", body: n.body };
+}
 type PassOutcome = { kind: "match"; observed: Observed } | { kind: "missing"; reason: string } | { kind: "terminal"; reason: string };
 
-/** One complete pass: strong read A -> Opportunity read -> full notes read -> strong read A. */
+/**
+ * One complete pass: strong read A -> Opportunity read -> by-ID note read at
+ * the created id -> strong read A. Pure-missing (r5.1 K2, one shared budget):
+ * zero entries for a binding field (missing_field) and/or a 404 for the
+ * created note (missing_evidence), with nothing else contradicting.
+ */
 async function verifyPass(b: Binding, t: TransportConfig, p: RepairPayload, createdNoteId: string | null): Promise<PassOutcome> {
   if (!usableNoteId(createdNoteId)) return { kind: "terminal", reason: "mismatch" }; // unreachable: FIELDS_DEFINITE implies a bound id
   const a1 = await readOwnAdmission(b);
@@ -656,26 +681,21 @@ async function verifyPass(b: Binding, t: TransportConfig, p: RepairPayload, crea
   if (appr.kind === "one" && appr.value !== b.opId) return { kind: "terminal", reason: "mismatch" };
   if (est.kind === "none" || appr.kind === "none") missing = "missing_field";
 
-  const nr = await ghlCall(t, "GET", `/contacts/${encodeURIComponent(b.op.target.contactId)}/notes`);
-  if (nr.status !== 200 || !notesListComplete(nr.json, t.notesContract)) return { kind: "terminal", reason: "unreadable" };
-  const mine = notesForOperation(nr.json.notes, b.opId);
-  let noteId: string | null = null;
-  if (mine.length > 1) return { kind: "terminal", reason: "duplicate_evidence" };
-  if (mine.length === 0) missing = missing ?? "missing_evidence";
+  // r5.1: the evidence is read ONLY at the exact id this process's own definite create returned (N0).
+  const nt = await readNoteById(t, b.op.target.contactId, createdNoteId);
+  if (nt.kind === "unreadable" || nt.kind === "mismatch") return { kind: "terminal", reason: nt.kind };
+  if (nt.kind === "not_found") missing = missing ?? "missing_evidence"; // R1: a retry trigger, not proof of absence
   else {
-    const n = mine[0];
-    const e = parseEvidence(n.body);
-    if (!e || !nonEmpty(n.id)) return { kind: "terminal", reason: "mismatch" };
+    const e = parseEvidence(nt.body);
+    if (!e) return { kind: "terminal", reason: "mismatch" };
     const pe = payloadDigest(e.payload);
     if (e.opId !== b.opId || e.admittedAt !== b.op.admittedAt || pe !== b.P || e.digestLine !== pe || pe !== payloadDigest(p)) return { kind: "terminal", reason: "mismatch" };
-    if (n.id !== createdNoteId) return { kind: "terminal", reason: "mismatch" }; // bound to the exact created id
-    noteId = n.id as string;
   }
 
   const a2 = await readOwnAdmission(b);
   if (a2.kind !== "ok") return { kind: "terminal", reason: a2.kind === "unreadable" ? "unreadable" : "authority_changed" };
   if (missing) return { kind: "missing", reason: missing };
-  return { kind: "match", observed: { observedId: b.opId, observedTotal: p.total, noteId: noteId as string } };
+  return { kind: "match", observed: { observedId: b.opId, observedTotal: p.total, noteId: createdNoteId } };
 }
 
 type TokenRecord = { rec: AdmissionRecord; observed: Observed; mode: "ghl" | "fake"; used: boolean };
@@ -823,8 +843,9 @@ function parseCompletion(c: Record<string, unknown>): Observed | null {
 /**
  * Point-in-time check, not an atomic Netlify/GHL snapshot, and never computed
  * OFFER READY: strong read A -> GHL evidence checks against A's own content
- * (exactly one entry per binding field; exactly one E, parsed strictly, whose
- * payload hashes to A.op.expectedResultHash) -> final strong read A unchanged.
+ * (exactly one entry per binding field; the note at the id recorded in
+ * A.completion.noteId, on the admitted contact, parsed strictly, whose payload
+ * hashes to A.op.expectedResultHash) -> final strong read A unchanged.
  */
 export async function readRepairApproval(client: AuthorityClient, transport: TargetTransport, scope: string, opportunityId: string, ...extra: unknown[]): Promise<ReaderResult> {
   if (extra.length) return { kind: "refused", reason: "unexpected_argument" };
@@ -861,17 +882,17 @@ export async function readRepairApproval(client: AuthorityClient, transport: Tar
   if (est.kind === "none" || appr.kind === "none") return nv("evidence_mismatch", c.observedTotal);
   if (appr.value !== op.opId || est.value !== c.observedTotal || c.observedId !== op.opId) return nv("evidence_mismatch", c.observedTotal);
 
-  const nr = await ghlCall(t, "GET", `/contacts/${encodeURIComponent(op.target.contactId)}/notes`);
-  if (nr.status !== 200 || !notesListComplete(nr.json, t.notesContract)) return nv("evidence_unavailable", c.observedTotal);
-  const mine = notesForOperation(nr.json.notes, op.opId);
-  if (mine.length > 1) return nv("evidence_ambiguous", c.observedTotal);
-  if (mine.length === 0) return nv("evidence_mismatch", c.observedTotal);
-  const e = parseEvidence(mine[0].body);
+  // r5.1: only the note id CLOSE recorded for this op (N0); a 404 here is evidence_unavailable (no retry budget).
+  if (!usableNoteId(c.noteId)) return nv("evidence_mismatch", c.observedTotal);
+  const nt = await readNoteById(t, op.target.contactId, c.noteId);
+  if (nt.kind === "not_found" || nt.kind === "unreadable") return nv("evidence_unavailable", c.observedTotal);
+  if (nt.kind === "mismatch") return nv("evidence_mismatch", c.observedTotal);
+  const e = parseEvidence(nt.body);
   if (!e) return nv("evidence_mismatch", c.observedTotal);
   const pe = payloadDigest(e.payload);
   if (pe !== op.expectedResultHash || e.digestLine !== pe || e.opId !== op.opId || e.admittedAt !== op.admittedAt
     || e.payload.opportunityId !== op.target.opportunityId || e.payload.contactId !== op.target.contactId || e.payload.operator !== op.operator
-    || e.payload.total !== c.observedTotal || mine[0].id !== c.noteId) return nv("evidence_mismatch", c.observedTotal);
+    || e.payload.total !== c.observedTotal) return nv("evidence_mismatch", c.observedTotal);
 
   const a2 = await strongRead(cfg, key);
   if (a2.kind !== "present" || a2.etag !== a1.etag) return nv("record_changed", c.observedTotal);
