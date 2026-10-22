@@ -15,11 +15,17 @@
  * 11.1.0).
  *
  * Exported operations (complete list): readAuthority, openAdmission,
- * classifyUncertainOpen, fenceUncertainOpen, labelHeldRecovery. There is
- * NO close, fence-anything or generic write: nothing here can turn ADMITTED,
- * IDLE, HELD_RECOVERY or an absent record into COMPLETED, nor move ADMITTED
- * or HELD_RECOVERY to an admissible state. TARGET (GHL) recovery is outside
- * this module's authority.
+ * classifyUncertainOpen, fenceUncertainOpen, labelHeldRecovery; and, from the
+ * repair-save completion contract (r1 + r2 + r3 + r4): dispatchNote,
+ * dispatchFields, verifyRepairTarget, closeVerified, abandonUndispatched,
+ * readRepairApproval, with the two transport factories. There is no
+ * fence-anything or generic write. The ONLY path to COMPLETED from another
+ * state is closeVerified(token), whose single-use token is minted only by
+ * verifyRepairTarget for the same process's own admission after its own
+ * definite dispatches and a VERIFIED readback. Nothing exits HELD_RECOVERY;
+ * nothing moves ADMITTED to IDLE except abandonUndispatched for an admission
+ * that provably never sent a TARGET request. An uncertain TARGET leaves the
+ * scope blocking; no time-based, assertion-based or generic release exists.
  *
  * Uncertain admissions return an opaque handle backed by a private,
  * process-local registry. Unknown, forged, copied, transferred or
@@ -33,6 +39,10 @@
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { getStore } from "@netlify/blobs";
+import {
+  type RepairPayload, canonicalCurrency, notesForOperation, notesListComplete, parseEvidence,
+  payloadDigest, readExactlyOneField, renderEvidence, validatePayload,
+} from "./repair-evidence";
 
 export const AUTHORITY_STORE = "iaos-write-receipts";
 const KEY_PREFIX = "repair-authority/";
@@ -123,15 +133,15 @@ export function authorityKey(scope: string): string {
 
 // ---------------------------------------------------------------- client ---
 
-type ClientConfig = { siteID: string; token: string; apiURL: string | undefined; fetchImpl: typeof fetch; timeoutMs: number };
+type ClientConfig = { siteID: string; token: string; apiURL: string | undefined; fetchImpl: typeof fetch; timeoutMs: number; now: () => number };
 const clientConfigs = new WeakMap<object, ClientConfig>();
 
 /** Opaque, frozen client. Config is held privately; nothing is readable from it. */
 export type AuthorityClient = { readonly __authorityClient: true };
 
-export function createAuthorityClient(options: { siteID: string; token: string; apiURL?: string; fetch?: typeof fetch; timeoutMs?: number }): AuthorityClient {
+export function createAuthorityClient(options: { siteID: string; token: string; apiURL?: string; fetch?: typeof fetch; timeoutMs?: number; now?: () => number }): AuthorityClient {
   if (!isPlainObject(options)) throw new Error("authority client: options required");
-  const allowed = ["siteID", "token", "apiURL", "fetch", "timeoutMs"];
+  const allowed = ["siteID", "token", "apiURL", "fetch", "timeoutMs", "now"];
   if (Object.keys(options).some((k) => !allowed.includes(k))) throw new Error("authority client: unsupported option (edge or environment context is never accepted)");
   if (!nonEmpty(options.siteID) || !nonEmpty(options.token)) throw new Error("authority client: siteID and token are both required");
   if (options.apiURL !== undefined && !/^https?:\/\/[^/]+$/.test(options.apiURL)) throw new Error("authority client: apiURL must be an origin");
@@ -139,8 +149,10 @@ export function createAuthorityClient(options: { siteID: string; token: string; 
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("authority client: invalid timeout");
   const fetchImpl = options.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new Error("authority client: fetch unavailable");
+  const now = options.now ?? Date.now;
+  if (typeof now !== "function") throw new Error("authority client: invalid clock");
   const client = Object.freeze({ __authorityClient: true as const });
-  clientConfigs.set(client, { siteID: options.siteID, token: options.token, apiURL: options.apiURL, fetchImpl, timeoutMs });
+  clientConfigs.set(client, { siteID: options.siteID, token: options.token, apiURL: options.apiURL, fetchImpl, timeoutMs, now });
   return client;
 }
 
@@ -277,7 +289,7 @@ export async function readAuthority(client: AuthorityClient, scope: string): Pro
 
 export type AdmissionIntent = { operator: string; opportunityId: string; contactId: string; preconditionDigest: string; expectedResultHash: string };
 export type OpenResult =
-  | { kind: "committed"; opId: string; etag: string }
+  | { kind: "committed"; opId: string; etag: string; admission: AdmissionHandle }
   | { kind: "refused"; reason: string }
   | { kind: "not_sent" }
   | { kind: "unreadable" }
@@ -311,7 +323,7 @@ export async function openAdmission(client: AuthorityClient, scope: string, inte
     : { kind: "absent" as const, etag: null };
   const w = await conditionalWrite(cfg, key, text, r.kind === "present" ? { onlyIfMatch: r.etag } : { onlyIfNew: true });
   switch (w.kind) {
-    case "committed": return { kind: "committed", opId: op.opId, etag: w.etag };
+    case "committed": return { kind: "committed", opId: op.opId, etag: w.etag, admission: issueAdmission(client as object, cfg, scope, key, op, w.etag) };
     case "conflict": return { kind: "refused", reason: "precondition_changed" };
     case "not_sent": return { kind: "not_sent" };
     case "ambiguous": return { kind: "ambiguous", handle: issueHandle({ client: client as object, scope, key, opId: op.opId, attemptedText: text, precondition }) };
@@ -396,4 +408,453 @@ export async function labelHeldRecovery(client: AuthorityClient, scope: string, 
     case "not_sent": return { kind: "not_sent" };
     case "ambiguous": return { kind: "ambiguous" };
   }
+}
+
+// =================================================================================
+// Repair-save completion (contract r1 baseline, amended by r2, r3 and r4).
+// Everything below is process-local state over the accepted A(scope) record.
+// The caller supplies NO send or read callback: the module builds every GHL
+// request from the admission record, through a transport object it created.
+// =================================================================================
+
+const GHL_ORIGIN = "https://services.leadconnectorhq.com";
+const GHL_VERSION = "2021-07-28";
+const VERIFY_MAX_PASSES = 3;
+const VERIFY_WINDOW_MS = 10_000;
+export const READER_TEXT = Object.freeze({
+  checked: (iso: string) => `Recorded repair approval — checked as of ${iso}`,
+  needsReview: "Repair save needs review. Do not retry this approval.",
+  notVerified: "Repair approval could not be verified",
+});
+
+// ------------------------------------------------------------- transports ---
+
+type FieldIds = { repairEstimate: string; repairApprovalId: string };
+type TransportConfig = { mode: "ghl" | "fake"; origin: string; token: string; fetchImpl: typeof fetch; fieldIds: FieldIds; timeoutMs: number };
+const transports = new WeakMap<object, TransportConfig>();
+
+/** Opaque transport. It exposes no request method; only this module's operations use it. */
+export type TargetTransport = { readonly __targetTransport: true };
+
+function validFieldIds(v: unknown): FieldIds | null {
+  if (!isPlainObject(v) || !exactKeys(v, ["repairEstimate", "repairApprovalId"])) return null;
+  const ok = (s: unknown) => typeof s === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(s);
+  if (!ok(v.repairEstimate) || !ok(v.repairApprovalId) || v.repairEstimate === v.repairApprovalId) return null;
+  return Object.freeze({ repairEstimate: v.repairEstimate as string, repairApprovalId: v.repairApprovalId as string });
+}
+
+/**
+ * The trusted production transport: origin pinned to the GHL API (https), the
+ * server's own GHL credential read HERE (never a caller value). The field ids
+ * come from server configuration; repair_approval_id does not exist yet (P5,
+ * Brad), so production use is impossible until it is configured.
+ */
+export function createProductionTargetTransport(options: { fieldIds: FieldIds }): TargetTransport {
+  if (!isPlainObject(options) || !exactKeys(options, ["fieldIds"])) throw new Error("target transport: options must be exactly { fieldIds }");
+  const fieldIds = validFieldIds(options.fieldIds);
+  if (!fieldIds) throw new Error("target transport: both binding field ids are required (repair_approval_id is not configured)");
+  const token = process.env.GHL_PRIVATE_API_KEY;
+  if (!nonEmpty(token)) throw new Error("target transport: server GHL credential unavailable");
+  const t = Object.freeze({ __targetTransport: true as const });
+  transports.set(t, { mode: "ghl", origin: GHL_ORIGIN, token, fetchImpl: globalThis.fetch, fieldIds, timeoutMs: DEFAULT_TIMEOUT_MS });
+  return t;
+}
+
+/** Offline tests only: loopback origin (http://127.0.0.1:port) and a synthetic token. */
+export function createFakeTargetTransport(options: { fetch: typeof fetch; origin: string; fieldIds: FieldIds; timeoutMs?: number }): TargetTransport {
+  if (!isPlainObject(options)) throw new Error("fake transport: options required");
+  if (Object.keys(options).some((k) => !["fetch", "origin", "fieldIds", "timeoutMs"].includes(k))) throw new Error("fake transport: unsupported option");
+  if (typeof options.origin !== "string" || !/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(options.origin)) throw new Error("fake transport: loopback origin only");
+  if (typeof options.fetch !== "function") throw new Error("fake transport: fetch required");
+  const fieldIds = validFieldIds(options.fieldIds);
+  if (!fieldIds) throw new Error("fake transport: field ids invalid");
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("fake transport: invalid timeout");
+  const t = Object.freeze({ __targetTransport: true as const });
+  transports.set(t, { mode: "fake", origin: options.origin, token: "synthetic-fake-transport", fetchImpl: options.fetch, fieldIds, timeoutMs });
+  return t;
+}
+
+const clientIsLoopback = (cfg: ClientConfig) => typeof cfg.apiURL === "string" && /^http:\/\/127\.0\.0\.1(:\d{1,5})?$/.test(cfg.apiURL);
+const modesMatch = (cfg: ClientConfig, t: TransportConfig) => (clientIsLoopback(cfg) ? t.mode === "fake" : t.mode === "ghl");
+
+type GhlReply = { status: number | null; json: unknown };
+/** One request, never retried, never redirected; status recorded before the body is read. */
+async function ghlCall(t: TransportConfig, method: "GET" | "POST" | "PUT", path: string, body?: unknown): Promise<GhlReply> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), t.timeoutMs);
+  let status: number | null = null;
+  try {
+    const headers: Record<string, string> = { Authorization: `Bearer ${t.token}`, Version: GHL_VERSION, Accept: "application/json" };
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    const res = await t.fetchImpl(t.origin + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: "manual", signal: ac.signal });
+    status = res.type === "opaqueredirect" ? 0 : res.status;
+    let json: unknown = null;
+    try { json = JSON.parse(await res.text()); } catch { json = null; }
+    return { status, json };
+  } catch {
+    return { status, json: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+const isDefinite = (s: number | null) => s !== null && s >= 200 && s < 300;
+
+// --------------------------------------------------------- admission records ---
+
+type DispatchState = "NONE" | "NOTE_RESERVED" | "NOTE_SENDING" | "NOTE_DEFINITE" | "FIELDS_RESERVED" | "FIELDS_SENDING" | "FIELDS_DEFINITE" | "HALTED_NOT_SENT" | "UNCERTAIN" | "RETIRED";
+type Binding = Readonly<{ client: object; cfg: ClientConfig; scope: string; key: string; opId: string; eAdm: string; P: string; op: AuthorityOp }>;
+type AdmissionState = {
+  dispatch: DispatchState;
+  haltedAt: "note" | "fields" | null;
+  transport: object | null;
+  createdNoteId: string | null;
+  verify: "IDLE" | "PENDING" | "VERIFIED" | "HOLD";
+  passes: number;
+  firstPassStart: number;
+  inFlight: boolean;
+  holdReason: string | null;
+  closed: boolean;
+};
+type AdmissionRecord = { b: Binding; st: AdmissionState };
+const admissions = new WeakMap<object, AdmissionRecord>();
+
+/** Opaque handle for a COMMITTED admission. Process-local; unusable after a restart. */
+export type AdmissionHandle = { readonly __admission: true };
+
+function issueAdmission(client: object, cfg: ClientConfig, scope: string, key: string, op: AuthorityOp, eAdm: string): AdmissionHandle {
+  const handle = Object.freeze(Object.create(null)) as AdmissionHandle;
+  const b: Binding = Object.freeze({ client, cfg, scope, key, opId: op.opId, eAdm, P: op.expectedResultHash, op: Object.freeze({ ...op, target: Object.freeze({ ...op.target }) }) });
+  admissions.set(handle, { b, st: { dispatch: "NONE", haltedAt: null, transport: null, createdNoteId: null, verify: "IDLE", passes: 0, firstPassStart: 0, inFlight: false, holdReason: null, closed: false } });
+  return handle;
+}
+
+/** A strong read showing exactly this admission: ADMITTED(op) at ETag eAdm with expectedResultHash P. */
+type AuthorityCheck = { kind: "ok"; value: AdmittedValue } | { kind: "changed" } | { kind: "unreadable" };
+async function readOwnAdmission(b: Binding): Promise<AuthorityCheck> {
+  const r = await strongRead(b.cfg, b.key);
+  if (r.kind === "unreadable") return { kind: "unreadable" };
+  if (r.kind !== "present" || r.value.state !== "ADMITTED" || r.etag !== b.eAdm || r.value.op.opId !== b.opId || r.value.op.expectedResultHash !== b.P) return { kind: "changed" };
+  return { kind: "ok", value: r.value };
+}
+
+/** The payload must be exactly the one admitted: digest P and the admitted identity fields. */
+function payloadForAdmission(b: Binding, payload: unknown): RepairPayload | null {
+  const p = validatePayload(payload);
+  if (!p || payloadDigest(p) !== b.P) return null;
+  if (p.opportunityId !== b.op.target.opportunityId || p.contactId !== b.op.target.contactId || p.operator !== b.op.operator) return null;
+  return p;
+}
+
+// --------------------------------------------------------------- dispatch ---
+
+export type DispatchResult =
+  | { kind: "definite"; status: number }
+  | { kind: "not_sent"; reason: string }
+  | { kind: "uncertain" }
+  | { kind: "refused"; reason: string };
+
+/**
+ * Shared dispatch. Everything before the first `await` runs synchronously in
+ * the caller's turn: handle, payload and state checks, then the RESERVATION.
+ * After the D1 strong read, the send gate re-checks the reserved state and
+ * moves to SENDING with no await in between, then calls the transport.
+ */
+function dispatchKind(admission: unknown, kind: "note" | "fields", transport: unknown, payload: unknown): Promise<DispatchResult> {
+  const rec = typeof admission === "object" && admission !== null ? admissions.get(admission) : undefined;
+  if (!rec) return Promise.resolve({ kind: "refused", reason: "unknown_admission" });
+  const { b, st } = rec;
+  const tObj = kind === "note" ? transport : st.transport;
+  const t = typeof tObj === "object" && tObj !== null ? transports.get(tObj) : undefined;
+  if (!t) return Promise.resolve({ kind: "refused", reason: "unknown_transport" });
+  const p = payloadForAdmission(b, payload);
+  if (!p) return Promise.resolve({ kind: "refused", reason: "payload_mismatch" });
+  const need: DispatchState = kind === "note" ? "NONE" : "NOTE_DEFINITE";
+  if (st.dispatch !== need) return Promise.resolve({ kind: "refused", reason: `state_${st.dispatch.toLowerCase()}` });
+  const reserved: DispatchState = kind === "note" ? "NOTE_RESERVED" : "FIELDS_RESERVED";
+  st.dispatch = reserved; // reservation: synchronous, before any await
+  if (kind === "note") st.transport = tObj as object;
+  return (async (): Promise<DispatchResult> => {
+    const d1 = await readOwnAdmission(b);
+    if (d1.kind !== "ok") {
+      if (st.dispatch === reserved) { st.dispatch = "HALTED_NOT_SENT"; st.haltedAt = kind; }
+      return { kind: "not_sent", reason: d1.kind === "unreadable" ? "d1_unreadable" : "d1_authority_changed" };
+    }
+    // ---- send gate: no await between this check and the transport call ----
+    if (st.dispatch !== reserved) return { kind: "not_sent", reason: st.dispatch === "RETIRED" ? "retired" : "state_changed" };
+    st.dispatch = kind === "note" ? "NOTE_SENDING" : "FIELDS_SENDING";
+    const reply = kind === "note"
+      ? await ghlCall(t, "POST", `/contacts/${encodeURIComponent(b.op.target.contactId)}/notes`, { body: renderEvidence({ opId: b.opId, admittedAt: b.op.admittedAt }, p) })
+      : await ghlCall(t, "PUT", `/opportunities/${encodeURIComponent(b.op.target.opportunityId)}`, { customFields: [
+          { id: t.fieldIds.repairEstimate, field_value: p.total },
+          { id: t.fieldIds.repairApprovalId, field_value: b.opId },
+        ] });
+    if (!isDefinite(reply.status)) { st.dispatch = "UNCERTAIN"; return { kind: "uncertain" }; }
+    if (kind === "note") {
+      const note = isPlainObject(reply.json) && isPlainObject(reply.json.note) ? reply.json.note : null;
+      st.createdNoteId = note && nonEmpty(note.id) ? note.id : null;
+      st.dispatch = "NOTE_DEFINITE";
+    } else {
+      st.dispatch = "FIELDS_DEFINITE";
+    }
+    return { kind: "definite", status: reply.status as number };
+  })();
+}
+
+/** Evidence note E(op, payload) to the admitted contact. Must come first; at most once. */
+export function dispatchNote(admission: AdmissionHandle, transport: TargetTransport, payload: RepairPayload, ...extra: unknown[]): Promise<DispatchResult> {
+  if (extra.length) return Promise.resolve({ kind: "refused", reason: "unexpected_argument" });
+  return dispatchKind(admission, "note", transport, payload);
+}
+/** The two binding fields, one PUT, only after the note is DEFINITE; at most once; same transport. */
+export function dispatchFields(admission: AdmissionHandle, payload: RepairPayload, ...extra: unknown[]): Promise<DispatchResult> {
+  if (extra.length) return Promise.resolve({ kind: "refused", reason: "unexpected_argument" });
+  return dispatchKind(admission, "fields", undefined, payload);
+}
+
+// --------------------------------------------------------------- verifier ---
+
+type Observed = { observedId: string; observedTotal: number; noteId: string };
+type PassOutcome = { kind: "match"; observed: Observed } | { kind: "missing"; reason: string } | { kind: "terminal"; reason: string };
+
+/** One complete pass: strong read A -> Opportunity read -> full notes read -> strong read A. */
+async function verifyPass(b: Binding, t: TransportConfig, p: RepairPayload, createdNoteId: string | null): Promise<PassOutcome> {
+  const a1 = await readOwnAdmission(b);
+  if (a1.kind !== "ok") return { kind: "terminal", reason: a1.kind === "unreadable" ? "unreadable" : "authority_changed" };
+  let missing: string | null = null;
+
+  const opp = await ghlCall(t, "GET", `/opportunities/${encodeURIComponent(b.op.target.opportunityId)}`);
+  const o = opp.status === 200 && isPlainObject(opp.json) && isPlainObject(opp.json.opportunity) ? opp.json.opportunity : null;
+  if (!o) return { kind: "terminal", reason: "unreadable" };
+  if (o.id !== b.op.target.opportunityId || o.contactId !== b.op.target.contactId) return { kind: "terminal", reason: "mismatch" };
+  const est = readExactlyOneField(o.customFields, t.fieldIds.repairEstimate, "number");
+  const appr = readExactlyOneField(o.customFields, t.fieldIds.repairApprovalId, "string");
+  for (const f of [est, appr]) {
+    if (f.kind === "duplicate") return { kind: "terminal", reason: "duplicate_evidence" };
+    if (f.kind === "ambiguous") return { kind: "terminal", reason: "mismatch" };
+  }
+  if (est.kind === "one" && est.value !== p.total) return { kind: "terminal", reason: "mismatch" };
+  if (appr.kind === "one" && appr.value !== b.opId) return { kind: "terminal", reason: "mismatch" };
+  if (est.kind === "none" || appr.kind === "none") missing = "missing_field";
+
+  const nr = await ghlCall(t, "GET", `/contacts/${encodeURIComponent(b.op.target.contactId)}/notes`);
+  if (nr.status !== 200 || !notesListComplete(nr.json)) return { kind: "terminal", reason: "unreadable" };
+  const mine = notesForOperation(nr.json.notes, b.opId);
+  let noteId: string | null = null;
+  if (mine.length > 1) return { kind: "terminal", reason: "duplicate_evidence" };
+  if (mine.length === 0) missing = missing ?? "missing_evidence";
+  else {
+    const n = mine[0];
+    const e = parseEvidence(n.body);
+    if (!e || !nonEmpty(n.id)) return { kind: "terminal", reason: "mismatch" };
+    const pe = payloadDigest(e.payload);
+    if (e.opId !== b.opId || e.admittedAt !== b.op.admittedAt || pe !== b.P || e.digestLine !== pe || pe !== payloadDigest(p)) return { kind: "terminal", reason: "mismatch" };
+    if (createdNoteId !== null && n.id !== createdNoteId) return { kind: "terminal", reason: "mismatch" };
+    noteId = n.id as string;
+  }
+
+  const a2 = await readOwnAdmission(b);
+  if (a2.kind !== "ok") return { kind: "terminal", reason: a2.kind === "unreadable" ? "unreadable" : "authority_changed" };
+  if (missing) return { kind: "missing", reason: missing };
+  return { kind: "match", observed: { observedId: b.opId, observedTotal: p.total, noteId: noteId as string } };
+}
+
+type TokenRecord = { rec: AdmissionRecord; observed: Observed; mode: "ghl" | "fake"; used: boolean };
+const tokens = new WeakMap<object, TokenRecord>();
+export type VerificationToken = { readonly __verification: true };
+
+export type VerifyResult =
+  | { kind: "verified"; token: VerificationToken }
+  | { kind: "pending"; reason: string; passes: number }
+  | { kind: "hold"; reason: string }
+  | { kind: "refused"; reason: string };
+
+/**
+ * Single-flight verification. Pending only for pure "missing" evidence after
+ * BOTH dispatches were definite: at most 3 complete passes, each starting
+ * within 10 s of the first. Anything else is terminal HOLD; after HOLD no
+ * pass can run or mint a token.
+ */
+export function verifyRepairTarget(admission: AdmissionHandle, payload: RepairPayload, ...extra: unknown[]): Promise<VerifyResult> {
+  if (extra.length) return Promise.resolve({ kind: "refused", reason: "unexpected_argument" });
+  const rec = typeof admission === "object" && admission !== null ? admissions.get(admission) : undefined;
+  if (!rec) return Promise.resolve({ kind: "refused", reason: "unknown_admission" });
+  const { b, st } = rec;
+  if (st.dispatch !== "FIELDS_DEFINITE") return Promise.resolve({ kind: "refused", reason: st.dispatch === "UNCERTAIN" ? "target_uncertain" : `state_${st.dispatch.toLowerCase()}` });
+  if (st.verify === "HOLD") return Promise.resolve({ kind: "refused", reason: "held" });
+  if (st.verify === "VERIFIED") return Promise.resolve({ kind: "refused", reason: "already_verified" });
+  if (st.inFlight) return Promise.resolve({ kind: "refused", reason: "pass_in_flight" });
+  const p = payloadForAdmission(b, payload);
+  if (!p) { st.verify = "HOLD"; st.holdReason = "mismatch"; return Promise.resolve({ kind: "hold", reason: "mismatch" }); } // r1 A21: a payload not matching A is terminal
+  const t = st.transport ? transports.get(st.transport) : undefined;
+  if (!t) return Promise.resolve({ kind: "refused", reason: "unknown_transport" });
+  const start = b.cfg.now();
+  if (st.passes >= VERIFY_MAX_PASSES || (st.passes > 0 && start >= st.firstPassStart + VERIFY_WINDOW_MS)) {
+    st.verify = "HOLD"; st.holdReason = "missing_after_window";
+    return Promise.resolve({ kind: "hold", reason: "missing_after_window" });
+  }
+  st.passes += 1;
+  if (st.passes === 1) st.firstPassStart = start;
+  st.inFlight = true;
+  return (async (): Promise<VerifyResult> => {
+    let out: PassOutcome;
+    try { out = await verifyPass(b, t, p, st.createdNoteId); } finally { st.inFlight = false; }
+    if (out.kind === "terminal") { st.verify = "HOLD"; st.holdReason = out.reason; return { kind: "hold", reason: out.reason }; }
+    if (out.kind === "missing") {
+      const nextStartWouldFit = st.passes < VERIFY_MAX_PASSES && b.cfg.now() < st.firstPassStart + VERIFY_WINDOW_MS;
+      if (!nextStartWouldFit) { st.verify = "HOLD"; st.holdReason = "missing_after_window"; return { kind: "hold", reason: "missing_after_window" }; }
+      st.verify = "PENDING";
+      return { kind: "pending", reason: out.reason, passes: st.passes };
+    }
+    if (st.dispatch !== "FIELDS_DEFINITE" || st.closed) { st.verify = "HOLD"; st.holdReason = "state_changed"; return { kind: "hold", reason: "state_changed" }; }
+    const token = Object.freeze(Object.create(null)) as VerificationToken;
+    tokens.set(token, { rec, observed: Object.freeze(out.observed), mode: t.mode, used: false });
+    st.verify = "VERIFIED";
+    return { kind: "verified", token };
+  })();
+}
+
+// ------------------------------------------------------------------ CLOSE ---
+
+export type CloseResult = { kind: "committed"; etag: string } | { kind: "refused"; reason: string } | { kind: "not_sent" } | { kind: "unreadable" } | { kind: "ambiguous" };
+
+/** ADMITTED(op, eAdm) -> COMPLETED(op), single-use token only; op copied from its own strong read. */
+export function closeVerified(token: VerificationToken, ...extra: unknown[]): Promise<CloseResult> {
+  if (extra.length) return Promise.resolve({ kind: "refused", reason: "unexpected_argument" });
+  const tk = typeof token === "object" && token !== null ? tokens.get(token) : undefined;
+  if (!tk) return Promise.resolve({ kind: "refused", reason: "unknown_token" });
+  if (tk.used) return Promise.resolve({ kind: "refused", reason: "token_used" });
+  tk.used = true; // single use: consumed synchronously
+  const { b, st } = tk.rec;
+  if (st.closed || st.dispatch !== "FIELDS_DEFINITE" || st.verify !== "VERIFIED") return Promise.resolve({ kind: "refused", reason: "state_changed" });
+  const t = st.transport ? transports.get(st.transport) : undefined;
+  if (!t || t.mode !== tk.mode || !modesMatch(b.cfg, t)) return Promise.resolve({ kind: "refused", reason: "transport_mode_mismatch" });
+  return (async (): Promise<CloseResult> => {
+    const r = await strongRead(b.cfg, b.key);
+    if (r.kind === "unreadable") return { kind: "unreadable" };
+    if (r.kind !== "present" || r.value.state !== "ADMITTED" || r.etag !== b.eAdm || r.value.op.opId !== b.opId || r.value.op.expectedResultHash !== b.P) return { kind: "refused", reason: "authority_changed" };
+    const cur = r.value;
+    const next: CompletedValue = {
+      schema: 1, state: "COMPLETED", v: cur.v + 1, epoch: cur.epoch + 1, op: cur.op,
+      completion: { observedId: tk.observed.observedId, observedTotal: tk.observed.observedTotal, noteId: tk.observed.noteId, verifiedAt: new Date().toISOString() },
+      fencedOp: null, fencedAt: null,
+    };
+    const w = await conditionalWrite(b.cfg, b.key, canonicalJson(next), { onlyIfMatch: r.etag });
+    switch (w.kind) {
+      case "committed": st.closed = true; return { kind: "committed", etag: w.etag };
+      case "conflict": return { kind: "refused", reason: "raced" };
+      case "not_sent": return { kind: "not_sent" };
+      case "ambiguous": return { kind: "ambiguous" };
+    }
+  })();
+}
+
+// ------------------------------------------------------- P-C abandonment ---
+
+export type AbandonResult = { kind: "released"; etag: string } | { kind: "release_unknown" } | { kind: "refused"; reason: string } | { kind: "not_sent" } | { kind: "unreadable" };
+
+/**
+ * ADMITTED(op) -> IDLE{abandoned_undispatched}, only for an admission that has
+ * not reached SENDING. Retirement is synchronous, before the first await, so
+ * every reserved dispatch still waiting on D1 finds RETIRED at its send gate
+ * and never sends. An ambiguous CAS reports release_unknown (A may be either
+ * ADMITTED or IDLE; both are safe because no TARGET was or can be sent); it
+ * is never retried, and the handle stays retired.
+ */
+export function abandonUndispatched(admission: AdmissionHandle, ...extra: unknown[]): Promise<AbandonResult> {
+  if (extra.length) return Promise.resolve({ kind: "refused", reason: "unexpected_argument" });
+  const rec = typeof admission === "object" && admission !== null ? admissions.get(admission) : undefined;
+  if (!rec) return Promise.resolve({ kind: "refused", reason: "unknown_admission" });
+  const { b, st } = rec;
+  const allowed = st.dispatch === "NONE" || st.dispatch === "NOTE_RESERVED" || (st.dispatch === "HALTED_NOT_SENT" && st.haltedAt === "note");
+  if (!allowed) return Promise.resolve({ kind: "refused", reason: `state_${st.dispatch.toLowerCase()}` });
+  st.dispatch = "RETIRED"; // synchronous retirement, before any await
+  return (async (): Promise<AbandonResult> => {
+    const r = await strongRead(b.cfg, b.key);
+    if (r.kind === "unreadable") return { kind: "unreadable" };
+    if (r.kind !== "present" || r.value.state !== "ADMITTED" || r.etag !== b.eAdm || r.value.op.opId !== b.opId) return { kind: "refused", reason: "authority_changed" };
+    const cur = r.value;
+    const next: IdleValue = { schema: 1, state: "IDLE", v: cur.v + 1, epoch: cur.epoch + 1, last: { opId: b.opId, outcome: "abandoned_undispatched" }, fencedOp: null, fencedAt: null };
+    const w = await conditionalWrite(b.cfg, b.key, canonicalJson(next), { onlyIfMatch: r.etag });
+    switch (w.kind) {
+      case "committed": return { kind: "released", etag: w.etag };
+      case "conflict": return { kind: "refused", reason: "raced" };
+      case "not_sent": return { kind: "not_sent" };
+      case "ambiguous": return { kind: "release_unknown" };
+    }
+  })();
+}
+
+// ------------------------------------------------------ cross-session reader ---
+
+export type ReaderResult =
+  | { kind: "checked"; text: string; checkedAt: string; total: number }
+  | { kind: "needs_review"; text: string }
+  | { kind: "not_verified"; reason: "evidence_mismatch" | "evidence_ambiguous" | "evidence_unavailable" | "record_changed" | "no_recorded_approval"; text: string; total: number | null }
+  | { kind: "none" }
+  | { kind: "refused"; reason: string };
+
+function parseCompletion(c: Record<string, unknown>): Observed | null {
+  if (!exactKeys(c, ["observedId", "observedTotal", "noteId", "verifiedAt"])) return null;
+  if (!nonEmpty(c.observedId) || !nonEmpty(c.noteId) || !nonEmpty(c.verifiedAt) || canonicalCurrency(c.observedTotal) === null) return null;
+  return { observedId: c.observedId, observedTotal: c.observedTotal as number, noteId: c.noteId };
+}
+
+/**
+ * Point-in-time check, not an atomic Netlify/GHL snapshot, and never computed
+ * OFFER READY: strong read A -> GHL evidence checks against A's own content
+ * (exactly one entry per binding field; exactly one E, parsed strictly, whose
+ * payload hashes to A.op.expectedResultHash) -> final strong read A unchanged.
+ */
+export async function readRepairApproval(client: AuthorityClient, transport: TargetTransport, scope: string, opportunityId: string, ...extra: unknown[]): Promise<ReaderResult> {
+  if (extra.length) return { kind: "refused", reason: "unexpected_argument" };
+  const cfg = clientConfigs.get(client as object);
+  const t = typeof transport === "object" && transport !== null ? transports.get(transport) : undefined;
+  if (!cfg || !t || !nonEmpty(scope) || !nonEmpty(opportunityId)) return { kind: "refused", reason: "refused_input" };
+  if (!modesMatch(cfg, t)) return { kind: "refused", reason: "transport_mode_mismatch" };
+  const nv = (reason: "evidence_mismatch" | "evidence_ambiguous" | "evidence_unavailable" | "record_changed" | "no_recorded_approval", total: number | null = null): ReaderResult =>
+    ({ kind: "not_verified", reason, text: READER_TEXT.notVerified, total });
+  const key = authorityKey(scope);
+  const a1 = await strongRead(cfg, key);
+  if (a1.kind === "unreadable") return nv("evidence_unavailable");
+  const opp = await ghlCall(t, "GET", `/opportunities/${encodeURIComponent(opportunityId)}`);
+  const o = opp.status === 200 && isPlainObject(opp.json) && isPlainObject(opp.json.opportunity) ? opp.json.opportunity : null;
+
+  if (a1.kind === "absent" || a1.value.state === "IDLE") {
+    if (!o) return nv("evidence_unavailable");
+    const est = readExactlyOneField(o.customFields, t.fieldIds.repairEstimate, "number");
+    if (est.kind === "none") return { kind: "none" };
+    if (est.kind !== "one") return nv("evidence_ambiguous");
+    return nv("no_recorded_approval", est.value as number);
+  }
+  if (a1.value.state === "ADMITTED" || a1.value.state === "HELD_RECOVERY") return { kind: "needs_review", text: READER_TEXT.needsReview };
+
+  const done = a1.value; // COMPLETED
+  const op = done.op;
+  const c = parseCompletion(done.completion);
+  if (!c || op.target.opportunityId !== opportunityId) return nv("evidence_mismatch");
+  if (!o) return nv("evidence_unavailable", c.observedTotal);
+  if (o.id !== op.target.opportunityId || o.contactId !== op.target.contactId) return nv("evidence_mismatch", c.observedTotal);
+  const est = readExactlyOneField(o.customFields, t.fieldIds.repairEstimate, "number");
+  const appr = readExactlyOneField(o.customFields, t.fieldIds.repairApprovalId, "string");
+  if (est.kind === "duplicate" || appr.kind === "duplicate" || est.kind === "ambiguous" || appr.kind === "ambiguous") return nv("evidence_ambiguous", c.observedTotal);
+  if (est.kind === "none" || appr.kind === "none") return nv("evidence_mismatch", c.observedTotal);
+  if (appr.value !== op.opId || est.value !== c.observedTotal || c.observedId !== op.opId) return nv("evidence_mismatch", c.observedTotal);
+
+  const nr = await ghlCall(t, "GET", `/contacts/${encodeURIComponent(op.target.contactId)}/notes`);
+  if (nr.status !== 200 || !notesListComplete(nr.json)) return nv("evidence_unavailable", c.observedTotal);
+  const mine = notesForOperation(nr.json.notes, op.opId);
+  if (mine.length > 1) return nv("evidence_ambiguous", c.observedTotal);
+  if (mine.length === 0) return nv("evidence_mismatch", c.observedTotal);
+  const e = parseEvidence(mine[0].body);
+  if (!e) return nv("evidence_mismatch", c.observedTotal);
+  const pe = payloadDigest(e.payload);
+  if (pe !== op.expectedResultHash || e.digestLine !== pe || e.opId !== op.opId || e.admittedAt !== op.admittedAt
+    || e.payload.opportunityId !== op.target.opportunityId || e.payload.contactId !== op.target.contactId || e.payload.operator !== op.operator
+    || e.payload.total !== c.observedTotal || mine[0].id !== c.noteId) return nv("evidence_mismatch", c.observedTotal);
+
+  const a2 = await strongRead(cfg, key);
+  if (a2.kind !== "present" || a2.etag !== a1.etag) return nv("record_changed", c.observedTotal);
+  const checkedAt = new Date().toISOString();
+  return { kind: "checked", text: READER_TEXT.checked(checkedAt), checkedAt, total: c.observedTotal };
 }
