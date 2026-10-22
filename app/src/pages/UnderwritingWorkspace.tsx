@@ -832,28 +832,41 @@ function RepairApprovalActions({ opportunityId, answers, misc, incomplete, revis
   const [save, setSave] = useState<{ status: "idle" } | { status: "saving" } | { status: "done"; result: RepairApprovalSaveResult; revision: number }>({ status: "idle" });
   const [status, setStatus] = useState<RepairApprovalStatus | null>(null);
   const inFlight = useRef(false);
-  /* Only the most recently issued status read may update the line: a slow
-     earlier read (e.g. the load-time one) never replaces a newer answer. */
+  /* One "visit" per opportunity shown. The page can move from deal A to deal
+     B (or back to A) without remounting this component, so every save and
+     status result is tagged with the visit it was started in and is dropped
+     if that visit has ended -- before it changes any state or starts another
+     request. A dropped save is never cancelled or retried: it was already
+     sent, and the next status read of its own deal reports it. */
+  const visit = useRef(0);
+  /* Within one visit, only the most recently issued status read may update
+     the line: a slow earlier read never replaces a newer answer. */
   const statusSeq = useRef(0);
-  async function refreshStatus(live: () => boolean = () => true) {
+  async function refreshStatus(forVisit: number) {
     const seq = ++statusSeq.current;
     const s = await fetchRepairApprovalStatus(opportunityId);
-    if (live() && seq === statusSeq.current) setStatus(s);
+    if (visit.current === forVisit && seq === statusSeq.current) setStatus(s);
   }
   useEffect(() => {
-    let live = true;
-    void refreshStatus(() => live);
-    return () => { live = false; };
+    const thisVisit = ++visit.current;
+    // A new deal starts clean: nothing from the previous deal's save or status carries over.
+    inFlight.current = false;
+    setSave({ status: "idle" });
+    setStatus(null);
+    void refreshStatus(thisVisit);
+    return () => { visit.current += 1; };
   }, [opportunityId]);
   async function approve() {
     if (inFlight.current) return; // one request per click; never a second one while the first is open
+    const thisVisit = visit.current;
     inFlight.current = true;
     setSave({ status: "saving" });
     const result = await saveRepairApproval(opportunityId, answers, misc);
+    if (visit.current !== thisVisit) return; // the deal on screen changed (or this view closed): drop the stale completion
     setSave({ status: "done", result, revision });
     inFlight.current = false;
     if (result.outcome === "verified") onPersisted();
-    await refreshStatus();
+    await refreshStatus(thisVisit);
   }
   const saving = save.status === "saving";
   const done = save.status === "done" && save.revision === revision ? save.result : null;
