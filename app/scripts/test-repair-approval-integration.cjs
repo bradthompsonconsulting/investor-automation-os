@@ -214,7 +214,7 @@ async function main() {
       check('D2 disabled: the existing ghl-write opportunity.repairs path is unchanged (PUT sent, readback confirmed)', w.statusCode === 200 && parse(w).confirmed === true && o.customFields.some((f) => f.id === F_EST && f.fieldValue === 4321), [w.statusCode, w.body.slice(0, 160)]);
     }
     { const now = fs.readFileSync(path.join(APP, 'src', 'pages', 'UnderwritingWorkspace.tsx'), 'utf8').replace(/\r\n/g, '\n');
-      const base = execFileSync('git', ['show', 'HEAD^1:app/src/pages/UnderwritingWorkspace.tsx'], { cwd: APP, encoding: 'utf8' }).replace(/\r\n/g, '\n');
+      const base = execFileSync('git', ['show', '6a96960b3b7d5791ecb713936fc845320ad6c730:app/src/pages/UnderwritingWorkspace.tsx'] /* main before this candidate (pinned; HEAD^1 moved with later commits) */, { cwd: APP, encoding: 'utf8' }).replace(/\r\n/g, '\n');
       const OPEN = '        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "14px", flexWrap: "wrap" }}>\n';
       const a = base.indexOf(OPEN) + OPEN.length; const d = base.indexOf('        <div style={{ marginTop: "12px", fontSize: "11px", color: "#475569", lineHeight: 1.5 }}>\n', a);
       const original = base.slice(a, d); const children = original.slice(0, original.lastIndexOf('        </div>\n'));
