@@ -8,7 +8,7 @@
  * server recomputes and derives all of them. One click = one request id; the
  * browser never retries a save on its own.
  */
-import { appWriteFetch } from "./app-write-session";
+import { AppWriteSignInRequired, appWriteFetch } from "./app-write-session";
 import { readFetch } from "./read-session";
 import type { Answers, MiscAnswer } from "./repair-estimation/operator-model";
 
@@ -35,10 +35,15 @@ export async function saveRepairApproval(opportunityId: string, answers: Answers
       body: JSON.stringify({ opportunityId, requestId, answers, misc }),
     });
   } catch (e) {
-    // The request may or may not have reached the server: say so, never "nothing was sent".
+    // Thrown before any request is sent (no write session): nothing was submitted.
+    if (e instanceof AppWriteSignInRequired) return { outcome: "not_sent", code: "sign_in_required", error: e.message };
+    // Otherwise the request may or may not have reached the server: say so, never "nothing was sent".
     return { outcome: "unknown", error: "The save could not be confirmed. Do not retry; refresh to see the recorded approval status." };
   }
   const body = await res.json().catch(() => null);
+  // repair-approval-save refuses these two before any I/O; only its exact refusals are read as "nothing sent".
+  if (res.status === 401 && body?.error === "Application write sign-in required") return { outcome: "not_sent", code: "sign_in_required", error: "Sign in for application writes before saving. Your edits have not been submitted." };
+  if (res.status === 403 && body?.error === "Application write origin refused") return { outcome: "not_sent", code: "origin_refused", error: "Nothing was sent; the save could not start" };
   if (body && (body.outcome === "verified" || body.outcome === "blocked" || body.outcome === "not_sent")) return body as RepairApprovalSaveResult;
   return { outcome: "unknown", error: "The save could not be confirmed. Do not retry; refresh to see the recorded approval status." };
 }

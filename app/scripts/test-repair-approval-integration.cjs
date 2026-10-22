@@ -23,7 +23,7 @@ const ts = require('typescript');
 
 const APP = path.resolve(__dirname, '..');
 /** Literal count of check() executions below (loops expanded by hand); never back-filled from a run. */
-const FLOOR = 45; // 39 check() call sites + 4 extra V1 iterations (5 cases) + 2 extra M1 iterations (3 cases)
+const FLOOR = 46; // 40 check() call sites + 4 extra V1 iterations (5 cases) + 2 extra M1 iterations (3 cases)
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -67,10 +67,11 @@ Module._resolveFilename = function (name, parent, ...rest) {
 };
 for (const ext of ['.ts', '.tsx']) Module._extensions[ext] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true, resolveJsonModule: true, jsx: ts.JsxEmit.ReactJSX } }).outputText, filename);
 let appWriteFetchStub = null; let readFetchStub = null;
+class SignInRequiredStub extends Error {}
 Module._load = function (name, parent, ...rest) {
   if (name === '@netlify/blobs') return blobsShim;
   if (/repair-approval-config$/.test(name)) return cfgShim;
-  if (/\/app-write-session$/.test(name) && appWriteFetchStub) return { appWriteFetch: (...a) => appWriteFetchStub(...a) };
+  if (/\/app-write-session$/.test(name) && appWriteFetchStub) return { appWriteFetch: (...a) => appWriteFetchStub(...a), AppWriteSignInRequired: SignInRequiredStub };
   if (/\/read-session$/.test(name) && readFetchStub) return { readFetch: (...a) => readFetchStub(...a), isReadAuthRefusal: async () => false, ReadUnavailableError: class extends Error {} };
   return originalLoad.call(this, name, parent, ...rest);
 };
@@ -373,6 +374,13 @@ async function main() {
       check('CL2 a failed or unreadable save response -> "unknown" with "Do not retry" (never "nothing was sent")', u.outcome === 'unknown' && /Do not retry/.test(u.error));
       const st = await C.fetchRepairApprovalStatus('oppClient01');
       check('CL3 a failed status read -> "unavailable" (never checked)', st.kind === 'unavailable');
+      // Browser-suite defect V3/V6: refusals proven to precede any request read as "not sent", nothing else does.
+      appWriteFetchStub = async () => { throw new SignInRequiredStub('Sign in for application writes before saving. Your edits have not been submitted.'); };
+      const si = await C.saveRepairApproval('oppClient01', a, MISC, 'reqClient03');
+      const as401 = (error) => { appWriteFetchStub = async () => new Response(JSON.stringify({ error }), { status: 401 }); return C.saveRepairApproval('oppClient01', a, MISC, 'reqClient04'); };
+      const r401 = await as401('Application write sign-in required'); const other401 = await as401('something else');
+      check('CL4 no write session (thrown before sending) and the exact save-handler 401 -> not_sent "Sign in…"; any other 401 body stays unknown',
+        si.outcome === 'not_sent' && /^Sign in for application writes/.test(si.error) && r401.outcome === 'not_sent' && /^Sign in for application writes/.test(r401.error) && other401.outcome === 'unknown', [si, r401, other401]);
     }
     check('hygiene: no request left loopback', blocked.length === 0, blocked);
   } finally {

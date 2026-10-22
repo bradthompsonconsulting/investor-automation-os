@@ -832,9 +832,17 @@ function RepairApprovalActions({ opportunityId, answers, misc, incomplete, revis
   const [save, setSave] = useState<{ status: "idle" } | { status: "saving" } | { status: "done"; result: RepairApprovalSaveResult; revision: number }>({ status: "idle" });
   const [status, setStatus] = useState<RepairApprovalStatus | null>(null);
   const inFlight = useRef(false);
+  /* Only the most recently issued status read may update the line: a slow
+     earlier read (e.g. the load-time one) never replaces a newer answer. */
+  const statusSeq = useRef(0);
+  async function refreshStatus(live: () => boolean = () => true) {
+    const seq = ++statusSeq.current;
+    const s = await fetchRepairApprovalStatus(opportunityId);
+    if (live() && seq === statusSeq.current) setStatus(s);
+  }
   useEffect(() => {
     let live = true;
-    void fetchRepairApprovalStatus(opportunityId).then((s) => { if (live) setStatus(s); });
+    void refreshStatus(() => live);
     return () => { live = false; };
   }, [opportunityId]);
   async function approve() {
@@ -845,7 +853,7 @@ function RepairApprovalActions({ opportunityId, answers, misc, incomplete, revis
     setSave({ status: "done", result, revision });
     inFlight.current = false;
     if (result.outcome === "verified") onPersisted();
-    setStatus(await fetchRepairApprovalStatus(opportunityId));
+    await refreshStatus();
   }
   const saving = save.status === "saving";
   const done = save.status === "done" && save.revision === revision ? save.result : null;
