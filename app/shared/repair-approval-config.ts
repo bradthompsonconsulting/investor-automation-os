@@ -1,0 +1,41 @@
+/**
+ * Repair-save completion integration (B15-26 B1, contracts r1-r5.1) --
+ * the single switch and the per-environment configuration it needs.
+ *
+ * DEFAULT-DISABLED, IN CODE. While `enabled` is false:
+ *   - the browser renders the existing repair estimator exactly as before
+ *     (no new request, no new text);
+ *   - both new functions (repair-approval-save, repair-approval-status)
+ *     answer 404 before authentication, configuration or any I/O;
+ *   - ghl-write's existing `opportunity.repairs` write is unchanged.
+ * Turning it on is a reviewed code change, never an environment toggle.
+ *
+ * Even when enabled, the new path refuses (nothing sent, no fallback) unless:
+ *   - IAOS_ENV is "test" (Production is not part of this candidate);
+ *   - this environment's `repair_approval_id` field id is provisioned (P5);
+ *   - the server has an API-mode Netlify Blobs site id and token for the
+ *     authority store (IAOS_REPAIR_AUTHORITY_SITE_ID / _TOKEN; #1149457).
+ * When enabled, ghl-write refuses `opportunity.repairs`: the module's own
+ * dispatch is then the ONLY way a repair total reaches GHL.
+ */
+export const REPAIR_APPROVAL_FIELD_NOT_PROVISIONED = "REPAIR_APPROVAL_ID_FIELD_NOT_YET_PROVISIONED" as const;
+
+export type RepairApprovalConfig = Readonly<{
+  enabled: boolean;
+  /** Environments in which the enabled path may run at all. */
+  environments: readonly string[];
+  /** Opportunity custom field `repair_approval_id` (single-line TEXT) per environment. */
+  approvalFieldId: Readonly<Record<"test" | "production", string>>;
+  /** Re-read passes after both writes are definite (the module allows at most 3 in 10 s). */
+  verifyPassDelayMs: number;
+}>;
+
+export const REPAIR_APPROVAL_CONFIG: RepairApprovalConfig = Object.freeze({
+  enabled: false,
+  environments: Object.freeze(["test"]),
+  approvalFieldId: Object.freeze({ test: REPAIR_APPROVAL_FIELD_NOT_PROVISIONED, production: REPAIR_APPROVAL_FIELD_NOT_PROVISIONED }),
+  verifyPassDelayMs: 1500,
+});
+
+/** Stable refusal marker for the disabled endpoints. */
+export const REPAIR_APPROVAL_DISABLED = "iaos-repair-approval-disabled" as const;

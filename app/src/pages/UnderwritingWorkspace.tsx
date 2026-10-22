@@ -54,6 +54,9 @@ import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstima
    (Contact-only by its own deliberate design) is unaffected. */
 import { persistApprovedRepairTotalToOpportunity, persistGate } from "../lib/repair-estimation/persist";
 import type { PersistResult, RepairApproval } from "../lib/repair-estimation/persist";
+import { REPAIR_APPROVAL_CONFIG } from "../../shared/repair-approval-config";
+import { REPAIR_APPROVAL_SAVING_TEXT, fetchRepairApprovalStatus, saveRepairApproval, type RepairApprovalSaveResult, type RepairApprovalStatus } from "../lib/repair-approval-client";
+import { PROVISIONAL_HEADLINE } from "../lib/provisional-repairs";
 import ArvCompsWorkspace from "../components/ArvCompsWorkspace";
 
 /**
@@ -732,6 +735,10 @@ function RepairEstimator({ opportunityId, onPersisted }: {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "14px", flexWrap: "wrap" }}>
+          {REPAIR_APPROVAL_CONFIG.enabled ? (
+            <RepairApprovalActions opportunityId={opportunityId} answers={answers} misc={misc} incomplete={result.incomplete} revision={revision} onPersisted={onPersisted} />
+          ) : (
+          <>
           <button
             onClick={() => {
               const next: RepairApproval = { kind: "approved", total, revision };
@@ -794,14 +801,16 @@ function RepairEstimator({ opportunityId, onPersisted }: {
               Try saving again
             </button>
           ) : null}
+          </>
+          )}
         </div>
 
         <div style={{ marginTop: "12px", fontSize: "11px", color: "#475569", lineHeight: 1.5 }}>
           Actual condition and repair scope are subject to inspection. This is an underwriting estimate,
-          not a contractor bid or a guaranteed repair cost. Approving saves the TOTAL ONLY to this deal's
+          not a contractor bid or a guaranteed repair cost.{REPAIR_APPROVAL_CONFIG.enabled ? " Approving records the total, a repair-approval note and the approval id on this deal in GHL, then verifies them; nothing is written without approval." : null}{REPAIR_APPROVAL_CONFIG.enabled ? null : <> Approving saves the TOTAL ONLY to this deal's
           Repairs field in GHL (on the opportunity, not the contact) — no itemization is stored and no
           other field is touched. Nothing is written without approval, and
-          the underwriting figures above update from GHL on the next read, not from this session.
+          the underwriting figures above update from GHL on the next read, not from this session.</>}
         </div>
       </div>
     </div>
@@ -809,6 +818,76 @@ function RepairEstimator({ opportunityId, onPersisted }: {
 }
 
 
+
+/**
+ * B15-26 B1 repair-save completion -- the enabled action bar (rendered only
+ * while REPAIR_APPROVAL_CONFIG.enabled). The browser sends the answers; the
+ * server recomputes, writes, verifies and closes. Texts come from the server
+ * (accepted wording); a blocked or unconfirmed save is never retried from
+ * here, and an incomplete estimate cannot be submitted.
+ */
+function RepairApprovalActions({ opportunityId, answers, misc, incomplete, revision, onPersisted }: {
+  opportunityId: string; answers: Answers; misc: MiscAnswer; incomplete: boolean; revision: number; onPersisted: () => void;
+}) {
+  const [save, setSave] = useState<{ status: "idle" } | { status: "saving" } | { status: "done"; result: RepairApprovalSaveResult; revision: number }>({ status: "idle" });
+  const [status, setStatus] = useState<RepairApprovalStatus | null>(null);
+  const inFlight = useRef(false);
+  useEffect(() => {
+    let live = true;
+    void fetchRepairApprovalStatus(opportunityId).then((s) => { if (live) setStatus(s); });
+    return () => { live = false; };
+  }, [opportunityId]);
+  async function approve() {
+    if (inFlight.current) return; // one request per click; never a second one while the first is open
+    inFlight.current = true;
+    setSave({ status: "saving" });
+    const result = await saveRepairApproval(opportunityId, answers, misc);
+    setSave({ status: "done", result, revision });
+    inFlight.current = false;
+    if (result.outcome === "verified") onPersisted();
+    setStatus(await fetchRepairApprovalStatus(opportunityId));
+  }
+  const saving = save.status === "saving";
+  const done = save.status === "done" && save.revision === revision ? save.result : null;
+  const settled = done !== null && done.outcome !== "not_sent"; // verified, blocked or unknown: no second submit of this estimate
+  const blockedNow = status?.kind === "needs_review";
+  const disabled = saving || incomplete || blockedNow || settled;
+  return (
+    <>
+      <button
+        data-testid="repair-approval-approve"
+        onClick={() => void approve()}
+        disabled={disabled}
+        style={{
+          padding: "8px 16px", borderRadius: "8px", fontSize: "12px", fontWeight: 600,
+          cursor: disabled ? "not-allowed" : "pointer",
+          border: `1px solid ${disabled ? "#1E293B" : "rgba(34,197,94,0.45)"}`,
+          background: disabled ? "transparent" : "rgba(34,197,94,0.12)",
+          color: disabled ? "#334155" : "#22C55E",
+        }}
+      >
+        {saving ? "Saving…" : "Approve and save repair total"}
+      </button>
+      {incomplete ? <span data-testid="repair-approval-incomplete" style={{ fontSize: "12px", color: "#F59E0B" }}>{PROVISIONAL_HEADLINE}</span> : null}
+      {saving ? (
+        <span style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748B" }}>
+          <Loader2 size={13} className="animate-spin" /> {REPAIR_APPROVAL_SAVING_TEXT}
+        </span>
+      ) : null}
+      {done ? (
+        <span data-testid="repair-approval-result" style={{ fontSize: "12px", color: done.outcome === "verified" ? "#22C55E" : done.outcome === "not_sent" ? "#94A3B8" : "#EF4444" }}>
+          {done.outcome === "verified" || done.outcome === "blocked" ? done.text : done.outcome === "not_sent" ? (done.text ?? done.error) : done.error}
+        </span>
+      ) : null}
+      {status && status.kind !== "none" ? (
+        <span data-testid="repair-approval-status" style={{ fontSize: "12px", color: status.kind === "checked" ? "#22C55E" : status.kind === "needs_review" ? "#EF4444" : "#F59E0B" }}>
+          {status.kind === "unavailable" ? "Repair approval could not be verified" : status.text}
+          {status.kind === "not_verified" ? ` (${status.reason})` : null}
+        </span>
+      ) : null}
+    </>
+  );
+}
 
 export default function UnderwritingWorkspace() {
   const { id } = useParams<{ id: string }>();
