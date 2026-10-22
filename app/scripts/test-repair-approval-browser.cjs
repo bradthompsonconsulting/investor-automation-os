@@ -32,7 +32,7 @@ const APP = path.resolve(__dirname, '..');
 const HARNESS = path.join(APP, 'scripts', 'harness', 'repair-approval');
 const ENABLED_CONFIG = path.join(HARNESS, 'enabled-config.ts');
 /** Literal check() call-site count in this file, never back-filled from a run. */
-const FLOOR = 47;
+const FLOOR = 62;
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -206,12 +206,21 @@ async function main() {
   });
   await server.listen();
   const base = server.resolvedUrls.local[0].replace(/\/$/, '');
+  // The LEGACY (committed, disabled) path: the same harness served WITHOUT the alias, so the page runs on enabled: false.
+  const legacyServer = await createServer({
+    root: APP, configFile: false, plugins: [react()], logLevel: 'error', clearScreen: false, cacheDir: path.join(APP, 'node_modules', '.vite-repair-approval-legacy'),
+    server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false },
+    optimizeDeps: { entries: ['scripts/harness/repair-approval/index.html'], include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-router-dom', 'lucide-react'] },
+  });
+  await legacyServer.listen();
+  const legacyBase = legacyServer.resolvedUrls.local[0].replace(/\/$/, '');
+  const legacyWrites = []; let legacyHold = null;
   const browser = await chromium.launch();
   const pageErrors = [];
 
   async function adapter(route, viewer) {
     const req = route.request(); const url = req.url();
-    if (url.startsWith(base) && !url.includes('/.netlify/functions/')) return route.continue();
+    if ((url.startsWith(base) || url.startsWith(legacyBase)) && !url.includes('/.netlify/functions/')) return route.continue();
     if (!url.includes('/.netlify/functions/')) { foreign.push(url); return route.abort(); }
     const u = new URL(url); const fn = u.pathname.replace('/.netlify/functions/', ''); const method = req.method();
     const fulfill = (status, body) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -219,15 +228,25 @@ async function main() {
       const p = u.searchParams.get('path') || ''; const m = p.match(/^\/contacts\/([^/?]+)$/);
       if (m && ghl.contacts.has(m[1])) return fulfill(200, { contact: ghl.contacts.get(m[1]) });
       if (/^\/locations\/[^/]+\/customFields$/.test(p)) return fulfill(200, { customFields: [] }); // field definitions (labels only)
+      const o = p.match(/^\/opportunities\/([^/?]+)$/); // the legacy save's readback
+      if (o && ghl.opps.has(o[1])) return fulfill(200, { opportunity: JSON.parse(JSON.stringify(ghl.opps.get(o[1]))) });
       unmodeled.push(`ghl-proxy ${p}`); return fulfill(404, { error: 'fixture does not model this path' });
     }
     if (fn === 'ghl-opportunities') return fulfill(200, pipelineFor());
     if (fn === 'ghl-underwriting-policy') return fulfill(200, { values: [] });
+    if (fn === 'ghl-write' && method === 'POST') { // the legacy repair-total write, as ghl-write's opportunity.repairs applies it
+      const b = JSON.parse(req.postData() || '{}'); const w = { op: b.operation, targetId: b.targetId, value: b.args && b.args.value }; legacyWrites.push(w);
+      if (legacyHold) await legacyHold.promise;
+      const o = ghl.opps.get(b.targetId);
+      if (b.operation !== 'opportunity.repairs' || !o) return fulfill(400, { outcome: 'not_sent', error: 'fixture models opportunity.repairs only' });
+      o.customFields = o.customFields.filter((f) => f.id !== F_EST).concat([{ id: F_EST, fieldValue: w.value }]);
+      return fulfill(200, { confirmed: true });
+    }
     if (fn === 'repair-approval-save' || fn === 'repair-approval-status') {
       const h = await req.allHeaders();
       const headers = {};
       if (h.authorization) headers.authorization = h.authorization;
-      if (h.origin) headers.origin = h.origin === base ? ORIGIN : h.origin; // the edge: same-origin page -> the configured https origin
+      if (h.origin) headers.origin = h.origin === base || h.origin === legacyBase ? ORIGIN : h.origin; // the edge: same-origin page -> the configured https origin
       if (viewer.readSession) headers.cookie = readCookie();
       const event = { httpMethod: method, isBase64Encoded: false, headers, queryStringParameters: Object.fromEntries(u.searchParams), body: req.postData() ?? null };
       let opp = u.searchParams.get('opportunityId'); try { if (!opp && req.postData()) opp = JSON.parse(req.postData()).opportunityId; } catch { /* not JSON */ }
@@ -256,9 +275,9 @@ async function main() {
     page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) pageErrors.push(`console: ${m.text()}`); });
     await page.route('**/*', (route) => adapter(route, viewer));
     // The harness page, then the real route inside its router (a direct /contacts/... load would be the app's own index.html).
-    await page.goto(`${base}/scripts/harness/repair-approval/index.html`); await page.getByTestId('elsewhere').waitFor({ timeout: 60000 });
+    await page.goto(`${viewer.legacy ? legacyBase : base}/scripts/harness/repair-approval/index.html`); await page.getByTestId('elsewhere').waitFor({ timeout: 60000 });
     await page.evaluate((c) => window.__iaosNavigate(`/contacts/${c}/underwriting`), fx.contact);
-    try { await page.getByTestId('repair-approval-approve').waitFor({ timeout: 60000 }); }
+    try { await (viewer.legacy ? page.getByRole('button', { name: 'Approve and save repair total', exact: true }) : page.getByTestId('repair-approval-approve')).waitFor({ timeout: 60000 }); }
     catch (e) { console.error('OPEN FAILED', { body: (await page.locator('body').innerText().catch(() => '')).slice(0, 1500), pageErrors, unmodeled, calls }); throw e; }
     return { page, context, T: (id) => page.getByTestId(id) };
   }
@@ -505,10 +524,94 @@ async function main() {
       await context.close();
     }
 
+    // ------------- repair ANSWERS belong to the opportunity being edited (Jess ruling on 628d70a) ---
+    const unanswered = (page) => page.locator('[data-testid^="repair-unanswered-"]').count();
+    const fresh = async (page) => (await unanswered(page)) === ROWS && (await shownTotal(page)) === 0;
+    const onDeal = async (page, fx, sel) => { await goDeal(page, fx); await page.waitForURL(new RegExp(fx.contact)); await sel.waitFor({ timeout: 30000 }); await settle(page, 500); };
+    // Enabled path.
+    { const fxA = fixture(); const fxB = fixture(); calls.length = 0;
+      const { page, context, T } = await open(fxA);
+      await completeEstimate(page);
+      check('CA1 A answered: complete, Approve enabled', (await unanswered(page)) === 0 && !(await T('repair-approval-approve').isDisabled()));
+      await onDeal(page, fxB, T('repair-approval-approve'));
+      check('CA2 A->B: B opens with a FRESH estimate (7 unanswered, $0), Approve disabled as incomplete; nothing sent',
+        (await fresh(page)) && (await T('repair-approval-approve').isDisabled()) && (await T('repair-approval-incomplete').count()) === 1 && saves().length === 0);
+      await onDeal(page, fxA, T('repair-approval-approve'));
+      check('CA3 A->B->A: A also opens fresh -- no answers or approval state carried across deals in either direction', (await fresh(page)) && (await T('repair-approval-result').count()) === 0 && (await T('repair-approval-approve').isDisabled()));
+      await context.close();
+    }
+    { const fxA = fixture(); const fxB = fixture(); calls.length = 0;
+      const { page, context, T } = await open(fxA);
+      await completeEstimate(page);
+      // Navigate and click in the SAME task, then again on the next ticks: whatever Approve exists then.
+      await page.evaluate((c) => { window.__iaosNavigate(`/contacts/${c}/underwriting`); document.querySelector('[data-testid="repair-approval-approve"]')?.click();
+        setTimeout(() => document.querySelector('[data-testid="repair-approval-approve"]')?.click(), 0); setTimeout(() => document.querySelector('[data-testid="repair-approval-approve"]')?.click(), 60); }, fxB.contact);
+      await page.waitForURL(new RegExp(fxB.contact)); await T('repair-approval-approve').waitFor(); await settle(page, 1500);
+      check('CA4 immediate save attempts during A->B: no save request ever names B, B holds no record or total, and no A answers reached B',
+        saves().every((c) => c.opp === fxA.opp) && stored(fxB) === null && oppValue(fxB, F_EST) === undefined && (await fresh(page)), saves());
+      check('CA5 B shows no result, saving line or status from those attempts', (await T('repair-approval-result').count()) === 0 && (await page.getByText('Saving the repair approval').count()) === 0 && (await T('repair-approval-status').count()) === 0);
+      await context.close();
+    }
+    { const fxA = fixture(); const fxB = fixture(); calls.length = 0;
+      const { page, context, T } = await open(fxA);
+      await completeEstimate(page);
+      const hold = gate(); ghl.reset(); ghl.script([{ kind: 'notePost', hold: hold.promise }]);
+      await T('repair-approval-approve').click();
+      for (let i = 0; i < 50 && !ghl.log.some((e) => e.kind === 'notePost'); i++) await settle(page, 100);
+      await onDeal(page, fxB, T('repair-approval-approve'));
+      hold.open();
+      for (let i = 0; i < 60 && !(stored(fxA) && stored(fxA).state === 'COMPLETED'); i++) await settle(page, 100);
+      await settle(page, 800);
+      check('CA6 A\'s save held across A->B then completed: B stays fresh and incomplete with no A result; A\'s write was not cancelled or retried',
+        (await fresh(page)) && (await T('repair-approval-result').count()) === 0 && (await T('repair-approval-approve').isDisabled()) && stored(fxA).state === 'COMPLETED' && saves().length === 1 && stored(fxB) === null);
+      await onDeal(page, fxA, T('repair-approval-approve'));
+      check('CA7 back on A after its save completed: fresh answers (nothing re-derived from the saved total), no old result; status is A\'s own fresh read',
+        (await fresh(page)) && (await T('repair-approval-result').count()) === 0 && /^Recorded repair approval — checked as of /.test(await text(T('repair-approval-status'))));
+      await completeEstimate(page); await pick(page, 1, 'Repair');
+      await T('repair-approval-approve').click();
+      const ok = await waitText(T('repair-approval-result'), /^Recorded repair approval — checked as of /);
+      await settle(page, 1200); // the save's own page re-read (onPersisted) on the same deal
+      check('CA8 same deal: a normal save verifies and the page re-read after it keeps this deal\'s answers (no remount on the same opportunity)',
+        ok && (await unanswered(page)) === 0 && (await T('repair-approval-result').count()) === 1 && oppValue(fxA, F_EST) === (await shownTotal(page)));
+      await context.close();
+    }
+    // Legacy (committed, disabled) path, on the same page served without the alias.
+    { const fxA = fixture(); const fxB = fixture(); legacyWrites.length = 0; calls.length = 0;
+      const legacy = { write: true, readSession: true, legacy: true };
+      const { page, context } = await open(fxA, legacy);
+      const approve = page.getByRole('button', { name: 'Approve and save repair total', exact: true });
+      await settle(page);
+      check('LG1 legacy harness: the disabled UI is rendered (no enabled control, no repair-approval request)', (await page.getByTestId('repair-approval-approve').count()) === 0 && !calls.some((c) => c.fn.startsWith('repair-approval')));
+      await completeEstimate(page);
+      await onDeal(page, fxB, approve);
+      check('LG2 legacy A->B: B opens with a fresh estimate (7 unanswered, $0)', await fresh(page));
+      await onDeal(page, fxA, approve);
+      check('LG3 legacy A->B->A: A opens fresh too', await fresh(page));
+      await completeEstimate(page); const totalA = await shownTotal(page);
+      legacyHold = gate(); await approve.click();
+      for (let i = 0; i < 50 && legacyWrites.length === 0; i++) await settle(page, 100);
+      await onDeal(page, fxB, approve);
+      legacyHold.open(); legacyHold = null; await settle(page, 1200);
+      check('LG4 legacy save held across A->B then confirmed: it wrote A only, once, with A\'s total; B has no total', legacyWrites.length === 1 && legacyWrites[0].targetId === fxA.opp && oppValue(fxA, F_EST) === totalA && oppValue(fxB, F_EST) === undefined, legacyWrites);
+      check('LG5 legacy: B shows no "saved" / "Sent" / error line from A\'s save and stays fresh', (await page.getByText('Repair total saved to this deal').count()) === 0 && (await page.getByText(/^Sent \$/).count()) === 0 && (await fresh(page)));
+      await completeEstimate(page);
+      await page.evaluate((c) => { window.__iaosNavigate(`/contacts/${c}/underwriting`); [...document.querySelectorAll('button')].find((b) => b.textContent === 'Approve and save repair total')?.click(); }, fxA.contact);
+      await page.waitForURL(new RegExp(fxA.contact)); await approve.waitFor(); await settle(page, 1200);
+      check('LG6 legacy immediate save during B->A: any write from that task is B\'s own (never A with B\'s answers), A keeps its total, and A opens fresh',
+        legacyWrites.slice(1).every((w) => w.targetId === fxB.opp) && oppValue(fxA, F_EST) === totalA && (await fresh(page)), legacyWrites);
+      await completeEstimate(page); await pick(page, 1, 'Repair'); const totalA2 = await shownTotal(page);
+      await approve.click();
+      const saved = await page.getByText('Repair total saved to this deal').first().waitFor({ timeout: 10000 }).then(() => true, () => false);
+      await settle(page, 1200);
+      check('LG7 legacy same-deal save still works: "Repair total saved", GHL holds it, and the re-read keeps this deal\'s answers',
+        saved && oppValue(fxA, F_EST) === totalA2 && (await unanswered(page)) === 0);
+      await context.close();
+    }
+
     check('X1 no page errors or console errors in any scenario', pageErrors.length === 0, pageErrors);
     check('X2 no request left the machine, and every function request was modelled', foreign.length === 0 && offlineBlocked.length === 0 && unmodeled.length === 0, { foreign, offlineBlocked, unmodeled });
   } finally {
-    await browser.close().catch(() => {}); await server.close().catch(() => {});
+    await browser.close().catch(() => {}); await server.close().catch(() => {}); await legacyServer.close().catch(() => {});
     globalThis.fetch = realFetch; await B.close(); await G.close();
   }
 }
