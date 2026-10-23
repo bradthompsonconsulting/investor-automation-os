@@ -55,7 +55,7 @@ import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstima
 import { persistApprovedRepairTotalToOpportunity, persistGate } from "../lib/repair-estimation/persist";
 import type { PersistResult, RepairApproval } from "../lib/repair-estimation/persist";
 import { REPAIR_APPROVAL_CONFIG } from "../../shared/repair-approval-config";
-import { REPAIR_APPROVAL_APPROVE_LABEL, REPAIR_APPROVAL_SAVING_TEXT, draftBasisKey, fetchRepairApprovalStatus, recordedRepairTotalText, repairApprovalDraftNotice, repairApprovalReasonText, saveRepairApproval, type RepairApprovalSaveResult, type RepairApprovalStatus } from "../lib/repair-approval-client";
+import { REPAIR_APPROVAL_APPROVE_LABEL, REPAIR_APPROVAL_SAVING_TEXT, fetchRepairApprovalStatus, recordedRepairTotalText, repairApprovalDraftNotice, repairApprovalReasonText, saveRepairApproval, type RepairApprovalSaveResult, type RepairApprovalStatus } from "../lib/repair-approval-client";
 import { PROVISIONAL_HEADLINE } from "../lib/provisional-repairs";
 import ArvCompsWorkspace from "../components/ArvCompsWorkspace";
 
@@ -833,9 +833,6 @@ function RepairApprovalActions({ opportunityId, answers, misc, total, incomplete
 }) {
   const [save, setSave] = useState<{ status: "idle" } | { status: "saving" } | { status: "done"; result: RepairApprovalSaveResult; revision: number }>({ status: "idle" });
   const [status, setStatus] = useState<RepairApprovalStatus | null>(null);
-  /* The answers and total this visit submitted and saw verified: the only
-     recorded basis the page knows answer by answer. */
-  const [verified, setVerified] = useState<{ key: string; total: number } | null>(null);
   const inFlight = useRef(false);
   /* One "visit" per opportunity shown. The page can move from deal A to deal
      B (or back to A) without remounting this component, so every save and
@@ -858,7 +855,6 @@ function RepairApprovalActions({ opportunityId, answers, misc, total, incomplete
     inFlight.current = false;
     setSave({ status: "idle" });
     setStatus(null);
-    setVerified(null);
     void refreshStatus(thisVisit);
     return () => { visit.current += 1; };
   }, [opportunityId]);
@@ -867,12 +863,11 @@ function RepairApprovalActions({ opportunityId, answers, misc, total, incomplete
     const thisVisit = visit.current;
     inFlight.current = true;
     setSave({ status: "saving" });
-    const submitted = draftBasisKey(answers, misc); // the answers this click sends, not whatever is on screen when it returns
     const result = await saveRepairApproval(opportunityId, answers, misc);
     if (visit.current !== thisVisit) return; // the deal on screen changed (or this view closed): drop the stale completion
     setSave({ status: "done", result, revision });
     inFlight.current = false;
-    if (result.outcome === "verified") { setVerified({ key: submitted, total: result.total }); onPersisted(); }
+    if (result.outcome === "verified") onPersisted();
     await refreshStatus(thisVisit);
   }
   const saving = save.status === "saving";
@@ -881,7 +876,7 @@ function RepairApprovalActions({ opportunityId, answers, misc, total, incomplete
   const blockedNow = status?.kind === "needs_review";
   const disabled = saving || incomplete || blockedNow || settled;
   const reasonText = status?.kind === "not_verified" ? repairApprovalReasonText(status.reason) : null;
-  const draftNotice = repairApprovalDraftNotice(status, { key: draftBasisKey(answers, misc), total, incomplete, edited: revision > 0 }, verified);
+  const draftNotice = repairApprovalDraftNotice(status, { total, incomplete, edited: revision > 0 });
   return (
     <>
       <button

@@ -10,7 +10,7 @@
  */
 import { AppWriteSignInRequired, appWriteFetch } from "./app-write-session";
 import { readFetch } from "./read-session";
-import { OPERATOR_ROWS, type Answers, type MiscAnswer } from "./repair-estimation/operator-model";
+import type { Answers, MiscAnswer } from "./repair-estimation/operator-model";
 
 export const REPAIR_APPROVAL_SAVE_ENDPOINT = "/.netlify/functions/repair-approval-save";
 export const REPAIR_APPROVAL_STATUS_ENDPOINT = "/.netlify/functions/repair-approval-status";
@@ -90,30 +90,21 @@ export const REPAIR_APPROVAL_EDITS_NOT_APPROVED = "Current edits have not been a
 /** Used when the draft cannot be compared with the recorded basis: claims neither a match nor a difference. */
 export const REPAIR_APPROVAL_EDITS_NOT_CHECKED = "Current edits have not been checked against the recorded approval.";
 
-/** Every answer, in OPERATOR_ROWS order, plus Miscellaneous: equal keys = the same submitted answers. */
-export function draftBasisKey(answers: Answers, misc: MiscAnswer): string {
-  return JSON.stringify([
-    OPERATOR_ROWS.map((r) => { const a = answers[r.system]; return a ? [r.system, a.condition, a.amount, a.quantity, a.dirty] : [r.system, "not_asked", "", "", false]; }),
-    [misc.description, misc.amount],
-  ]);
-}
-
 /**
  * The line comparing the operator's current edits with a CHECKED recorded
- * approval. The reader returns the recorded total but not the answers behind
- * it, so a difference in answers is known only against the answers this page
- * visit itself saved and saw verified; otherwise an equal total says nothing
- * about the answers and the wording claims no match.
+ * approval. The reader returns the recorded total but neither the answers
+ * behind it nor the operation it belongs to, so only what the displayed record
+ * supports is claimed: an incomplete estimate or a different total has not
+ * been approved. An equal total is never read as a match or a difference --
+ * not even against answers this page itself saved, because the record shown
+ * may since have been replaced by another viewer's approval at the same total.
  */
 export function repairApprovalDraftNotice(
   status: RepairApprovalStatus | null,
-  draft: { key: string; total: number; incomplete: boolean; edited: boolean },
-  verifiedThisVisit: { key: string; total: number } | null,
+  draft: { total: number; incomplete: boolean; edited: boolean },
 ): string | null {
   if (status?.kind !== "checked" || !draft.edited) return null;
   const draftTotal = Math.round(draft.total * 100) / 100; // as the server rounds the total it records
-  if (verifiedThisVisit && verifiedThisVisit.total === status.total && verifiedThisVisit.key === draft.key && draftTotal === status.total) return null;
   if (draft.incomplete || draftTotal !== status.total) return REPAIR_APPROVAL_EDITS_NOT_APPROVED;
-  if (verifiedThisVisit && verifiedThisVisit.total === status.total) return REPAIR_APPROVAL_EDITS_NOT_APPROVED; // same total, different answers from those verified here
   return REPAIR_APPROVAL_EDITS_NOT_CHECKED;
 }
