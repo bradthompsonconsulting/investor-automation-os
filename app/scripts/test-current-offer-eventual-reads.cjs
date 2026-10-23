@@ -24,6 +24,7 @@
  *
  * Drives the REAL ghl-write and current-offer-barrier handlers. Offline.
  */
+const receiptShim = require('./lib/receipt-recorder-shim.cjs'); // the repaired receipt helpers' recorded fetch (test-only)
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -70,7 +71,7 @@ Module._resolveFilename = function (name, parent, ...rest) {
 };
 Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
 Module._load = function (name, ...rest) {
-  if (name === '@netlify/blobs') return {
+  if (name === '@netlify/blobs') return receiptShim.wrap({
     connectLambda: (event) => realBlobs.connectLambda(event),
     getStore: () => ({
       async get(key, options) { const s = edgeRead(key, options); return s.data; },
@@ -84,7 +85,7 @@ Module._load = function (name, ...rest) {
       },
       async delete(key) { origin.delete(key); etags.delete(key); },
     }),
-  };
+  });
   return originalLoad.call(this, name, ...rest);
 };
 process.env.IAOS_ENV = 'test';
