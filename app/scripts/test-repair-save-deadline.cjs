@@ -24,7 +24,7 @@ const ts = require('typescript');
 
 const APP = path.resolve(__dirname, '..');
 /** Literal count of check() executions below (loops expanded by hand); never back-filled from a run. */
-const FLOOR = 55;
+const FLOOR = 60;
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -60,7 +60,9 @@ const realCfg = (() => { const m = { exports: {} }; const src = ts.transpileModu
 const APPROVAL_FIELD = 'fldApprovalSynthetic01';
 const REAL_D = realCfg.REPAIR_APPROVAL_CONFIG.saveDeadline;
 const scale = (o, f) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === 'number' ? Math.max(1, Math.round(v * f)) : scale(v, f)]));
-const SCALED_D = Object.freeze({ ...scale(REAL_D, 0.01), minStartMs: 3 });
+// budgetMs gets 20 ms of slack over the 1/100 scale (520, not 500): the scaled claim floor (490) would otherwise leave
+// only 10 ms of real time for the local pre-claim work (auth, parse, recompute).
+const SCALED_D = Object.freeze({ ...scale(REAL_D, 0.01), minStartMs: 3, budgetMs: 520 });
 const base = { ...realCfg.REPAIR_APPROVAL_CONFIG, enabled: true, approvalFieldId: Object.freeze({ test: APPROVAL_FIELD, production: realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED }) };
 let currentCfg = { ...base, verifyPassDelayMs: 30, saveDeadline: REAL_D };
 const cfgShim = {
@@ -287,6 +289,15 @@ async function main() {
     useR();
     { fake.reset(); const fx = fixture(); fake.rule({ cls: 'ghl', kind: 'oppGet', hang: 'body' }); const m = mark(); const t = realNow(); const { r, b } = await within(3000, run(fx, 600)); const el = realNow() - t;
       check('DL4 Opportunity body hangs -> aborted at its 50 ms cap; 503 could_not_start; 0 authority requests; no live timer', r.statusCode === 503 && b.code === 'could_not_start' && cls(m, 'api').length === 0 && el < 600 && liveOurs(m.t).length === 0, [b, el]); }
+    { fake.reset(); const fx = fixture(); fake.rule({ cls: 'ghl', kind: 'contactGet', hang: 'body' }); const m = mark(); const t = realNow(); const { r, b } = await within(3000, run(fx, 600)); const el = realNow() - t;
+      check('DL4b the derived-contact GET (the second request of the stage) body hangs -> aborted by ITS OWN 50 ms timer; 503 could_not_start; 0 authority requests; no live timer', r.statusCode === 503 && b.code === 'could_not_start' && cls(m, 'ghl', 'GET').length === 2 && cls(m, 'api').length === 0 && el < 600 && liveOurs(m.t).length === 0, [b, el]); }
+    useV();
+    { fake.reset(); const fx = fixture(); fake.rule({ cls: 'ghl', kind: 'oppGet', v: 4_900 }, { cls: 'ghl', kind: 'contactGet', v: 4_900 }); const tm = timerMark(); const m = mark(); const { r, b } = await run(fx, 60_000);
+      const stage = timersSince(tm).filter((x) => /repair-approval-integration/.test(x.top)).map((x) => x.ms);
+      check('DL4c accounting: the Opportunity stage makes 2 GETs, each with its own 5 000 ms timer; a ~9.8 s stage still clears the admission floor -> verified', stage.length === 2 && stage.every((ms) => ms === 5_000) && cls(m, 'ghl', 'GET').length >= 2 && r.statusCode === 200 && b.outcome === 'verified', [stage, b.outcome]); }
+    { fake.reset(); const fx = fixture(); fake.rule({ cls: 'edge', v: 4_000 }); const m = mark(); const { r, b } = await run(fx, 60_000);
+      check('DL4d the read floor counts both GETs (46 s): a 4 s claim (simulated overrun) leaves ~46 s - ε -> 503 deadline_before_start; 0 GHL requests', r.statusCode === 503 && b.code === 'deadline_before_start' && cls(m, 'ghl').length === 0 && cls(m, 'edge').length === 1, b); }
+    useR();
     useV({ floorsMs: { admission: 52_000 } });
     { fake.reset(); const fx = fixture(); const m = mark(); const { r, b } = await run(fx, 60_000);
       check('DL5 admission floor not met (floor raised above the budget) -> 503 deadline_before_admission; 0 authority requests', r.statusCode === 503 && b.code === 'deadline_before_admission' && cls(m, 'api').length === 0 && cls(m, 'signed').length === 0, b); }
@@ -335,6 +346,16 @@ async function main() {
       check('DL8b CAS: 2xx + ETag headers, then a hung body -> committed (decided from the recorded headers)', o1.kind === 'committed', o1);
       fake.reset(); fake.rule({ cls: 'signed', method: 'PUT', hang: 'headers' }); const o2 = await within(2000, BA.openAdmission(BA.createAuthorityClient(cOpts()), 'scope-dl8c', intent));
       check('DL8c CAS sent, no headers -> aborted at its cap -> ambiguous (an abort does not prove nothing was sent)', o2.kind === 'ambiguous', o2); }
+    { // DL16 dispatch-boundary regression (from Bones's requirement; his exact text was not relayed). Module, virtual clock:
+      // the CAS starts with its whole cap available, then its sign request takes long enough that, at the signed-URL PUT,
+      // less than that PUT's full cap is left. The PUT must be refused BEFORE sending; once sent, uncertainty stays.
+      const intent = { operator: OPERATOR, opportunityId: 'o', contactId: 'c', preconditionDigest: 'a'.repeat(64), expectedResultHash: 'b'.repeat(64) };
+      const mk = (base) => { const v0 = vOffset; return BA.createAuthorityClient({ siteID: 's', token: 'k', timeoutMs: 5_000, now: () => base + (vOffset - v0), deadline: base + 10_400, minStartMs: 250 }); };
+      fake.reset(); fake.rule({ cls: 'api', method: 'PUT', v: 5_500 }); const m = mark(); const o1 = await BA.openAdmission(mk(3_000_000), 'scope-dl16a', intent);
+      check('DL16a open: CAS fits at its start (10.4 s), its sign takes 5.5 s, 4.9 s < the 5 s PUT cap -> the signed-URL PUT is NOT sent -> not_sent (never ambiguous)', o1.kind === 'not_sent' && cls(m, 'api', 'PUT').length === 1 && cls(m, 'signed', 'PUT').length === 0, [o1, cls(m, 'signed', 'PUT').length]);
+      fake.reset(); fake.rule({ cls: 'api', method: 'PUT', v: 5_300 }, { cls: 'signed', method: 'PUT', status: 503 }); const tm = timerMark(); const m2 = mark(); const o2 = await BA.openAdmission(mk(4_000_000), 'scope-dl16b', intent);
+      const putTimer = timersSince(tm).filter((x) => /blob-authority/.test(x.top)).map((x) => x.ms).pop();
+      check('DL16b 5.1 s left at the PUT -> sent with its FULL 5 000 ms timer (not clamped); a 503 after sending -> ambiguous, never relabelled not_sent', o2.kind === 'ambiguous' && cls(m2, 'signed', 'PUT').length === 1 && putTimer === 5_000, [o2, putTimer]); }
     useV();
     { fake.reset(); const fx = fixture(); fake.rule({ cls: 'signed', method: 'GET', nth: 3, v: 30_000 }); const m = mark(); const { r, b } = await run(fx, 60_000);
       check('DL9 slow fields D1 (30 s; simulated overrun of its clamp) -> PUT gate (22 s) fails -> blocked fields_not_sent; 0 PUTs; the note was sent; no release (ADMITTED)', r.statusCode === 409 && b.code === 'fields_not_sent' && cls(m, 'ghl', 'PUT').length === 0 && cls(m, 'ghl', 'POST').length === 1 && authorityState(fx) === 'ADMITTED', [b, authorityState(fx)]); }
@@ -381,8 +402,9 @@ async function main() {
         const st = since(m); const srv = fake.log.slice(m.l);
         const key = `${r.statusCode}:${b.code || b.outcome}`; outcomes[key] = (outcomes[key] || 0) + 1;
         const late = st.filter((x) => x.t > deadline - D.minStartMs + 2); if (late.length) viol.push(`run ${i}: request started after the deadline`);
-        const wr = st.filter((x) => (x.cls === 'ghl' && x.method !== 'GET') || (x.cls === 'api' && x.method === 'PUT') || x.cls === 'edge');
-        for (const w of wr) { const cap = w.cls === 'ghl' ? D.ghlWriteTimeoutMs : w.cls === 'edge' ? D.claimTimeoutMs : 2 * D.authorityTimeoutMs; if (w.t > deadline - cap + 2) viol.push(`run ${i}: ${w.cls} ${w.method} started without its full cap`); }
+        // Writes: GHL POST/PUT, the claim, a write's sign request (whole write cap) AND its signed-URL PUT (its own cap).
+        const wr = st.filter((x) => (x.cls === 'ghl' && x.method !== 'GET') || (x.cls === 'api' && x.method === 'PUT') || (x.cls === 'signed' && x.method === 'PUT') || x.cls === 'edge');
+        for (const w of wr) { const cap = w.cls === 'ghl' ? D.ghlWriteTimeoutMs : w.cls === 'edge' ? D.claimTimeoutMs : w.cls === 'signed' ? D.authorityTimeoutMs : 2 * D.authorityTimeoutMs; if (w.t > deadline - cap + 2) viol.push(`run ${i}: ${w.cls} ${w.method} started without its full cap`); }
         const posts = st.filter((x) => x.cls === 'ghl' && x.method === 'POST').length; const puts = st.filter((x) => x.cls === 'ghl' && x.method === 'PUT').length;
         if (posts > 1 || puts > 1 || st.filter((x) => x.cls === 'edge').length > 1) viol.push(`run ${i}: a write was sent twice`);
         const released = srv.some((x) => x.cls === 'signed' && x.method === 'PUT' && /abandoned_undispatched/.test(x.body));
