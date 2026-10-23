@@ -8,7 +8,8 @@
  * operator is the authenticated application writer.
  *
  * Order (the first refusal ends the request; nothing after it runs):
- *   disabled -> 404 (before auth or I/O)
+ *   not active in this environment (switch off, or IAOS_ENV not Test) -> 404
+ *     (before auth or I/O)
  *   method, write session, write origin
  *   configuration gate (test only, provisioned approval field, authority
  *     credentials) -> 503 not_sent; never a fallback write
@@ -29,7 +30,7 @@
  */
 import { connectLambda } from "@netlify/blobs";
 import { getConfig } from "../../shared/ghl-config";
-import { REPAIR_APPROVAL_CONFIG, REPAIR_APPROVAL_DISABLED } from "../../shared/repair-approval-config";
+import { REPAIR_APPROVAL_CONFIG, REPAIR_APPROVAL_DISABLED, repairApprovalActiveFor } from "../../shared/repair-approval-config";
 import { PROVISIONAL_HEADLINE } from "../../src/lib/provisional-repairs";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
@@ -48,7 +49,7 @@ const NOTHING_SENT = "Nothing was sent; the save could not start";
 const blocked = (code: string) => json(409, { outcome: "blocked", code, text: READER_TEXT.needsReview });
 
 export const handler = async (event: any) => {
-  if (!REPAIR_APPROVAL_CONFIG.enabled) return json(404, { error: "Not found", by: REPAIR_APPROVAL_DISABLED });
+  if (!repairApprovalActiveFor(process.env.IAOS_ENV)) return json(404, { error: "Not found", by: REPAIR_APPROVAL_DISABLED });
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
   let operator: string;
   try { operator = requireAppWriter(event); } catch { return json(401, { error: "Application write sign-in required" }); }

@@ -54,8 +54,7 @@ import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstima
    (Contact-only by its own deliberate design) is unaffected. */
 import { persistApprovedRepairTotalToOpportunity, persistGate } from "../lib/repair-estimation/persist";
 import type { PersistResult, RepairApproval } from "../lib/repair-estimation/persist";
-import { REPAIR_APPROVAL_CONFIG } from "../../shared/repair-approval-config";
-import { REPAIR_APPROVAL_APPROVE_LABEL, REPAIR_APPROVAL_SAVING_TEXT, fetchRepairApprovalStatus, recordedRepairTotalText, repairApprovalDraftNotice, repairApprovalReasonText, saveRepairApproval, type RepairApprovalSaveResult, type RepairApprovalStatus } from "../lib/repair-approval-client";
+import { REPAIR_APPROVAL_APPROVE_LABEL, REPAIR_APPROVAL_SAVING_TEXT, fetchRepairApprovalStatus, repairApprovalAvailable, recordedRepairTotalText, repairApprovalDraftNotice, repairApprovalReasonText, saveRepairApproval, type RepairApprovalSaveResult, type RepairApprovalStatus } from "../lib/repair-approval-client";
 import { PROVISIONAL_HEADLINE } from "../lib/provisional-repairs";
 import ArvCompsWorkspace from "../components/ArvCompsWorkspace";
 
@@ -601,6 +600,7 @@ function RepairEstimator({ opportunityId, onPersisted }: {
   opportunityId: string;
   onPersisted: () => void;
 }) {
+  const approvalActive = repairApprovalAvailable(); // server-confirmed (iaos-runtime-config), never a browser-side environment
   const [answers, setAnswers] = useState<Answers>({});
   /* 2026-10-04 amendment, rule 5: Miscellaneous / Other repairs. Session
      state only, like every Known Amount (no persisted itemization). */
@@ -735,7 +735,7 @@ function RepairEstimator({ opportunityId, onPersisted }: {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "14px", flexWrap: "wrap" }}>
-          {REPAIR_APPROVAL_CONFIG.enabled ? (
+          {approvalActive ? (
             <RepairApprovalActions opportunityId={opportunityId} answers={answers} misc={misc} total={total} incomplete={result.incomplete} revision={revision} onPersisted={onPersisted} />
           ) : (
           <>
@@ -807,7 +807,7 @@ function RepairEstimator({ opportunityId, onPersisted }: {
 
         <div style={{ marginTop: "12px", fontSize: "11px", color: "#475569", lineHeight: 1.5 }}>
           Actual condition and repair scope are subject to inspection. This is an underwriting estimate,
-          not a contractor bid or a guaranteed repair cost.{REPAIR_APPROVAL_CONFIG.enabled ? " Approving records the total, a repair-approval note and the approval id on this deal in GHL, then verifies them; nothing is written without approval." : null}{REPAIR_APPROVAL_CONFIG.enabled ? null : <> Approving saves the TOTAL ONLY to this deal's
+          not a contractor bid or a guaranteed repair cost.{approvalActive ? " Approve saves the repair total and approval ID on this deal, adds an evidence note to its contact in GHL, and verifies the saved details." : null}{approvalActive ? null : <> Approving saves the TOTAL ONLY to this deal's
           Repairs field in GHL (on the opportunity, not the contact) — no itemization is stored and no
           other field is touched. Nothing is written without approval, and
           the underwriting figures above update from GHL on the next read, not from this session.</>}
@@ -821,7 +821,7 @@ function RepairEstimator({ opportunityId, onPersisted }: {
 
 /**
  * B15-26 B1 repair-save completion -- the enabled action bar (rendered only
- * while REPAIR_APPROVAL_CONFIG.enabled). The browser sends the answers; the
+ * while the server reports the approval path active). The browser sends the answers; the
  * server recomputes, writes, verifies and closes. Texts come from the server
  * (accepted wording); a blocked or unconfirmed save is never retried from
  * here, and an incomplete estimate cannot be submitted. The recorded total is

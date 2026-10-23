@@ -1,7 +1,8 @@
 /**
- * Repair-save completion integration -- browser side (B15-26 B1). Used only
- * while REPAIR_APPROVAL_CONFIG.enabled is true; while it is false nothing in
- * the app imports a call path that reaches these functions' endpoints.
+ * Repair-save completion integration -- browser side (B15-26 B1). The page
+ * reaches these functions' endpoints only while repairApprovalAvailable() is
+ * true, i.e. while the server's runtime configuration reports the approval
+ * path active in its environment (iaos-runtime-config).
  *
  * The browser sends ONLY the operator's answers (plus the opportunity and a
  * fresh request id). It never sends a total, contact, operator or note: the
@@ -10,7 +11,21 @@
  */
 import { AppWriteSignInRequired, appWriteFetch } from "./app-write-session";
 import { readFetch } from "./read-session";
+import { getRuntimeConfig } from "../../shared/ghl-config";
 import type { Answers, MiscAnswer } from "./repair-estimation/operator-model";
+
+/**
+ * Whether this page offers the repair-approval path: ONLY when the server's
+ * runtime configuration says so (`repairApproval.active === true`, from
+ * iaos-runtime-config, the same predicate the server enforces). Anything else
+ * -- absent or malformed -- is false, and the page keeps the legacy control,
+ * whose write ghl-write refuses wherever the approval path is active. A failed
+ * configuration load never reaches this: the application is not started.
+ */
+export function repairApprovalAvailable(runtime: unknown = getRuntimeConfig()): boolean {
+  const r = (runtime as { repairApproval?: unknown } | null)?.repairApproval;
+  return typeof r === "object" && r !== null && (r as { active?: unknown }).active === true;
+}
 
 export const REPAIR_APPROVAL_SAVE_ENDPOINT = "/.netlify/functions/repair-approval-save";
 export const REPAIR_APPROVAL_STATUS_ENDPOINT = "/.netlify/functions/repair-approval-status";

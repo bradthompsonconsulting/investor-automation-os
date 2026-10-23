@@ -10,10 +10,11 @@
  *   needs_review  "Repair save needs review. Do not retry this approval."
  *   not_verified  "Repair approval could not be verified" + reason (+ total)
  *   none          no recorded approval and no GHL total
- * Disabled -> 404 before auth or I/O. Not configured -> 503; nothing read.
+ * Not active in this environment (switch off, or IAOS_ENV not Test) -> 404
+ * before auth or I/O. Not configured -> 503; nothing read.
  */
 import { getConfig } from "../../shared/ghl-config";
-import { REPAIR_APPROVAL_CONFIG, REPAIR_APPROVAL_DISABLED } from "../../shared/repair-approval-config";
+import { REPAIR_APPROVAL_DISABLED, repairApprovalActiveFor } from "../../shared/repair-approval-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
 import { createAuthorityClient, createProductionTargetTransport, readRepairApproval } from "./lib/blob-authority";
 import { approvalScope, approvalSetup } from "./lib/repair-approval-integration";
@@ -22,7 +23,7 @@ import { identifier } from "./lib/write-contracts";
 const json = (statusCode: number, data: unknown) => ({ statusCode, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }, body: JSON.stringify(data) });
 
 export const handler = async (event: any) => {
-  if (!REPAIR_APPROVAL_CONFIG.enabled) return json(404, { error: "Not found", by: REPAIR_APPROVAL_DISABLED });
+  if (!repairApprovalActiveFor(process.env.IAOS_ENV)) return json(404, { error: "Not found", by: REPAIR_APPROVAL_DISABLED });
   if (event.httpMethod !== "GET") return json(405, { error: "Method not allowed" });
   const refusal = readAuthRefusal(event);
   if (refusal) return refusal;

@@ -31,9 +31,20 @@
  */
 
 import { getConfig, projectRuntimeConfig } from "../../shared/ghl-config";
+import { repairApprovalActiveFor } from "../../shared/repair-approval-config";
+
+/**
+ * The projected configuration plus SERVER-CONFIRMED capabilities (B15-26 B1,
+ * Jess 2026-10-23). `repairApproval.active` is the same predicate ghl-write and
+ * the repair-approval functions enforce, computed from this server's own
+ * IAOS_ENV; the browser never supplies or infers an environment.
+ */
+export function runtimePayload(env: string | undefined, active: (env: unknown) => boolean = repairApprovalActiveFor) {
+  return { ...projectRuntimeConfig(getConfig(env)), repairApproval: { active: active(env) } };
+}
 
 // Module scope, deliberately — see the header.
-const PAYLOAD = projectRuntimeConfig(getConfig(process.env.IAOS_ENV));
+const PAYLOAD = runtimePayload(process.env.IAOS_ENV);
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",

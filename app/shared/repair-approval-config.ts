@@ -39,3 +39,15 @@ export const REPAIR_APPROVAL_CONFIG: RepairApprovalConfig = Object.freeze({
 
 /** Stable refusal marker for the disabled endpoints. */
 export const REPAIR_APPROVAL_DISABLED = "iaos-repair-approval-disabled" as const;
+
+/**
+ * THE server-side switch for the repair-approval path (Jess, 2026-10-23): true
+ * only when the shared switch is on AND the server's own environment is Test
+ * and listed. ghl-write, both repair-approval functions and the browser
+ * capability served by iaos-runtime-config all use this one predicate, so the
+ * same commit published to Production keeps Production's legacy repair save.
+ * The environment is the server's IAOS_ENV, never a caller's.
+ */
+export function repairApprovalActiveFor(env: unknown, config: RepairApprovalConfig = REPAIR_APPROVAL_CONFIG): boolean {
+  return config.enabled === true && env === "test" && config.environments.includes(env);
+}
