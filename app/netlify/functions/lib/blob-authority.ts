@@ -40,6 +40,18 @@
  * post-restart handles are refused before any request; losing a handle never
  * clears the underlying uncertainty.
  *
+ * Whole-save deadline (deadline proposal r3 + r4 + erratum 1; Bones's r3/r4
+ * requirements). A client MAY carry an absolute `deadline` on its own clock;
+ * without one every limit below is infinite and behaviour is as before. With
+ * one: (G1) no request STARTS with less than `minStartMs` left before its
+ * limit, and no WRITE (an authority CAS, the note POST, the fields PUT) starts
+ * unless its full cap fits before the deadline -- a refused start is recorded
+ * as not sent, never as uncertain; (G2) a started read is aborted at
+ * min(start + cap, its clamp), so the clamped reads protect the release and
+ * CLOSE reserves; every timer stays armed until the SDK call or body read has
+ * returned (M2), so an abort also settles a hung body. A write aborted after
+ * it was sent stays ambiguous / UNCERTAIN.
+ *
  * What the offline tests of this module show is OUR behaviour against a fake
  * service. Provider guarantees (conditional-write atomicity, ETag
  * distinctness, status codes, strong-read freshness) are documented
@@ -56,6 +68,7 @@ export const AUTHORITY_STORE = "iaos-write-receipts";
 const KEY_PREFIX = "repair-authority/";
 const SIGNED_URL_ACCEPT = "application/json;type=signed-url";
 const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_MIN_START_MS = 250;
 const HEX64 = /^[0-9a-f]{64}$/;
 
 // ---------------------------------------------------------------- values ---
@@ -141,15 +154,23 @@ export function authorityKey(scope: string): string {
 
 // ---------------------------------------------------------------- client ---
 
-type ClientConfig = { siteID: string; token: string; apiURL: string | undefined; fetchImpl: typeof fetch; timeoutMs: number; now: () => number };
+type SendFloors = { note: number; fields: number };
+type ClientConfig = {
+  siteID: string; token: string; apiURL: string | undefined; fetchImpl: typeof fetch; timeoutMs: number; now: () => number;
+  /** Absolute deadline on `now`'s clock, or null (no deadline: every limit is infinite). */
+  deadline: number | null; minStartMs: number; releaseReserveMs: number; closeReserveMs: number; sendFloorsMs: SendFloors;
+};
 const clientConfigs = new WeakMap<object, ClientConfig>();
 
 /** Opaque, frozen client. Config is held privately; nothing is readable from it. */
 export type AuthorityClient = { readonly __authorityClient: true };
 
-export function createAuthorityClient(options: { siteID: string; token: string; apiURL?: string; fetch?: typeof fetch; timeoutMs?: number; now?: () => number }): AuthorityClient {
+export type DeadlineOptions = { deadline?: number; minStartMs?: number; releaseReserveMs?: number; closeReserveMs?: number; sendFloorsMs?: SendFloors };
+const nonNegInt = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+
+export function createAuthorityClient(options: { siteID: string; token: string; apiURL?: string; fetch?: typeof fetch; timeoutMs?: number; now?: () => number } & DeadlineOptions): AuthorityClient {
   if (!isPlainObject(options)) throw new Error("authority client: options required");
-  const allowed = ["siteID", "token", "apiURL", "fetch", "timeoutMs", "now"];
+  const allowed = ["siteID", "token", "apiURL", "fetch", "timeoutMs", "now", "deadline", "minStartMs", "releaseReserveMs", "closeReserveMs", "sendFloorsMs"];
   if (Object.keys(options).some((k) => !allowed.includes(k))) throw new Error("authority client: unsupported option (edge or environment context is never accepted)");
   if (!nonEmpty(options.siteID) || !nonEmpty(options.token)) throw new Error("authority client: siteID and token are both required");
   if (options.apiURL !== undefined && !/^https?:\/\/[^/]+$/.test(options.apiURL)) throw new Error("authority client: apiURL must be an origin");
@@ -159,19 +180,46 @@ export function createAuthorityClient(options: { siteID: string; token: string; 
   if (typeof fetchImpl !== "function") throw new Error("authority client: fetch unavailable");
   const now = options.now ?? Date.now;
   if (typeof now !== "function") throw new Error("authority client: invalid clock");
+  const deadline = options.deadline ?? null;
+  if (deadline !== null && !(Number.isSafeInteger(deadline) && deadline > 0)) throw new Error("authority client: invalid deadline");
+  const minStartMs = options.minStartMs ?? DEFAULT_MIN_START_MS;
+  const releaseReserveMs = options.releaseReserveMs ?? 0;
+  const closeReserveMs = options.closeReserveMs ?? 0;
+  const sendFloorsMs = options.sendFloorsMs ?? { note: 0, fields: 0 };
+  if (!nonNegInt(minStartMs) || minStartMs < 1 || !nonNegInt(releaseReserveMs) || !nonNegInt(closeReserveMs)) throw new Error("authority client: invalid deadline reserve");
+  if (!isPlainObject(sendFloorsMs) || !exactKeys(sendFloorsMs, ["note", "fields"]) || !nonNegInt(sendFloorsMs.note) || !nonNegInt(sendFloorsMs.fields)) throw new Error("authority client: invalid send floors");
   const client = Object.freeze({ __authorityClient: true as const });
-  clientConfigs.set(client, { siteID: options.siteID, token: options.token, apiURL: options.apiURL, fetchImpl, timeoutMs, now });
+  clientConfigs.set(client, {
+    siteID: options.siteID, token: options.token, apiURL: options.apiURL, fetchImpl, timeoutMs, now,
+    deadline, minStartMs, releaseReserveMs, closeReserveMs, sendFloorsMs: Object.freeze({ note: sendFloorsMs.note, fields: sendFloorsMs.fields }),
+  });
   return client;
 }
+
+// ------------------------------------------------------------- deadline ---
+
+/** A read's limit: the deadline less a reserve kept for what must follow it (Infinity without a deadline). */
+const readLimit = (cfg: ClientConfig, reserveMs: number) => (cfg.deadline === null ? Infinity : cfg.deadline - reserveMs);
+/** Full cap of one authority write: its sign request plus its blob request. */
+const writeCapMs = (cfg: ClientConfig) => 2 * cfg.timeoutMs;
+/** G1 for a write: it starts only if its whole cap fits before the deadline. */
+const writeFits = (cfg: ClientConfig) => cfg.deadline === null || cfg.deadline - cfg.now() >= Math.max(writeCapMs(cfg), cfg.minStartMs);
 
 // ------------------------------------------------- single-attempt transport ---
 
 type Attempt = { stage: "sign" | "blob"; status: number | null; threw: boolean; etag: string | null; suppressed: boolean };
 const RETRYABLE = (status: number) => status === 429 || status >= 500 || status === 403;
 
-/** One real sign request and at most one real blob request per operation. */
-function recorder(cfg: ClientConfig) {
+/**
+ * One real sign request and at most one real blob request per operation.
+ * `limitAt` (G1/G2): a stage with less than minStartMs left before it is not
+ * sent; a sent stage is aborted at min(cap, limitAt). Timers stay armed until
+ * settle(), which the operation calls after the SDK returns (M2: the SDK's own
+ * body reads are covered).
+ */
+function recorder(cfg: ClientConfig, limitAt: number) {
   const attempts: Attempt[] = [];
+  const timers: ReturnType<typeof setTimeout>[] = [];
   const f = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const accept = new Headers(init?.headers).get("accept");
@@ -181,8 +229,16 @@ function recorder(cfg: ClientConfig) {
       attempts.push({ stage, status: null, threw: false, etag: null, suppressed: true });
       return new Response(null, { status: 400 });
     }
+    const left = limitAt - cfg.now();
+    if (left < cfg.minStartMs) {
+      // G1: no time left before this request's limit, so it is not sent. The first sign request is made by the
+      // SDK's getFinalRequest OUTSIDE its retry loop, so throwing there ends the operation with no SDK retry.
+      attempts.push({ stage, status: null, threw: false, etag: null, suppressed: true });
+      if (stage === "sign") throw new Error("authority request not started (deadline)");
+      return new Response(null, { status: 400 });
+    }
     const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), cfg.timeoutMs);
+    timers.push(setTimeout(() => ac.abort(), Math.min(cfg.timeoutMs, left)));
     try {
       const res = await cfg.fetchImpl(url, { ...init, signal: ac.signal });
       attempts.push({ stage, status: res.status, threw: false, etag: res.headers.get("etag"), suppressed: false });
@@ -195,11 +251,9 @@ function recorder(cfg: ClientConfig) {
       attempts.push({ stage, status: null, threw: true, etag: null, suppressed: false });
       if (stage === "sign") throw e;
       return new Response(null, { status: 400 });
-    } finally {
-      clearTimeout(timer);
     }
   };
-  return { attempts, fetch: f as typeof fetch };
+  return { attempts, fetch: f as typeof fetch, settle: () => { for (const t of timers) clearTimeout(t); } };
 }
 
 function storeFor(cfg: ClientConfig, fetchImpl: typeof fetch) {
@@ -226,13 +280,13 @@ type ReadResult =
   | { kind: "present"; text: string; etag: string; value: AuthorityValue }
   | { kind: "unreadable"; reason: string };
 
-async function strongRead(cfg: ClientConfig, key: string): Promise<ReadResult> {
-  const rec = recorder(cfg);
+async function strongRead(cfg: ClientConfig, key: string, limitAt: number = readLimit(cfg, 0)): Promise<ReadResult> {
+  const rec = recorder(cfg, limitAt);
   let got: { data: string; etag?: string } | null = null;
   let threw = false;
   try {
     got = (await storeFor(cfg, rec.fetch).getWithMetadata(key, { type: "text" })) as { data: string; etag?: string } | null;
-  } catch { threw = true; }
+  } catch { threw = true; } finally { rec.settle(); }
   const sign = rec.attempts.find((a) => a.stage === "sign" && !a.suppressed);
   const blob = rec.attempts.find((a) => a.stage === "blob" && !a.suppressed);
   if (!sign || sign.status !== 200 || !blob) return { kind: "unreadable", reason: "sign_failed" };
@@ -244,8 +298,9 @@ async function strongRead(cfg: ClientConfig, key: string): Promise<ReadResult> {
 }
 
 async function conditionalWrite(cfg: ClientConfig, key: string, text: string, condition: { onlyIfNew: true } | { onlyIfMatch: string }): Promise<WriteResult> {
-  const rec = recorder(cfg);
-  try { await storeFor(cfg, rec.fetch).set(key, text, condition); } catch { /* classified from the recorded attempts */ }
+  if (!writeFits(cfg)) return { kind: "not_sent" }; // G1: its full cap does not fit, so no request at all
+  const rec = recorder(cfg, cfg.deadline ?? Infinity);
+  try { await storeFor(cfg, rec.fetch).set(key, text, condition); } catch { /* classified from the recorded attempts */ } finally { rec.settle(); }
   return classifyWrite(rec.attempts);
 }
 
@@ -311,7 +366,7 @@ export async function openAdmission(client: AuthorityClient, scope: string, inte
   if (!nonEmpty(intent.operator) || !nonEmpty(intent.opportunityId) || !nonEmpty(intent.contactId)) return { kind: "refused", reason: "refused_input" };
   if (!HEX64.test(String(intent.preconditionDigest)) || !HEX64.test(String(intent.expectedResultHash))) return { kind: "refused", reason: "refused_input" };
   const key = authorityKey(scope);
-  const r = await strongRead(cfg, key);
+  const r = await strongRead(cfg, key, readLimit(cfg, writeCapMs(cfg))); // its CAS keeps its full cap
   if (r.kind === "unreadable") return { kind: "unreadable" };
   if (r.kind === "present" && (r.value.state === "ADMITTED" || r.value.state === "HELD_RECOVERY")) return { kind: "refused", reason: "scope_blocked" };
   const prev = r.kind === "present" ? r.value : null;
@@ -370,7 +425,7 @@ export async function fenceUncertainOpen(client: AuthorityClient, handle: Uncert
   const found = lookup(client, handle);
   if (!found) return { kind: "refused", reason: "unknown_handle" };
   const { cfg, rec } = found;
-  const r = await strongRead(cfg, rec.key);
+  const r = await strongRead(cfg, rec.key, readLimit(cfg, writeCapMs(cfg)));
   if (r.kind === "unreadable") return { kind: "unreadable" };
   const now = new Date().toISOString();
   let next: IdleValue | CompletedValue;
@@ -404,7 +459,7 @@ export async function labelHeldRecovery(client: AuthorityClient, scope: string, 
   const cfg = clientConfigs.get(client as object);
   if (!cfg || !nonEmpty(scope) || !nonEmpty(opId)) return { kind: "refused", reason: "refused_input" };
   const key = authorityKey(scope);
-  const r = await strongRead(cfg, key);
+  const r = await strongRead(cfg, key, readLimit(cfg, writeCapMs(cfg)));
   if (r.kind === "unreadable") return { kind: "unreadable" };
   if (r.kind !== "present" || r.value.state !== "ADMITTED" || r.value.op.opId !== opId) return { kind: "refused", reason: "not_admitted_for_op" };
   const cur = r.value;
@@ -438,7 +493,14 @@ export const READER_TEXT = Object.freeze({
 // ------------------------------------------------------------- transports ---
 
 type FieldIds = { repairEstimate: string; repairApprovalId: string };
-type TransportConfig = { mode: "ghl" | "fake"; origin: string; token: string; fetchImpl: typeof fetch; fieldIds: FieldIds; timeoutMs: number };
+/** timeoutMs caps a target WRITE (note POST, fields PUT); readTimeoutMs caps a target GET. */
+type TransportConfig = { mode: "ghl" | "fake"; origin: string; token: string; fetchImpl: typeof fetch; fieldIds: FieldIds; timeoutMs: number; readTimeoutMs: number };
+function transportTimeouts(options: { timeoutMs?: unknown; readTimeoutMs?: unknown }, label: string): { timeoutMs: number; readTimeoutMs: number } {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const readTimeoutMs = options.readTimeoutMs ?? timeoutMs;
+  if (!Number.isSafeInteger(timeoutMs) || (timeoutMs as number) < 1 || !Number.isSafeInteger(readTimeoutMs) || (readTimeoutMs as number) < 1) throw new Error(`${label}: invalid timeout`);
+  return { timeoutMs: timeoutMs as number, readTimeoutMs: readTimeoutMs as number };
+}
 const transports = new WeakMap<object, TransportConfig>();
 
 /** Opaque transport. It exposes no request method; only this module's operations use it. */
@@ -457,29 +519,29 @@ function validFieldIds(v: unknown): FieldIds | null {
  * come from server configuration; repair_approval_id does not exist yet (P5,
  * Brad), so production use is impossible until it is configured.
  */
-export function createProductionTargetTransport(options: { fieldIds: FieldIds }): TargetTransport {
-  if (!isPlainObject(options) || !exactKeys(options, ["fieldIds"])) throw new Error("target transport: options must be exactly { fieldIds }");
+export function createProductionTargetTransport(options: { fieldIds: FieldIds; timeoutMs?: number; readTimeoutMs?: number }): TargetTransport {
+  if (!isPlainObject(options) || !("fieldIds" in options) || Object.keys(options).some((k) => !["fieldIds", "timeoutMs", "readTimeoutMs"].includes(k))) throw new Error("target transport: options must be { fieldIds, timeoutMs?, readTimeoutMs? }");
   const fieldIds = validFieldIds(options.fieldIds);
   if (!fieldIds) throw new Error("target transport: both binding field ids are required (repair_approval_id is not configured)");
+  const caps = transportTimeouts(options, "target transport");
   const token = process.env.GHL_PRIVATE_API_KEY;
   if (!nonEmpty(token)) throw new Error("target transport: server GHL credential unavailable");
   const t = Object.freeze({ __targetTransport: true as const });
-  transports.set(t, { mode: "ghl", origin: GHL_ORIGIN, token, fetchImpl: globalThis.fetch, fieldIds, timeoutMs: DEFAULT_TIMEOUT_MS });
+  transports.set(t, { mode: "ghl", origin: GHL_ORIGIN, token, fetchImpl: globalThis.fetch, fieldIds, ...caps });
   return t;
 }
 
 /** Offline tests only: loopback origin (http://127.0.0.1:port) and a synthetic token. */
-export function createFakeTargetTransport(options: { fetch: typeof fetch; origin: string; fieldIds: FieldIds; timeoutMs?: number }): TargetTransport {
+export function createFakeTargetTransport(options: { fetch: typeof fetch; origin: string; fieldIds: FieldIds; timeoutMs?: number; readTimeoutMs?: number }): TargetTransport {
   if (!isPlainObject(options)) throw new Error("fake transport: options required");
-  if (Object.keys(options).some((k) => !["fetch", "origin", "fieldIds", "timeoutMs"].includes(k))) throw new Error("fake transport: unsupported option");
+  if (Object.keys(options).some((k) => !["fetch", "origin", "fieldIds", "timeoutMs", "readTimeoutMs"].includes(k))) throw new Error("fake transport: unsupported option");
   if (typeof options.origin !== "string" || !/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(options.origin)) throw new Error("fake transport: loopback origin only");
   if (typeof options.fetch !== "function") throw new Error("fake transport: fetch required");
   const fieldIds = validFieldIds(options.fieldIds);
   if (!fieldIds) throw new Error("fake transport: field ids invalid");
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("fake transport: invalid timeout");
+  const caps = transportTimeouts(options, "fake transport");
   const t = Object.freeze({ __targetTransport: true as const });
-  transports.set(t, { mode: "fake", origin: options.origin, token: "synthetic-fake-transport", fetchImpl: options.fetch, fieldIds, timeoutMs });
+  transports.set(t, { mode: "fake", origin: options.origin, token: "synthetic-fake-transport", fetchImpl: options.fetch, fieldIds, ...caps });
   return t;
 }
 
@@ -487,10 +549,22 @@ const clientIsLoopback = (cfg: ClientConfig) => typeof cfg.apiURL === "string" &
 const modesMatch = (cfg: ClientConfig, t: TransportConfig) => (clientIsLoopback(cfg) ? t.mode === "fake" : t.mode === "ghl");
 
 type GhlReply = { status: number | null; json: unknown };
-/** One request, never retried, never redirected; status recorded before the body is read. */
-async function ghlCall(t: TransportConfig, method: "GET" | "POST" | "PUT", path: string, body?: unknown): Promise<GhlReply> {
+/** A GET's G1/G2 limit, from the admission's client: not sent with less than minStartMs left; aborted at the limit. */
+type ReadGate = { now: () => number; limitAt: number; minStartMs: number };
+const gateFor = (cfg: ClientConfig, reserveMs: number): ReadGate => ({ now: cfg.now, limitAt: readLimit(cfg, reserveMs), minStartMs: cfg.minStartMs });
+/**
+ * One request, never retried, never redirected; status recorded before the body is read. The timer covers the
+ * body. A write is capped by timeoutMs (its start is decided by the send gate); a GET by readTimeoutMs and its gate.
+ */
+async function ghlCall(t: TransportConfig, method: "GET" | "POST" | "PUT", path: string, body?: unknown, gate?: ReadGate): Promise<GhlReply> {
+  let capMs = method === "GET" ? t.readTimeoutMs : t.timeoutMs;
+  if (method === "GET" && gate) {
+    const left = gate.limitAt - gate.now();
+    if (left < gate.minStartMs) return { status: null, json: null }; // G1: not sent
+    capMs = Math.min(capMs, left);
+  }
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), t.timeoutMs);
+  const timer = setTimeout(() => ac.abort(), capMs);
   let status: number | null = null;
   try {
     const headers: Record<string, string> = { Authorization: `Bearer ${t.token}`, Version: GHL_VERSION, Accept: "application/json" };
@@ -544,8 +618,8 @@ function issueAdmission(client: object, cfg: ClientConfig, scope: string, key: s
 
 /** A strong read showing exactly this admission: ADMITTED(op) at ETag eAdm with expectedResultHash P. */
 type AuthorityCheck = { kind: "ok"; value: AdmittedValue } | { kind: "changed" } | { kind: "unreadable" };
-async function readOwnAdmission(b: Binding): Promise<AuthorityCheck> {
-  const r = await strongRead(b.cfg, b.key);
+async function readOwnAdmission(b: Binding, limitAt: number): Promise<AuthorityCheck> {
+  const r = await strongRead(b.cfg, b.key, limitAt);
   if (r.kind === "unreadable") return { kind: "unreadable" };
   if (r.kind !== "present" || r.value.state !== "ADMITTED" || r.etag !== b.eAdm || r.value.op.opId !== b.opId || r.value.op.expectedResultHash !== b.P) return { kind: "changed" };
   return { kind: "ok", value: r.value };
@@ -593,13 +667,19 @@ function dispatchKind(admission: unknown, kind: "note" | "fields", transport: un
   st.dispatch = reserved; // reservation: synchronous, before any await
   if (kind === "note") st.transport = tObj as object;
   return (async (): Promise<DispatchResult> => {
-    const d1 = await readOwnAdmission(b);
+    // The note's D1 read cannot use the release reserve; the fields' D1 read cannot use the CLOSE reserve.
+    const d1 = await readOwnAdmission(b, readLimit(b.cfg, kind === "note" ? b.cfg.releaseReserveMs : b.cfg.closeReserveMs));
     if (d1.kind !== "ok") {
       if (st.dispatch === reserved) { st.dispatch = "HALTED_NOT_SENT"; st.haltedAt = kind; }
       return { kind: "not_sent", reason: d1.kind === "unreadable" ? "d1_unreadable" : "d1_authority_changed" };
     }
-    // ---- send gate: no await between this check and the transport call ----
+    // ---- send gate: no await between these checks and the transport call ----
     if (st.dispatch !== reserved) return { kind: "not_sent", reason: st.dispatch === "RETIRED" ? "retired" : "state_changed" };
+    // M3: with a deadline, the write starts only if its floor (never less than its own full cap) is still left.
+    if (b.cfg.deadline !== null && b.cfg.deadline - b.cfg.now() < Math.max(b.cfg.sendFloorsMs[kind], t.timeoutMs, b.cfg.minStartMs)) {
+      st.dispatch = "HALTED_NOT_SENT"; st.haltedAt = kind;
+      return { kind: "not_sent", reason: "deadline" };
+    }
     st.dispatch = kind === "note" ? "NOTE_SENDING" : "FIELDS_SENDING";
     const reply = kind === "note"
       ? await ghlCall(t, "POST", `/contacts/${encodeURIComponent(b.op.target.contactId)}/notes`, { body: renderEvidence({ opId: b.opId, admittedAt: b.op.admittedAt }, p) })
@@ -644,8 +724,8 @@ type Observed = { observedId: string; observedTotal: number; noteId: string };
  * contactId -> mismatch. The path is built only from module state.
  */
 type NoteRead = { kind: "ok"; body: string } | { kind: "not_found" } | { kind: "unreadable" } | { kind: "mismatch" };
-async function readNoteById(t: TransportConfig, contactId: string, noteId: string): Promise<NoteRead> {
-  const r = await ghlCall(t, "GET", `/contacts/${encodeURIComponent(contactId)}/notes/${encodeURIComponent(noteId)}`);
+async function readNoteById(t: TransportConfig, contactId: string, noteId: string, gate: ReadGate): Promise<NoteRead> {
+  const r = await ghlCall(t, "GET", `/contacts/${encodeURIComponent(contactId)}/notes/${encodeURIComponent(noteId)}`, undefined, gate);
   if (r.status === 404) return { kind: "not_found" };
   if (r.status !== 200) return { kind: "unreadable" };
   const n = isPlainObject(r.json) && isPlainObject(r.json.note) ? r.json.note : null;
@@ -663,11 +743,14 @@ type PassOutcome = { kind: "match"; observed: Observed } | { kind: "missing"; re
  */
 async function verifyPass(b: Binding, t: TransportConfig, p: RepairPayload, createdNoteId: string | null): Promise<PassOutcome> {
   if (!usableNoteId(createdNoteId)) return { kind: "terminal", reason: "mismatch" }; // unreachable: FIELDS_DEFINITE implies a bound id
-  const a1 = await readOwnAdmission(b);
+  // Every read in a pass is limited to the deadline less the CLOSE reserve.
+  const limitAt = readLimit(b.cfg, b.cfg.closeReserveMs);
+  const gate = gateFor(b.cfg, b.cfg.closeReserveMs);
+  const a1 = await readOwnAdmission(b, limitAt);
   if (a1.kind !== "ok") return { kind: "terminal", reason: a1.kind === "unreadable" ? "unreadable" : "authority_changed" };
   let missing: string | null = null;
 
-  const opp = await ghlCall(t, "GET", `/opportunities/${encodeURIComponent(b.op.target.opportunityId)}`);
+  const opp = await ghlCall(t, "GET", `/opportunities/${encodeURIComponent(b.op.target.opportunityId)}`, undefined, gate);
   const o = opp.status === 200 && isPlainObject(opp.json) && isPlainObject(opp.json.opportunity) ? opp.json.opportunity : null;
   if (!o) return { kind: "terminal", reason: "unreadable" };
   if (o.id !== b.op.target.opportunityId || o.contactId !== b.op.target.contactId) return { kind: "terminal", reason: "mismatch" };
@@ -682,7 +765,7 @@ async function verifyPass(b: Binding, t: TransportConfig, p: RepairPayload, crea
   if (est.kind === "none" || appr.kind === "none") missing = "missing_field";
 
   // r5.1: the evidence is read ONLY at the exact id this process's own definite create returned (N0).
-  const nt = await readNoteById(t, b.op.target.contactId, createdNoteId);
+  const nt = await readNoteById(t, b.op.target.contactId, createdNoteId, gate);
   if (nt.kind === "unreadable" || nt.kind === "mismatch") return { kind: "terminal", reason: nt.kind };
   if (nt.kind === "not_found") missing = missing ?? "missing_evidence"; // R1: a retry trigger, not proof of absence
   else {
@@ -692,7 +775,7 @@ async function verifyPass(b: Binding, t: TransportConfig, p: RepairPayload, crea
     if (e.opId !== b.opId || e.admittedAt !== b.op.admittedAt || pe !== b.P || e.digestLine !== pe || pe !== payloadDigest(p)) return { kind: "terminal", reason: "mismatch" };
   }
 
-  const a2 = await readOwnAdmission(b);
+  const a2 = await readOwnAdmission(b, limitAt);
   if (a2.kind !== "ok") return { kind: "terminal", reason: a2.kind === "unreadable" ? "unreadable" : "authority_changed" };
   if (missing) return { kind: "missing", reason: missing };
   return { kind: "match", observed: { observedId: b.opId, observedTotal: p.total, noteId: createdNoteId } };
@@ -770,7 +853,7 @@ export function closeVerified(token: VerificationToken, ...extra: unknown[]): Pr
   const t = st.transport ? transports.get(st.transport) : undefined;
   if (!t || t.mode !== tk.mode || !modesMatch(b.cfg, t)) return Promise.resolve({ kind: "refused", reason: "transport_mode_mismatch" });
   return (async (): Promise<CloseResult> => {
-    const r = await strongRead(b.cfg, b.key);
+    const r = await strongRead(b.cfg, b.key, readLimit(b.cfg, writeCapMs(b.cfg))); // its CAS keeps its full cap
     if (r.kind === "unreadable") return { kind: "unreadable" };
     if (r.kind !== "present" || r.value.state !== "ADMITTED" || r.etag !== b.eAdm || r.value.op.opId !== b.opId || r.value.op.expectedResultHash !== b.P) return { kind: "refused", reason: "authority_changed" };
     const cur = r.value;
@@ -810,7 +893,7 @@ export function abandonUndispatched(admission: AdmissionHandle, ...extra: unknow
   if (!allowed) return Promise.resolve({ kind: "refused", reason: `state_${st.dispatch.toLowerCase()}` });
   st.dispatch = "RETIRED"; // synchronous retirement, before any await
   return (async (): Promise<AbandonResult> => {
-    const r = await strongRead(b.cfg, b.key);
+    const r = await strongRead(b.cfg, b.key, readLimit(b.cfg, writeCapMs(b.cfg))); // its CAS keeps its full cap
     if (r.kind === "unreadable") return { kind: "unreadable" };
     if (r.kind !== "present" || r.value.state !== "ADMITTED" || r.etag !== b.eAdm || r.value.op.opId !== b.opId) return { kind: "refused", reason: "authority_changed" };
     const cur = r.value;
@@ -858,7 +941,7 @@ export async function readRepairApproval(client: AuthorityClient, transport: Tar
   const key = authorityKey(scope);
   const a1 = await strongRead(cfg, key);
   if (a1.kind === "unreadable") return nv("evidence_unavailable");
-  const opp = await ghlCall(t, "GET", `/opportunities/${encodeURIComponent(opportunityId)}`);
+  const opp = await ghlCall(t, "GET", `/opportunities/${encodeURIComponent(opportunityId)}`, undefined, gateFor(cfg, 0));
   const o = opp.status === 200 && isPlainObject(opp.json) && isPlainObject(opp.json.opportunity) ? opp.json.opportunity : null;
 
   if (a1.kind === "absent" || a1.value.state === "IDLE") {
@@ -884,7 +967,7 @@ export async function readRepairApproval(client: AuthorityClient, transport: Tar
 
   // r5.1: only the note id CLOSE recorded for this op (N0); a 404 here is evidence_unavailable (no retry budget).
   if (!usableNoteId(c.noteId)) return nv("evidence_mismatch", c.observedTotal);
-  const nt = await readNoteById(t, op.target.contactId, c.noteId);
+  const nt = await readNoteById(t, op.target.contactId, c.noteId, gateFor(cfg, 0));
   if (nt.kind === "not_found" || nt.kind === "unreadable") return nv("evidence_unavailable", c.observedTotal);
   if (nt.kind === "mismatch") return nv("evidence_mismatch", c.observedTotal);
   const e = parseEvidence(nt.body);

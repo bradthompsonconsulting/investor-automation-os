@@ -28,6 +28,27 @@ export type RepairApprovalConfig = Readonly<{
   approvalFieldId: Readonly<Record<"test" | "production", string>>;
   /** Re-read passes after both writes are definite (the module allows at most 3 in 10 s). */
   verifyPassDelayMs: number;
+  /** Whole-save deadline (deadline proposal r3 + r4). PROVISIONAL Test settings, not validated latency bounds. */
+  saveDeadline: SaveDeadlineConfig;
+}>;
+
+export type SaveDeadlineConfig = Readonly<{
+  /** deadline = start + min(budgetMs, remaining runtime budget at entry - responseReserveMs). */
+  budgetMs: number;
+  responseReserveMs: number;
+  /** No request starts with less than this left before its limit. */
+  minStartMs: number;
+  /** Per-request caps; each timer covers the response body. */
+  claimTimeoutMs: number;
+  opportunityReadTimeoutMs: number;
+  authorityTimeoutMs: number;
+  ghlReadTimeoutMs: number;
+  ghlWriteTimeoutMs: number;
+  /** Time kept for the zero-send release and for CLOSE (one strong read + one CAS each). */
+  releaseReserveMs: number;
+  closeReserveMs: number;
+  /** A stage starts only if at least its floor is left before the deadline. */
+  floorsMs: Readonly<{ claim: number; opportunityRead: number; admission: number; notePost: number; fieldsPut: number; verifyPass: number; close: number }>;
 }>;
 
 export const REPAIR_APPROVAL_CONFIG: RepairApprovalConfig = Object.freeze({
@@ -35,6 +56,19 @@ export const REPAIR_APPROVAL_CONFIG: RepairApprovalConfig = Object.freeze({
   environments: Object.freeze(["test"]),
   approvalFieldId: Object.freeze({ test: REPAIR_APPROVAL_FIELD_NOT_PROVISIONED, production: REPAIR_APPROVAL_FIELD_NOT_PROVISIONED }),
   verifyPassDelayMs: 1500,
+  saveDeadline: Object.freeze({
+    budgetMs: 50_000,
+    responseReserveMs: 5_000,
+    minStartMs: 250,
+    claimTimeoutMs: 3_000,
+    opportunityReadTimeoutMs: 5_000,
+    authorityTimeoutMs: 5_000,
+    ghlReadTimeoutMs: 5_000,
+    ghlWriteTimeoutMs: 8_000,
+    releaseReserveMs: 12_000,
+    closeReserveMs: 12_000,
+    floorsMs: Object.freeze({ claim: 44_000, opportunityRead: 41_000, admission: 36_000, notePost: 28_000, fieldsPut: 22_000, verifyPass: 14_000, close: 12_000 }),
+  }),
 });
 
 /** Stable refusal marker for the disabled endpoints. */

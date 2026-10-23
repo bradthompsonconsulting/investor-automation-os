@@ -39,11 +39,16 @@ const memBlobStore = {
   async delete(key) { memStore.delete(key); },
   async setJSON(key, value, options) { if (options && options.onlyIfNew && memStore.has(key)) return { modified: false }; memStore.set(key, value); return { modified: true }; },
 };
+const EDGE_ORIGIN = 'https://edge-blobs.example.invalid'; const EDGE_SITE = 'site-edge-synthetic';
 const blobsShim = {
   ...realBlobs,
   connectLambda: () => {},
-  // API mode (siteID + token, the module's authority client) -> the REAL SDK; anything else -> the in-memory stand-in.
-  getStore: (opts) => (opts && typeof opts === 'object' && opts.siteID && opts.token ? realBlobs.getStore(opts) : memBlobStore),
+  // API mode (siteID + token, the module's authority client) -> the REAL SDK. The save's recorded claim
+  // (getStore({ name, fetch })) -> the REAL SDK in edge mode against the loopback edge fake, so the claim's
+  // recorder sees real requests. Anything else (ghl-write's claimWrite / lockContact) -> the in-memory stand-in.
+  getStore: (opts) => (opts && typeof opts === 'object' && opts.siteID && opts.token ? realBlobs.getStore(opts)
+    : opts && typeof opts === 'object' && typeof opts.fetch === 'function' ? realBlobs.getStore({ name: opts.name, fetch: opts.fetch, edgeURL: EDGE_ORIGIN, siteID: EDGE_SITE, token: 'edge-synthetic-token' })
+      : memBlobStore),
 };
 let cfgMode = 'real';
 const realCfg = (() => { const m = { exports: {} }; const src = ts.transpileModule(fs.readFileSync(path.join(APP, 'shared', 'repair-approval-config.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText; new Function('module', 'exports', 'require', src)(m, m.exports, require); return m.exports; })();
@@ -98,10 +103,18 @@ function listen(handler) {
 const SIGNED_HOST = 'fake-netliblob.s3.us-east-2.amazonaws.com';
 function blobFake() {
   const store = new Map(); const signed = new Map(); const log = []; let rules = []; const nth = {}; let etagN = 0;
+  const edge = new Map(); const edgeLog = [];
   const take = (stage, method) => { const k = `${stage}:${method}`; nth[k] = (nth[k] || 0) + 1; const r = rules.find((x) => x.stage === stage && x.method === method && (x.n === undefined || x.n === nth[k])); if (r) rules = rules.filter((x) => x !== r); return r; };
-  const api = { store, log, script(r) { rules.push(...r); }, reset() { rules = []; for (const k of Object.keys(nth)) delete nth[k]; log.length = 0; } };
+  const api = { store, log, edge, edgeLog, script(r) { rules.push(...r); }, reset() { rules = []; for (const k of Object.keys(nth)) delete nth[k]; log.length = 0; edgeLog.length = 0; } };
   api.ready = listen((req, res, body) => {
     const url = new URL(req.url, 'http://x'); const m = req.method;
+    if (url.pathname.startsWith(`/${EDGE_SITE}/`)) {
+      // Edge-mode receipts (the save's recorded claim): conditional create only. Logged separately from the authority's requests.
+      const key = url.pathname; edgeLog.push({ method: m });
+      if (m === 'PUT') { if (req.headers['if-none-match'] === '*' && edge.has(key)) { res.writeHead(412); return res.end(); } const etag = `"x${++etagN}"`; edge.set(key, body); res.writeHead(200, { etag }); return res.end(); }
+      if (m === 'GET') { if (!edge.has(key)) { res.writeHead(404); return res.end(); } res.writeHead(200); return res.end(edge.get(key)); }
+      res.writeHead(405); return res.end();
+    }
     if (url.pathname.startsWith('/api/v1/blobs/')) {
       const rule = take('sign', m); log.push({ stage: 'sign', method: m });
       if (rule && rule.status) { res.writeHead(rule.status); return res.end('{}'); }
@@ -163,10 +176,12 @@ async function main() {
   const blobs = blobFake(); const ghl = ghlFake();
   const [B, G] = [await blobs.ready, await ghl.ready];
   const realFetch = globalThis.fetch; const blocked = [];
-  const MAP = { 'https://services.leadconnectorhq.com': G.origin, 'https://api.netlify.com': B.origin, [`https://${SIGNED_HOST}`]: B.origin };
+  const MAP = { 'https://services.leadconnectorhq.com': G.origin, 'https://api.netlify.com': B.origin, [`https://${SIGNED_HOST}`]: B.origin, [EDGE_ORIGIN]: B.origin };
   globalThis.fetch = (url, init) => { const u = new URL(String(url)); const o = MAP[u.origin]; if (!o) { blocked.push(u.origin); return Promise.reject(new Error('offline guard: blocked ' + u.origin)); } return realFetch(o + u.pathname + u.search, init); };
 
-  const save = require('../netlify/functions/repair-approval-save.ts').handler;
+  // The save reads the runtime budget from its context (deadline r3 §2); these checks give it a full ~60 s budget.
+  const saveRaw = require('../netlify/functions/repair-approval-save.ts').handler;
+  const save = (event) => saveRaw(event, { getRemainingTimeInMillis: () => 60_000 });
   const status = require('../netlify/functions/repair-approval-status.ts').handler;
   const ghlWrite = require('../netlify/functions/ghl-write.ts').handler;
   const { issueAppSession } = require('../netlify/functions/lib/app-write-auth.ts');

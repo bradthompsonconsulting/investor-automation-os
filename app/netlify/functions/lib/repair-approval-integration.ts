@@ -16,7 +16,7 @@
  *   - the scope (one authoritative operation per opportunity).
  */
 import { createHash } from "node:crypto";
-import { REPAIR_APPROVAL_CONFIG, REPAIR_APPROVAL_FIELD_NOT_PROVISIONED } from "../../../shared/repair-approval-config";
+import { REPAIR_APPROVAL_CONFIG, REPAIR_APPROVAL_FIELD_NOT_PROVISIONED, type SaveDeadlineConfig } from "../../../shared/repair-approval-config";
 import { computeRepairEstimate } from "../../../src/lib/repair-estimation/compute";
 import { OPERATOR_ROWS, buildLines, operatorEstimate, type Answers, type MiscAnswer, type OperatorCondition } from "../../../src/lib/repair-estimation/operator-model";
 import { canonicalJson } from "./blob-authority";
@@ -41,6 +41,45 @@ export function approvalSetup(env: NodeJS.ProcessEnv = process.env, config = REP
   if (!siteID || !token) return { kind: "not_configured", code: "authority_credentials_missing" };
   if (!env.GHL_PRIVATE_API_KEY?.trim()) return { kind: "not_configured", code: "ghl_credential_missing" };
   return { kind: "ready", env: "test", approvalFieldId, siteID, token };
+}
+
+/**
+ * The runtime's remaining budget, read once at handler entry (deadline r3 §2):
+ * callable, finite and non-negative, or null. Null refuses the save before any
+ * provider I/O; there is no fallback budget.
+ */
+export function remainingRuntimeMs(context: unknown): number | null {
+  try {
+    const read = (context as { getRemainingTimeInMillis?: unknown } | null)?.getRemainingTimeInMillis;
+    if (typeof read !== "function") return null;
+    const value = read.call(context);
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** deadline = start + min(budget, remaining - response reserve), as an integer on Date.now's clock. */
+export function saveDeadline(start: number, remainingMs: number, cfg: Pick<SaveDeadlineConfig, "budgetMs" | "responseReserveMs">): number {
+  return start + Math.floor(Math.min(cfg.budgetMs, remainingMs - cfg.responseReserveMs));
+}
+
+/**
+ * A fetch for one bounded step: no request starts with less than minStartMs
+ * left; each request is aborted at min(capMs, deadline - now). Its timers stay
+ * armed until settle(), which the caller runs after the step has returned, so
+ * the response body is covered too.
+ */
+export function boundedFetch(capMs: number, deadline: number, minStartMs: number, now: () => number = Date.now) {
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const f = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const left = deadline - now();
+    if (left < minStartMs) throw new Error("request not started (deadline)");
+    const ac = new AbortController();
+    timers.push(setTimeout(() => ac.abort(), Math.min(capMs, left)));
+    return globalThis.fetch(input, { ...init, signal: ac.signal });
+  };
+  return { fetch: f as typeof fetch, settle: () => { for (const t of timers) clearTimeout(t); } };
 }
 
 /** One authoritative operation per opportunity (r1 §1). */

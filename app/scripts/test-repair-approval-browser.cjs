@@ -48,7 +48,12 @@ const memBlobStore = {
   async delete(key) { memStore.delete(key); },
   async setJSON(key, value, options) { if (options && options.onlyIfNew && memStore.has(key)) return { modified: false }; memStore.set(key, value); return { modified: true }; },
 };
-const blobsShim = { ...realBlobs, connectLambda: () => {}, getStore: (opts) => (opts && typeof opts === 'object' && opts.siteID && opts.token ? realBlobs.getStore(opts) : memBlobStore) };
+const EDGE_ORIGIN = 'https://edge-blobs.example.invalid'; const EDGE_SITE = 'site-edge-synthetic';
+// API mode -> the REAL SDK; the save's recorded claim (getStore({ name, fetch })) -> the REAL SDK in edge mode against
+// the loopback edge fake; anything else -> the in-memory stand-in.
+const blobsShim = { ...realBlobs, connectLambda: () => {}, getStore: (opts) => (opts && typeof opts === 'object' && opts.siteID && opts.token ? realBlobs.getStore(opts)
+  : opts && typeof opts === 'object' && typeof opts.fetch === 'function' ? realBlobs.getStore({ name: opts.name, fetch: opts.fetch, edgeURL: EDGE_ORIGIN, siteID: EDGE_SITE, token: 'edge-synthetic-token' })
+    : memBlobStore) };
 const realCfg = (() => { const m = { exports: {} }; const src = ts.transpileModule(fs.readFileSync(path.join(APP, 'shared', 'repair-approval-config.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText; new Function('module', 'exports', 'require', src)(m, m.exports, require); return m.exports; })();
 const APPROVAL_FIELD = 'fldApprovalSynthetic01';
 const cfgShim = {
@@ -89,9 +94,16 @@ function listen(handler) {
 const SIGNED_HOST = 'fake-netliblob.s3.us-east-2.amazonaws.com';
 function blobFake() {
   const store = new Map(); const signed = new Map(); const log = []; let etagN = 0;
-  const api = { store, log };
+  const edge = new Map();
+  const api = { store, log, edge };
   api.ready = listen((req, res, body) => {
     const url = new URL(req.url, 'http://x'); const m = req.method;
+    if (url.pathname.startsWith(`/${EDGE_SITE}/`)) {
+      // Edge-mode receipts (the save's recorded claim): conditional create only; not part of the authority's request log.
+      const key = url.pathname;
+      if (m === 'PUT') { if (req.headers['if-none-match'] === '*' && edge.has(key)) { res.writeHead(412); return res.end(); } edge.set(key, body); res.writeHead(200, { etag: `"x${++etagN}"` }); return res.end(); }
+      res.writeHead(405); return res.end();
+    }
     if (url.pathname.startsWith('/api/v1/blobs/')) {
       log.push({ stage: 'sign', method: m });
       const key = decodeURIComponent(url.pathname.slice('/api/v1/blobs/'.length)).split('/').slice(2).join('/');
@@ -151,7 +163,7 @@ async function main() {
   const blobs = blobFake(); const ghl = ghlFake();
   const [B, G] = [await blobs.ready, await ghl.ready];
   const realFetch = globalThis.fetch; const offlineBlocked = [];
-  const MAP = { 'https://services.leadconnectorhq.com': G.origin, 'https://api.netlify.com': B.origin, [`https://${SIGNED_HOST}`]: B.origin };
+  const MAP = { 'https://services.leadconnectorhq.com': G.origin, 'https://api.netlify.com': B.origin, [`https://${SIGNED_HOST}`]: B.origin, [EDGE_ORIGIN]: B.origin };
   globalThis.fetch = (url, init) => { const u = new URL(String(url)); const o = MAP[u.origin]; if (!o) { offlineBlocked.push(u.origin); return Promise.reject(new Error('offline guard: blocked ' + u.origin)); } return realFetch(o + u.pathname + u.search, init); };
 
   const saveHandler = require('../netlify/functions/repair-approval-save.ts').handler;
@@ -279,7 +291,7 @@ async function main() {
       if (fn === 'repair-approval-status' && statusUnconfigured) {
         const saved = process.env.IAOS_REPAIR_AUTHORITY_TOKEN; delete process.env.IAOS_REPAIR_AUTHORITY_TOKEN;
         try { r = await statusHandler(event); } finally { process.env.IAOS_REPAIR_AUTHORITY_TOKEN = saved; }
-      } else r = await (fn === 'repair-approval-save' ? saveHandler : statusHandler)(event);
+      } else r = await (fn === 'repair-approval-save' ? saveHandler(event, { getRemainingTimeInMillis: () => 60_000 }) : statusHandler(event)); // the save reads its runtime budget (deadline r3 §2)
       if (fn === 'repair-approval-save' && saveReplyHolds.length) { const g = saveReplyHolds.shift(); await g.promise; }
       call.status = r.statusCode; try { const b = JSON.parse(r.body); call.outcome = b.outcome; call.kind = b.kind; call.code = b.code; } catch { /* not JSON */ }
       if (fn === 'repair-approval-status' && statusHolds.length) { const g = statusHolds.shift(); await g.promise; }
