@@ -297,8 +297,6 @@ jobs:
         run: node app/scripts/test-call-eligibility-endpoint.cjs
       - name: AirDroid call eligibility client state — 53 offline checks
         run: node app/scripts/test-airdroid-eligibility-state.cjs
-      - name: Runtime-budget probe (B15-26 B1, temporary, Test only) — 40 offline checks
-        run: node app/scripts/test-runtime-budget-probe.cjs
 
       # B15 Batches 1-7 (Bones-approved heads 17a1252, 4e4e7f9, eccffae, 3134839, 20e9f4f,
       # 0ba74f2, 197fbbd), offline suites. Storage v2's suites are not part of this release.
