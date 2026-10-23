@@ -32,7 +32,7 @@ const APP = path.resolve(__dirname, '..');
 const HARNESS = path.join(APP, 'scripts', 'harness', 'repair-approval');
 const ENABLED_CONFIG = path.join(HARNESS, 'enabled-config.ts');
 /** Literal check() call-site count in this file, never back-filled from a run. */
-const FLOOR = 75;
+const FLOOR = 77;
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -181,6 +181,7 @@ async function main() {
   const unmodeled = [];
   let statusHolds = [];       // gates applied to the NEXT status responses, in order (handler runs first; the reply waits)
   let statusUnconfigured = false;
+  let saveReplyHolds = [];    // gates applied to the NEXT save responses, in order (handler runs first; the reply waits)
   let statusOverride = null;  // harness-fabricated body for the NEXT status response (only RC5: a reason code the reader never returns today)
   const readCookie = () => `__Host-iaos_read=${issueReadSession(OPERATOR, appReadConfig()).token}`;
   const pipelineFor = () => ({
@@ -259,6 +260,7 @@ async function main() {
         const saved = process.env.IAOS_REPAIR_AUTHORITY_TOKEN; delete process.env.IAOS_REPAIR_AUTHORITY_TOKEN;
         try { r = await statusHandler(event); } finally { process.env.IAOS_REPAIR_AUTHORITY_TOKEN = saved; }
       } else r = await (fn === 'repair-approval-save' ? saveHandler : statusHandler)(event);
+      if (fn === 'repair-approval-save' && saveReplyHolds.length) { const g = saveReplyHolds.shift(); await g.promise; }
       call.status = r.statusCode; try { const b = JSON.parse(r.body); call.outcome = b.outcome; call.kind = b.kind; call.code = b.code; } catch { /* not JSON */ }
       if (fn === 'repair-approval-status' && statusHolds.length) { const g = statusHolds.shift(); await g.promise; }
       return route.fulfill({ status: r.statusCode, contentType: 'application/json', body: r.body });
@@ -337,8 +339,8 @@ async function main() {
       await waitText(T('repair-approval-status'), /^Recorded repair approval — checked as of /);
       check('S4 the status line re-read after the save shows checked (one read on load + one after the save)', /^Recorded repair approval — checked as of /.test(await text(T('repair-approval-status'))) && calls.filter((c) => c.fn === 'repair-approval-status').length === 2);
       const recorded = await text(T('repair-approval-recorded-total'));
-      check('DT1 checked: the accepted sentence is unchanged and the reader\'s total is labelled on its own line ("Recorded repair total: $X."); no draft notice for the answers just verified',
-        CHECKED_EXACT.test(await text(T('repair-approval-status'))) && recorded === recordedLine(total) && (await T('repair-approval-draft-notice').count()) === 0, { recorded, total });
+      check('DT1 checked: the accepted sentence is unchanged and the reader\'s total is labelled on its own line ("Recorded repair total: $X."); the answers just saved read "have not been checked against the recorded approval" (the reply names no operation, so this visit\'s own save is not proof of the record shown)',
+        CHECKED_EXACT.test(await text(T('repair-approval-status'))) && recorded === recordedLine(total) && (await text(T('repair-approval-draft-notice'))) === EDITS_NOT_CHECKED, { recorded, total });
       const a = stored(fx);
       check('S5 GHL holds the shown total and the approval id; one note; the authority record is COMPLETED for that op', oppValue(fx, F_EST) === total && a && a.state === 'COMPLETED' && oppValue(fx, APPROVAL_FIELD) === a.op.opId && notesOf(fx) === 1, { total, ghl: oppValue(fx, F_EST), state: a && a.state, notes: notesOf(fx) });
       check('S6 settled: Approve stays disabled for the same estimate (no second submit of a verified approval)', await btn.isDisabled());
@@ -516,9 +518,9 @@ async function main() {
       hold.open();
       for (let i = 0; i < 60 && !(stored(fx) && stored(fx).state === 'COMPLETED'); i++) await settle(page, 100);
       await waitText(T('repair-approval-recorded-total'), /Recorded repair total/); await settle(page);
-      check('E4 a SAME-total edit during an outstanding save: once the submitted answers verify, the edited answers read "Current edits have not been approved." (compared with what was submitted, not only the total); Approve enabled; one save',
+      check('E4 a SAME-total edit during an outstanding save: once the submitted answers verify, the edited answers read "have not been checked against the recorded approval" (never a match claim from the local snapshot); Approve enabled; one save',
         oppValue(fx, F_EST) === submitted && (await shownTotal(page)) === submitted && (await text(T('repair-approval-recorded-total'))) === recordedLine(submitted)
-        && (await text(T('repair-approval-draft-notice'))) === EDITS_NOT_APPROVED && !(await T('repair-approval-approve').isDisabled()) && saves().length === 1);
+        && (await text(T('repair-approval-draft-notice'))) === EDITS_NOT_CHECKED && !(await T('repair-approval-approve').isDisabled()) && saves().length === 1);
       await context.close();
     }
 
@@ -530,12 +532,15 @@ async function main() {
       await waitText(T('repair-approval-recorded-total'), /Recorded repair total/);
       const before = saves().length;
       await sameTotalEdit(page); await settle(page);
-      check('DS1 same total, different answers after a verified save: "Current edits have not been approved.", recorded total unchanged, Approve enabled, nothing sent',
-        (await shownTotal(page)) === total && (await text(T('repair-approval-draft-notice'))) === EDITS_NOT_APPROVED && (await text(T('repair-approval-recorded-total'))) === recordedLine(total)
+      check('DS1 same total, different answers after a verified save: "have not been checked against the recorded approval" (the local snapshot is not bound to the record shown), recorded total unchanged, Approve enabled, nothing sent',
+        (await shownTotal(page)) === total && (await text(T('repair-approval-draft-notice'))) === EDITS_NOT_CHECKED && (await text(T('repair-approval-recorded-total'))) === recordedLine(total)
         && !(await T('repair-approval-approve').isDisabled()) && saves().length === before);
       await context.close();
       const v = await open(fx); await waitText(v.T('repair-approval-recorded-total'), /Recorded repair total/); await settle(v.page);
       check('DF1 a fresh visit with no edits: the recorded total is shown and no draft notice', (await text(v.T('repair-approval-recorded-total'))) === recordedLine(total) && (await v.T('repair-approval-draft-notice').count()) === 0);
+      await pick(v.page, 0, 'Repair'); for (let i = 1; i < ROWS - 1; i++) await pick(v.page, i, 'Good'); await settle(v.page);
+      check('DI1 an incomplete draft at the recorded total (six of seven rows): "Current edits have not been approved."',
+        (await shownTotal(v.page)) === total && (await v.T('repair-approval-incomplete').count()) === 1 && (await text(v.T('repair-approval-draft-notice'))) === EDITS_NOT_APPROVED);
       await completeEstimate(v.page); await settle(v.page);
       check('DF2 LIMITATION (disclosed): the same answers re-entered on a later visit cannot be compared with the recorded answers -- "have not been checked against the recorded approval", never a match claim',
         (await shownTotal(v.page)) === total && (await text(v.T('repair-approval-draft-notice'))) === EDITS_NOT_CHECKED);
@@ -543,6 +548,31 @@ async function main() {
       check('DF3 a changed total on that later visit: "Current edits have not been approved."; the recorded total still names the approved total',
         (await shownTotal(v.page)) !== total && (await text(v.T('repair-approval-draft-notice'))) === EDITS_NOT_APPROVED && (await text(v.T('repair-approval-recorded-total'))) === recordedLine(total));
       await v.context.close();
+    }
+
+    // ---------- a same-total approval replaced by another viewer (Bones, 2026-10-22) ---
+    { const fx = fixture(); calls.length = 0;
+      const first = await open(fx); const second = await open(fx);
+      await completeEstimate(first.page); await completeEstimate(second.page);
+      const total = await shownTotal(first.page);
+      await pick(second.page, 0, 'Good'); await pick(second.page, 1, 'Repair');
+      await second.page.getByPlaceholder('Known amount', { exact: true }).nth(1).fill(total.toFixed(2));
+      const heldReply = gate(); saveReplyHolds = [heldReply];
+      await first.T('repair-approval-approve').click();                       // A saves X; its verified reply is held
+      for (let i = 0; i < 100 && !(stored(fx) && stored(fx).state === 'COMPLETED'); i++) await settle(first.page, 100);
+      const originalOp = stored(fx)?.op.opId;
+      await second.T('repair-approval-approve').click();                      // B records Y at the same total
+      await waitText(second.T('repair-approval-result'), /^Recorded repair approval — checked as of /);
+      const latestOp = stored(fx)?.op.opId;
+      heldReply.open();                                                        // A's older reply, then A reads B's approval
+      await waitText(first.T('repair-approval-result'), /^Recorded repair approval — checked as of /);
+      await settle(first.page, 1000);
+      const r = { originalOp, latestOp, recordOp: oppValue(fx, APPROVAL_FIELD), total, shown: await shownTotal(first.page), secondShown: await shownTotal(second.page),
+        recorded: await text(first.T('repair-approval-recorded-total')), notice: await text(first.T('repair-approval-draft-notice')), saves: saves().length };
+      check('RP1 A\'s save of X replied late, after B recorded different answers Y at the same total: beside A\'s X the page shows "have not been checked against the recorded approval", never no notice',
+        originalOp && latestOp && originalOp !== latestOp && r.recordOp === latestOp && r.shown === total && r.secondShown === total && r.recorded === recordedLine(total)
+        && r.notice === EDITS_NOT_CHECKED && r.saves === 2, r);
+      await second.context.close(); await first.context.close();
     }
 
     // ------------------------------------------------- out-of-order status reads ---
