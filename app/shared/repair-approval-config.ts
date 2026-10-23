@@ -40,6 +40,7 @@ export type SaveDeadlineConfig = Readonly<{
   minStartMs: number;
   /** Per-request caps; each timer covers the response body. */
   claimTimeoutMs: number;
+  /** Per GET of the Opportunity stage (it makes two: the Opportunity and the derived contact). */
   opportunityReadTimeoutMs: number;
   authorityTimeoutMs: number;
   ghlReadTimeoutMs: number;
@@ -67,7 +68,9 @@ export const REPAIR_APPROVAL_CONFIG: RepairApprovalConfig = Object.freeze({
     ghlWriteTimeoutMs: 8_000,
     releaseReserveMs: 12_000,
     closeReserveMs: 12_000,
-    floorsMs: Object.freeze({ claim: 44_000, opportunityRead: 41_000, admission: 36_000, notePost: 28_000, fieldsPut: 22_000, verifyPass: 14_000, close: 12_000 }),
+    // The Opportunity stage is TWO GETs (the Opportunity, then its derived contact), each with its own 5 s timer:
+    // up to ~10 s. So opportunityRead = admission 36 + 2 x 5 = 46, and claim = 46 + claim cap 3 = 49.
+    floorsMs: Object.freeze({ claim: 49_000, opportunityRead: 46_000, admission: 36_000, notePost: 28_000, fieldsPut: 22_000, verifyPass: 14_000, close: 12_000 }),
   }),
 });
 

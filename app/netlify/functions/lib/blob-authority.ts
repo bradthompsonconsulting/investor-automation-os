@@ -217,7 +217,7 @@ const RETRYABLE = (status: number) => status === 429 || status >= 500 || status 
  * settle(), which the operation calls after the SDK returns (M2: the SDK's own
  * body reads are covered).
  */
-function recorder(cfg: ClientConfig, limitAt: number) {
+function recorder(cfg: ClientConfig, limitAt: number, write = false) {
   const attempts: Attempt[] = [];
   const timers: ReturnType<typeof setTimeout>[] = [];
   const f = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -230,15 +230,19 @@ function recorder(cfg: ClientConfig, limitAt: number) {
       return new Response(null, { status: 400 });
     }
     const left = limitAt - cfg.now();
-    if (left < cfg.minStartMs) {
-      // G1: no time left before this request's limit, so it is not sent. The first sign request is made by the
-      // SDK's getFinalRequest OUTSIDE its retry loop, so throwing there ends the operation with no SDK retry.
+    // G1, re-checked at EACH dispatch: a read needs minStartMs; a write's sign request needs the whole write cap, and
+    // its signed-URL PUT its own full cap -- time spent signing is not assumed to have left room for the PUT.
+    const need = !write ? cfg.minStartMs : stage === "sign" ? writeCapMs(cfg) : cfg.timeoutMs;
+    if (left < Math.max(need, cfg.minStartMs)) {
+      // Not sent. The first sign request is made by the SDK's getFinalRequest OUTSIDE its retry loop, so throwing
+      // there ends the operation with no SDK retry; a refused blob request is answered with a synthetic 400.
       attempts.push({ stage, status: null, threw: false, etag: null, suppressed: true });
       if (stage === "sign") throw new Error("authority request not started (deadline)");
       return new Response(null, { status: 400 });
     }
     const ac = new AbortController();
-    timers.push(setTimeout(() => ac.abort(), Math.min(cfg.timeoutMs, left)));
+    // A write keeps its full cap (it starts only if that fits); a read is aborted at min(cap, its limit).
+    timers.push(setTimeout(() => ac.abort(), write ? cfg.timeoutMs : Math.min(cfg.timeoutMs, left)));
     try {
       const res = await cfg.fetchImpl(url, { ...init, signal: ac.signal });
       attempts.push({ stage, status: res.status, threw: false, etag: res.headers.get("etag"), suppressed: false });
@@ -299,7 +303,7 @@ async function strongRead(cfg: ClientConfig, key: string, limitAt: number = read
 
 async function conditionalWrite(cfg: ClientConfig, key: string, text: string, condition: { onlyIfNew: true } | { onlyIfMatch: string }): Promise<WriteResult> {
   if (!writeFits(cfg)) return { kind: "not_sent" }; // G1: its full cap does not fit, so no request at all
-  const rec = recorder(cfg, cfg.deadline ?? Infinity);
+  const rec = recorder(cfg, cfg.deadline ?? Infinity, true);
   try { await storeFor(cfg, rec.fetch).set(key, text, condition); } catch { /* classified from the recorded attempts */ } finally { rec.settle(); }
   return classifyWrite(rec.attempts);
 }

@@ -22,7 +22,10 @@
  *   recorded claim (claimWriteRecorded): 412 -> 409 not_sent duplicate_request;
  *     anything but one real 2xx -> 503 not_sent claim_unavailable (the receipt
  *     may exist; never retried or deleted)
- *   Opportunity read (bounded) -> contact derived; prior binding values
+ *   Opportunity read (bounded: boundary.opportunity() makes the Opportunity GET
+ *     and the derived-contact GET, each with its own capped timer covering its
+ *     body, so the stage can take up to two caps) -> contact derived; prior
+ *     binding values
  *   admission floor -> 503 not_sent deadline_before_admission; openAdmission
  *   dispatchNote -> dispatchFields -> verifyRepairTarget (<=3 passes, module
  *     budget, pass floor) -> CLOSE floor -> closeVerified
