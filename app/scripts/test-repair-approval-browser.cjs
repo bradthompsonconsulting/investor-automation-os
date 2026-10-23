@@ -32,7 +32,7 @@ const APP = path.resolve(__dirname, '..');
 const HARNESS = path.join(APP, 'scripts', 'harness', 'repair-approval');
 const ENABLED_CONFIG = path.join(HARNESS, 'enabled-config.ts');
 /** Literal check() call-site count in this file, never back-filled from a run. */
-const FLOOR = 77;
+const FLOOR = 81;
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -55,6 +55,8 @@ const cfgShim = {
   REPAIR_APPROVAL_CONFIG: Object.freeze({ ...realCfg.REPAIR_APPROVAL_CONFIG, enabled: true, approvalFieldId: Object.freeze({ test: APPROVAL_FIELD, production: realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED }), verifyPassDelayMs: 40 }),
   REPAIR_APPROVAL_FIELD_NOT_PROVISIONED: realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED,
   REPAIR_APPROVAL_DISABLED: realCfg.REPAIR_APPROVAL_DISABLED,
+  // The REAL predicate, evaluated on this test's enabled config unless another is given.
+  repairApprovalActiveFor: (env, config) => (typeof realCfg.repairApprovalActiveFor === 'function' ? realCfg.repairApprovalActiveFor(env, config === undefined ? cfgShim.REPAIR_APPROVAL_CONFIG : config) : false),
 };
 const originalResolve = Module._resolveFilename; const originalLoad = Module._load;
 Module._resolveFilename = function (name, parent, ...rest) {
@@ -156,7 +158,10 @@ async function main() {
   const statusHandler = require('../netlify/functions/repair-approval-status.ts').handler;
   const { issueAppSession } = require('../netlify/functions/lib/app-write-auth.ts');
   const { issueReadSession, appReadConfig } = require('../netlify/functions/lib/app-read-auth.ts');
-  const { getConfig } = require('../shared/ghl-config.ts');
+  const { getConfig, projectRuntimeConfig } = require('../shared/ghl-config.ts');
+  // The browser's capability comes from the REAL iaos-runtime-config handler (module scope: IAOS_ENV test, this test's enabled config).
+  const runtimeMod = require('../netlify/functions/iaos-runtime-config.ts');
+  const runtimeCalls = [];
   const BA = require('../netlify/functions/lib/blob-authority.ts');
   const { PROVISIONAL_HEADLINE } = require('../src/lib/provisional-repairs.ts');
   const OM = require('../src/lib/repair-estimation/operator-model.ts');
@@ -227,6 +232,21 @@ async function main() {
     if (!url.includes('/.netlify/functions/')) { foreign.push(url); return route.abort(); }
     const u = new URL(url); const fn = u.pathname.replace('/.netlify/functions/', ''); const method = req.method();
     const fulfill = (status, body) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (fn === 'iaos-runtime-config') { // as main.tsx fetches it; the REAL handler unless this viewer asks for another case
+      const mode = viewer.capability || (viewer.legacy ? 'committed' : 'server'); const rc = { mode }; runtimeCalls.push(rc);
+      if (mode === 'error') { rc.status = 500; return fulfill(500, { error: 'synthetic configuration failure' }); }
+      const served = async () => JSON.parse((await runtimeMod.handler({ httpMethod: 'GET' })).body);
+      const pay = typeof runtimeMod.runtimePayload === 'function' ? runtimeMod.runtimePayload : (env) => projectRuntimeConfig(getConfig(env));
+      const committedActive = (env) => (typeof realCfg.repairApprovalActiveFor === 'function' ? realCfg.repairApprovalActiveFor(env, realCfg.REPAIR_APPROVAL_CONFIG) : false);
+      let b;
+      if (mode === 'server') b = await served();
+      else if (mode === 'committed') b = pay('test', committedActive);
+      else if (mode === 'production') b = pay('production');
+      else if (mode === 'missing') { b = await served(); delete b.repairApproval; }
+      else if (mode === 'malformed') { b = await served(); b.repairApproval = { active: 'true' }; }
+      rc.status = 200; rc.active = b.repairApproval ? b.repairApproval.active : undefined;
+      return fulfill(200, b);
+    }
     if (fn === 'ghl-proxy') {
       const p = u.searchParams.get('path') || ''; const m = p.match(/^\/contacts\/([^/?]+)$/);
       if (m && ghl.contacts.has(m[1])) return fulfill(200, { contact: ghl.contacts.get(m[1]) });
@@ -280,9 +300,11 @@ async function main() {
     page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) pageErrors.push(`console: ${m.text()}`); });
     await page.route('**/*', (route) => adapter(route, viewer));
     // The harness page, then the real route inside its router (a direct /contacts/... load would be the app's own index.html).
-    await page.goto(`${viewer.legacy ? legacyBase : base}/scripts/harness/repair-approval/index.html`); await page.getByTestId('elsewhere').waitFor({ timeout: 60000 });
+    await page.goto(`${viewer.legacy ? legacyBase : base}/scripts/harness/repair-approval/index.html`);
+    if (viewer.expectUnavailable) { await page.getByTestId('config-unavailable').waitFor({ timeout: 60000 }); return { page, context, T: (id) => page.getByTestId(id) }; }
+    await page.getByTestId('elsewhere').waitFor({ timeout: 60000 });
     await page.evaluate((c) => window.__iaosNavigate(`/contacts/${c}/underwriting`), fx.contact);
-    try { await (viewer.legacy ? page.getByRole('button', { name: 'Approve and save repair total', exact: true }) : page.getByTestId('repair-approval-approve')).waitFor({ timeout: 60000 }); }
+    try { await (viewer.legacy || viewer.expectLegacy ? page.getByRole('button', { name: 'Approve and save repair total', exact: true }) : page.getByTestId('repair-approval-approve')).waitFor({ timeout: 60000 }); }
     catch (e) { console.error('OPEN FAILED', { body: (await page.locator('body').innerText().catch(() => '')).slice(0, 1500), pageErrors, unmodeled, calls }); throw e; }
     return { page, context, T: (id) => page.getByTestId(id) };
   }
@@ -306,9 +328,9 @@ async function main() {
     // ------------------------------------------------------------- harness ---
     const committedSrc = fs.readFileSync(path.join(APP, 'shared', 'repair-approval-config.ts'), 'utf8');
     { const fx = fixture(); const { page, context, T } = await open(fx);
-      check('H1 committed switch is disabled: shared/repair-approval-config.ts says enabled: false, and the page saw the committed value (only this test aliases it on)',
-        /\n\s+enabled: false,\n/.test(committedSrc.replace(/\r\n/g, '\n')) && realCfg.REPAIR_APPROVAL_CONFIG.enabled === false && (await page.evaluate(() => window.__repairApprovalCommittedEnabled)) === false);
-      check('H2 the enabled action bar rendered on the real page (enabled-only control present)', (await T('repair-approval-approve').count()) === 1 && (await page.getByText('Approving records the total, a repair-approval note and the approval id').count()) === 1);
+      check('H1 committed switch is disabled (shared/repair-approval-config.ts enabled: false); the page\'s capability came from the REAL iaos-runtime-config handler ({ active: true } only because this test\'s server config has the switch on)',
+        /\n\s+enabled: false,\n/.test(committedSrc.replace(/\r\n/g, '\n')) && realCfg.REPAIR_APPROVAL_CONFIG.enabled === false && runtimeCalls.some((r) => r.mode === 'server' && r.active === true), runtimeCalls);
+      check('H2 the enabled action bar rendered on the real page (enabled-only control present, W2 as ruled)', (await T('repair-approval-approve').count()) === 1 && (await page.getByText('Approve saves the repair total and approval ID on this deal, adds an evidence note to its contact in GHL, and verifies the saved details.').count()) === 1);
       await settle(page);
       const st = calls.filter((c) => c.fn === 'repair-approval-status');
       check('H3 one status read on load (no polling), answered by the real handler: none for a deal with no total', st.length === 1 && st[0].status === 200 && st[0].kind === 'none' && (await T('repair-approval-status').count()) === 0, st);
@@ -698,6 +720,31 @@ async function main() {
         ok && (await unanswered(page)) === 0 && (await T('repair-approval-result').count()) === 1 && oppValue(fxA, F_EST) === (await shownTotal(page)));
       await context.close();
     }
+    // ------------- browser capability = the server's (Jess 2026-10-23): Production, missing, malformed, failed load ---
+    const legacyOnly = async (capability) => { const fx = fixture(); calls.length = 0; const before = runtimeCalls.length;
+      const { page, context, T } = await open(fx, { write: true, readSession: true, capability, expectLegacy: true });
+      await completeEstimate(page); await settle(page);
+      const r = { approvalControl: await T('repair-approval-approve').count(), legacyButton: await page.getByRole('button', { name: 'Approve and save repair total', exact: true }).count(),
+        approvalRequests: calls.filter((c) => c.fn.startsWith('repair-approval')).length, served: runtimeCalls.slice(before).map((x) => [x.mode, x.active]) };
+      await context.close(); return r; };
+    const legacyShown = (r) => r.approvalControl === 0 && r.legacyButton === 1 && r.approvalRequests === 0;
+    { const r = await legacyOnly('production');
+      check('CP1 Production with the shared switch ON (the real predicate, IAOS_ENV production): capability false -> the legacy control only; no repair-approval request', legacyShown(r) && r.served.length === 1 && r.served[0][1] === false, r);
+    }
+    { const r = await legacyOnly('missing');
+      check('CP2 a runtime configuration WITHOUT the capability -> the legacy control only (whose write ghl-write refuses where the path is active: integration L1); no repair-approval request', legacyShown(r) && r.served.length === 1 && r.served[0][1] === undefined, r);
+    }
+    { const r = await legacyOnly('malformed');
+      check('CP3 a malformed capability ({ active: "true" }) -> the legacy control only; no repair-approval request', legacyShown(r) && r.served.length === 1 && r.served[0][1] === 'true', r);
+    }
+    { const fx = fixture(); calls.length = 0; const before = runtimeCalls.length;
+      const { page, context } = await open(fx, { write: true, readSession: true, capability: 'error', expectUnavailable: true });
+      await settle(page);
+      const r = { unavailable: await page.getByTestId('config-unavailable').count(), approve: await page.getByRole('button', { name: 'Approve and save repair total', exact: true }).count(), approvalControl: await page.getByTestId('repair-approval-approve').count(), functionCalls: calls.length, runtime: runtimeCalls.slice(before).map((x) => [x.mode, x.status]) };
+      await context.close();
+      check('CP4 failed capability loading (runtime configuration 500) -> the application is not started: no save control of either kind, no other function request', r.unavailable === 1 && r.approve === 0 && r.approvalControl === 0 && r.functionCalls === 0 && r.runtime.length === 1, r);
+    }
+
     // Legacy (committed, disabled) path, on the same page served without the alias.
     { const fxA = fixture(); const fxB = fixture(); legacyWrites.length = 0; calls.length = 0;
       const legacy = { write: true, readSession: true, legacy: true };

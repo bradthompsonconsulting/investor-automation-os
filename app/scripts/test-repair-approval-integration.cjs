@@ -23,7 +23,7 @@ const ts = require('typescript');
 
 const APP = path.resolve(__dirname, '..');
 /** Literal count of check() executions below (loops expanded by hand); never back-filled from a run. */
-const FLOOR = 46; // 40 check() call sites + 4 extra V1 iterations (5 cases) + 2 extra M1 iterations (3 cases)
+const FLOOR = 51; // 45 check() call sites + 4 extra V1 iterations (5 cases) + 2 extra M1 iterations (3 cases)
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -56,6 +56,8 @@ const cfgShim = {
   get REPAIR_APPROVAL_CONFIG() { return cfgMode === 'real' ? realCfg.REPAIR_APPROVAL_CONFIG : cfgVariants[cfgMode]; },
   REPAIR_APPROVAL_FIELD_NOT_PROVISIONED: realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED,
   REPAIR_APPROVAL_DISABLED: realCfg.REPAIR_APPROVAL_DISABLED,
+  // The REAL predicate, evaluated on whichever config this test has selected.
+  repairApprovalActiveFor: (env, config) => (typeof realCfg.repairApprovalActiveFor === 'function' ? realCfg.repairApprovalActiveFor(env, config === undefined ? cfgShim.REPAIR_APPROVAL_CONFIG : config) : false),
 };
 const originalResolve = Module._resolveFilename;
 const originalLoad = Module._load;
@@ -224,8 +226,8 @@ async function main() {
       const OPEN = '        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "14px", flexWrap: "wrap" }}>\n';
       const a = base.indexOf(OPEN) + OPEN.length; const d = base.indexOf('        <div style={{ marginTop: "12px", fontSize: "11px", color: "#475569", lineHeight: 1.5 }}>\n', a);
       const original = base.slice(a, d); const children = original.slice(0, original.lastIndexOf('        </div>\n'));
-      check('D3 disabled UI: the original action-bar JSX is preserved verbatim in the disabled branch, gated only by REPAIR_APPROVAL_CONFIG.enabled',
-        baseBlob === BASE_BLOB && children.length > 0 && now.includes('          ) : (\n          <>\n' + children + '          </>\n          )}\n') && /REPAIR_APPROVAL_CONFIG\.enabled \? \(\n\s+<RepairApprovalActions/.test(now));
+      check('D3 disabled UI: the original action-bar JSX is preserved verbatim in the disabled branch, gated only by the server-confirmed capability (approvalActive)',
+        baseBlob === BASE_BLOB && children.length > 0 && now.includes('          ) : (\n          <>\n' + children + '          </>\n          )}\n') && /\{approvalActive \? \(\n\s+<RepairApprovalActions/.test(now) && !/REPAIR_APPROVAL_CONFIG/.test(now));
     }
     // =========================================================== AUTHORITY ===
     cfgMode = 'enabled';
@@ -254,10 +256,11 @@ async function main() {
       check('C1 enabled but repair_approval_id not provisioned -> 503 not_sent (approval_field_not_provisioned)', r1.statusCode === 503 && parse(r1).outcome === 'not_sent' && parse(r1).code === 'approval_field_not_provisioned');
       check('C2 enabled but no authority credentials -> 503 not_sent (authority_credentials_missing)', r2.statusCode === 503 && parse(r2).code === 'authority_credentials_missing');
       check('C3 missing configuration never falls back: zero GHL and Blob requests; no legacy write', since(m).g.length === 0 && since(m).b.length === 0 && writes() === 0);
+      const se3 = saveEvent(body(fx)); const te3 = statusEvent(fx.opp); // built under Test: only the handlers see Production
       process.env.IAOS_ENV = 'production';
-      const r3 = await save(saveEvent(body(fx)));
+      const r3 = await save(se3); const s3 = await status(te3);
       process.env.IAOS_ENV = 'test';
-      check('C4 Production is not part of this candidate: IAOS_ENV=production -> 503 not_sent (environment_not_enabled); nothing sent', r3.statusCode === 503 && parse(r3).code === 'environment_not_enabled' && since(m).g.length === 0 && since(m).b.length === 0, [r3.statusCode, r3.body]);
+      check('C4 Production with the shared switch ON: save and status answer 404 (by iaos-repair-approval-disabled) before auth or any I/O -- the approval path does not exist there', r3.statusCode === 404 && parse(r3).by === 'iaos-repair-approval-disabled' && s3.statusCode === 404 && since(m).g.length === 0 && since(m).b.length === 0, [r3.statusCode, s3.statusCode]);
     }
     // ===================================================== REQUEST SHAPE ===
     for (const [label, over] of [
@@ -360,6 +363,41 @@ async function main() {
       const w = await ghlWrite({ httpMethod: 'POST', isBase64Encoded: false, queryStringParameters: {}, headers: { authorization: `Bearer ${writeToken()}`, origin: ORIGIN }, body: JSON.stringify({ operation: 'opportunity.repairs', targetId: fx.opp, requestId: 'legacyReq002', args: { value: 4321 } }) });
       check('L1 enabled: the legacy opportunity.repairs write is refused (409 not_sent) and sends nothing -- no alternate approval path', w.statusCode === 409 && parse(w).outcome === 'not_sent' && ghl.log.length === 0, [w.statusCode, w.body]);
     }
+    // ================================== TEST-ONLY SCOPING (Jess, 2026-10-23) ===
+    { const P = realCfg.repairApprovalActiveFor; const on = cfgVariants.enabled; const off = realCfg.REPAIR_APPROVAL_CONFIG;
+      const table = typeof P === 'function' ? [P('test', on), P('production', on), P('staging', on), P(undefined, on), P('TEST', on), P('test', off), P('test', { ...on, environments: [] })] : null;
+      check('T1 one predicate: active ONLY with the switch on, IAOS_ENV exactly "test" and listed (production, unknown, absent, wrong case, switch off, unlisted -> inactive)', JSON.stringify(table) === JSON.stringify([true, false, false, false, false, false, false]), table);
+    }
+    { reset(); const fx = fixture(); const m = mark();
+      const se = saveEvent(body(fx)); const te = statusEvent(fx.opp); // built under Test: only the handlers see the unknown environment
+      process.env.IAOS_ENV = 'staging';
+      const r = await save(se); const s = await status(te);
+      process.env.IAOS_ENV = 'test';
+      check('T2 unknown environment with the switch ON: save and status answer 404 before auth or any I/O', r.statusCode === 404 && s.statusCode === 404 && since(m).g.length === 0 && since(m).b.length === 0, [r.statusCode, s.statusCode]);
+    }
+    { const legacyWrite = async (requestId) => { reset(); const fx = fixture();
+        const w = await ghlWrite({ httpMethod: 'POST', isBase64Encoded: false, queryStringParameters: {}, headers: { authorization: `Bearer ${writeToken()}`, origin: ORIGIN }, body: JSON.stringify({ operation: 'opportunity.repairs', targetId: fx.opp, requestId, args: { value: 4321 } }) });
+        const b = (() => { try { return JSON.parse(w.body); } catch { return null; } })();
+        return { status: w.statusCode, outcome: b && b.outcome, confirmed: b && b.confirmed, error: b && b.error, wrote: ghl.opps.get(fx.opp).customFields.some((f) => f.id === F_EST && f.fieldValue === 4321), ghlRequests: ghl.log.length }; };
+      process.env.IAOS_ENV = 'production';
+      cfgMode = 'real'; const committed = await legacyWrite('legacyProdReq01');
+      cfgMode = 'enabled'; const switchedOn = await legacyWrite('legacyProdReq02');
+      process.env.IAOS_ENV = 'test';
+      const same = ['status', 'outcome', 'confirmed', 'error', 'wrote', 'ghlRequests'].every((k) => committed[k] === switchedOn[k]);
+      console.log('INFO T3 observed (IAOS_ENV production, ghl-write opportunity.repairs):', JSON.stringify({ committed, switchedOn }));
+      check('T3 Production with the shared switch ON keeps its legacy repair save: ghl-write opportunity.repairs behaves exactly as with the committed (disabled) switch, never the approval refusal', same && !/saved through repair approval/.test(String(switchedOn.error)), { committed, switchedOn });
+    }
+    { cfgMode = 'enabled'; let r;
+      try {
+        const RC = require('../netlify/functions/iaos-runtime-config.ts'); const GC = require('../shared/ghl-config.ts');
+        const body = JSON.parse((await RC.handler({ httpMethod: 'GET' })).body);
+        const pay = typeof RC.runtimePayload === 'function' ? RC.runtimePayload : null;
+        r = { served: body.repairApproval, restUnchanged: JSON.stringify({ ...body, repairApproval: undefined }) === JSON.stringify(GC.projectRuntimeConfig(getConfig('test'))),
+          production: pay && pay('production').repairApproval, committed: pay && pay('test', (env) => realCfg.repairApprovalActiveFor(env, realCfg.REPAIR_APPROVAL_CONFIG)).repairApproval };
+      } catch (err) { r = { error: String(err) }; }
+      check('T4 iaos-runtime-config serves the SERVER-computed capability: { active: true } in Test with the switch on; { active: false } for Production with the switch on and for the committed switch; the rest of the payload unchanged',
+        !!(r.served && r.served.active === true && r.restUnchanged && r.production && r.production.active === false && r.committed && r.committed.active === false), r);
+    }
     // ============================================================== CLIENT ===
     { let seen = null;
       appWriteFetchStub = async (url, init) => { seen = { url, init }; return new Response(JSON.stringify({ outcome: 'verified', total: 1, text: 'x' }), { status: 200 }); };
@@ -381,6 +419,9 @@ async function main() {
       const r401 = await as401('Application write sign-in required'); const other401 = await as401('something else');
       check('CL4 no write session (thrown before sending) and the exact save-handler 401 -> not_sent "Sign in…"; any other 401 body stays unknown',
         si.outcome === 'not_sent' && /^Sign in for application writes/.test(si.error) && r401.outcome === 'not_sent' && /^Sign in for application writes/.test(r401.error) && other401.outcome === 'unknown', [si, r401, other401]);
+      const A = C.repairApprovalAvailable;
+      const avail = typeof A === 'function' ? [A({ repairApproval: { active: true } }), A({}), A(null), A({ repairApproval: null }), A({ repairApproval: { active: 'true' } }), A({ repairApproval: { active: 1 } }), A({ repairApproval: true })] : null;
+      check('T5 browser availability is the server capability only: true for { repairApproval: { active: true } }; an absent or malformed capability -> false (the legacy control, which ghl-write refuses wherever the path is active)', JSON.stringify(avail) === JSON.stringify([true, false, false, false, false, false, false]), avail);
     }
     check('hygiene: no request left loopback', blocked.length === 0, blocked);
   } finally {
