@@ -24,7 +24,7 @@ const ts = require('typescript');
 
 const APP = path.resolve(__dirname, '..');
 /** Literal count of check() executions below (loops expanded by hand); never back-filled from a run. */
-const FLOOR = 53;
+const FLOOR = 55;
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -227,17 +227,38 @@ async function main() {
       check('CL8a handler: claim unavailable -> 503 not_sent claim_unavailable; 0 Opportunity, 0 authority, 0 GHL requests', r.statusCode === 503 && b.code === 'claim_unavailable' && b.outcome === 'not_sent' && provider(m).length === 0, [r.statusCode, b, provider(m).length]);
       const id = crypto.randomUUID(); await run(fx, 60_000, id); const m2 = mark(); const again = await run(fx, 60_000, id);
       check('CL8b handler: the same request id again -> 409 not_sent duplicate_request; 0 provider requests', again.r.statusCode === 409 && again.b.code === 'duplicate_request' && provider(m2).length === 0, [again.r.statusCode, again.b]); }
-    { // CL9: frozen time; claimWrite and claimWriteRecorded write byte-identical receipts (key and JSON)
-      const RealDate = Date; const FIXED = RealDate.UTC(2026, 9, 23, 12, 0, 0);
-      global.Date = class extends RealDate { constructor(...a) { super(...(a.length ? a : [FIXED])); } static now() { return FIXED; } };
-      const id = 'frozen-request'; fake.reset(); fake.edge.clear();
-      try { await R.claimWrite('op:repair.approval:oppFrozen', id, { a: 1 }); } catch { /* recorded below */ }
-      const one = fake.log.filter((x) => x.cls === 'edge').map((x) => x.body)[0]; const k1 = [...fake.edge.keys()][0];
-      fake.edge.clear(); fake.reset();
-      const r = await R.claimWriteRecorded('op:repair.approval:oppFrozen', id, { a: 1 }, { deadline: FIXED + 10_000, capMs: 200, minStartMs: 3, now: () => FIXED });
-      const two = fake.log.filter((x) => x.cls === 'edge').map((x) => x.body)[0]; const k2 = [...fake.edge.keys()][0];
-      global.Date = RealDate; Date.now = () => realNow() + vOffset;
-      check('CL9 frozen clock: claimWriteRecorded stores the byte-identical key and JSON that claimWrite stores', r.kind === 'claimed' && typeof one === 'string' && one === two && k1 === k2 && JSON.parse(one).claimedAt === new RealDate(FIXED).toISOString(), [k1 === k2, one === two]);
+    { // CL9: claimWrite and claimWriteRecorded store the same receipt. The record carries claimedAt, so the comparison is
+      // made under ONE frozen clock (Bones); the clock is restored in `finally` and the restoration is checked.
+      const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+      const scope = 'operator@example.invalid:repair.approval:oppFrozen';
+      const payloads = [{ opportunityId: 'oppFrozen', basisDigest: 'd'.repeat(64) }, { a: 1, nested: { b: [1, 2] } }];
+      // One receipt per helper: the key (edge path) and the exact stored bytes, from a clean fake each time.
+      const receipt = async (fn) => { fake.reset(); fake.edge.clear(); const out = await fn(); const body = fake.log.filter((x) => x.cls === 'edge').map((x) => x.body); return { out, body, keys: [...fake.edge.keys()] }; };
+      const viaClaimWrite = (id, p) => receipt(async () => { try { await R.claimWrite(scope, id, p); return 'resolved'; } catch { return 'threw'; } });
+      const viaRecorded = (id, p, now) => receipt(() => R.claimWriteRecorded(scope, id, p, { deadline: now() + 10_000, capMs: 1_000, minStartMs: 3, now }));
+      const RealDate = Date; const savedNow = Date.now; const FIXED = RealDate.UTC(2026, 9, 23, 12, 0, 0);
+      const rows = [];
+      try {
+        global.Date = class extends RealDate { constructor(...a) { super(...(a.length ? a : [FIXED])); } static now() { return FIXED; } };
+        for (const [i, p] of payloads.entries()) {
+          const id = `frozen-request-${i}`;
+          const a = await viaClaimWrite(id, p); const b = await viaRecorded(id, p, () => FIXED);
+          // The pinned SDK namespaces a site-scoped store as `site:<name>` in the edge path.
+          const expectKey = `/${EDGE_SITE}/site:iaos-write-receipts/${sha(`test:${scope}:${id}`)}`;
+          const expectBody = JSON.stringify({ fingerprint: sha(JSON.stringify(p)), claimedAt: new RealDate(FIXED).toISOString() });
+          rows.push({ i, key: a.keys[0], expectKey, claimWrite: a.out, recorded: b.out.kind, sameKey: a.keys.length === 1 && a.keys[0] === b.keys[0], keyIsDerived: a.keys[0] === expectKey,
+            sameBytes: a.body.length === 1 && b.body.length === 1 && a.body[0] === b.body[0], bodyIsDerived: a.body[0] === expectBody });
+        }
+      } finally {
+        global.Date = RealDate; Date.now = savedNow;
+      }
+      check('CL9a frozen clock, 2 payloads: claimWriteRecorded stores exactly the key and the bytes claimWrite stores, and both equal the independent derivation (sha256 of env:scope:requestId; { fingerprint, claimedAt })',
+        rows.length === 2 && rows.every((r) => r.claimWrite === 'resolved' && r.recorded === 'claimed' && r.sameKey && r.keyIsDerived && r.sameBytes && r.bodyIsDerived), rows);
+      check('CL9b the clock is restored afterwards: Date is the real constructor and Date.now advances again', global.Date === RealDate && Date.now === savedNow && new Date().getTime() !== FIXED && Date.now() >= realNow());
+      // Control: without the frozen clock the two receipts differ ONLY in claimedAt, so CL9a's byte equality is not vacuous.
+      const id = 'unfrozen-request'; const a = await viaClaimWrite(id, payloads[0]); await new Promise((q) => realSetTimeout(q, 15)); const b = await viaRecorded(id, payloads[0], Date.now);
+      const ja = JSON.parse(a.body[0]); const jb = JSON.parse(b.body[0]);
+      check('CL9c control (unfrozen, 15 ms apart): same key and fingerprint, different claimedAt -> the bytes differ', a.keys[0] === b.keys[0] && ja.fingerprint === jb.fingerprint && ja.claimedAt !== jb.claimedAt && a.body[0] !== b.body[0], [ja.claimedAt, jb.claimedAt]);
     }
     { // CL10: after every helper return, nothing further happens
       fake.reset(); const m = mark(); fake.rule({ cls: 'edge', status: 503 }); await claim(); fake.rule({ cls: 'edge', hang: 'headers' }); await within(2000, claim({ capMs: 30 })); await claim({ deadline: Date.now() + 50 });

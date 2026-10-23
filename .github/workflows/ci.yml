@@ -341,7 +341,7 @@ jobs:
 
       - name: B1 repair approval integration (default-disabled) -- save/status handlers, server recompute, auth, duplicates, blocking, display, disabled path unchanged, Test-only scoping (INV-134) — 51 checks
         run: node app/scripts/test-repair-approval-integration.cjs
-      - name: Repair save whole-save deadline (B15-26 B1, r4; pinned SDK) — 53 offline checks
+      - name: Repair save whole-save deadline (B15-26 B1, r4; pinned SDK) — 55 offline checks
         run: node app/scripts/test-repair-save-deadline.cjs
 
       # The real-page suites (Seller Call, Contacts, Pipeline, Mailers, shell labels) need Chromium.
