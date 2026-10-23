@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { AlertCircle, Users, ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
 import { ghl, type ContactGridRow } from "../lib/ghl";
 import { startCurrentRead } from "../lib/current-read";
-import { indexDealStages, lastCallAttemptText, stageCell, type DealStageSource } from "../lib/contacts-columns";
+import { displayGridName, indexDealContactNames, indexDealStages, lastCallAttemptText, stageCell, type DealStageSource } from "../lib/contacts-columns";
 import { formatPhone } from "../lib/format";
 import { phoneQueryDigits } from "../lib/operator-display";
 
@@ -34,6 +34,8 @@ interface ColumnDef {
    failure never hides the contacts. */
 interface ColumnContext {
   stages: DealStageSource;
+  /* Deal-side names for display casing only; see displayGridName. */
+  dealNames: ReadonlyMap<string, string>;
 }
 
 const COLUMNS: ColumnDef[] = [
@@ -41,9 +43,10 @@ const COLUMNS: ColumnDef[] = [
     label: "Name",
     sortKey: "name",
     // Name links to the Contact Workspace (§5.1 / §3 / §8 step 2b) via the row's
-    // NON-VISIBLE id. Read-only navigation — no GHL call, no write. Casing is
-    // PRESERVED as returned (§5.1 casing decision) — never title-cased.
-    render: (r) => (
+    // NON-VISIBLE id. Read-only navigation — no GHL call, no write. Never
+    // title-cased: the list's lowercased name is shown in GHL's own case only
+    // when a loaded deal carries the same name (lib/contacts-columns).
+    render: (r, ctx) => (
       <Link
         to={`/contacts/${r.id}`}
         style={{ fontWeight: 500, color: "#F1F5F9", textDecoration: "none", cursor: "pointer" }}
@@ -52,7 +55,7 @@ const COLUMNS: ColumnDef[] = [
       >
         {/* Pass 1 F16: a nameless contact is still a working link, so it must
             not look disabled (the old dim italic "Unknown" did). */}
-        {r.name || <span data-testid={`contacts-unnamed-${r.id}`} style={{ fontStyle: "italic", textDecoration: "underline dotted" }}>Unnamed contact</span>}
+        {displayGridName(r.name, ctx.dealNames.get(r.id)) || <span data-testid={`contacts-unnamed-${r.id}`} style={{ fontStyle: "italic", textDecoration: "underline dotted" }}>Unnamed contact</span>}
       </Link>
     ),
   },
@@ -159,11 +162,18 @@ export default function Contacts() {
      "Stage couldn't be loaded" and never hides the list; only the current
      read applies. Read-only. */
   const [stageSource, setStageSource] = useState<DealStageSource>({ kind: "loading" });
+  const [dealNames, setDealNames] = useState<ReadonlyMap<string, string>>(() => new Map());
   useEffect(() => {
     setStageSource({ kind: "loading" });
     return startCurrentRead(() => ghl.opportunities.listPipeline(), {
-      data: (p) => setStageSource({ kind: "loaded", stageNamesByContact: indexDealStages(p.stages, p.opportunities) }),
-      error: (e) => setStageSource({ kind: "failed", detail: e.message }),
+      data: (p) => {
+        setStageSource({ kind: "loaded", stageNamesByContact: indexDealStages(p.stages, p.opportunities) });
+        setDealNames(indexDealContactNames(p.opportunities));
+      },
+      error: (e) => {
+        setStageSource({ kind: "failed", detail: e.message });
+        setDealNames(new Map());
+      },
       settled: () => {},
     });
   }, [readRecovered]);
@@ -370,7 +380,7 @@ export default function Contacts() {
                         key={col.label}
                         style={{ padding: "11px 16px", textAlign: "left" }}
                       >
-                        {col.render(row, { stages: stageSource })}
+                        {col.render(row, { stages: stageSource, dealNames })}
                       </td>
                     ))}
                   </tr>
