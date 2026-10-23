@@ -24,7 +24,7 @@ const ts = require('typescript');
 
 const APP = path.resolve(__dirname, '..');
 /** Literal count of check() executions below (loops expanded by hand); never back-filled from a run. */
-const FLOOR = 52;
+const FLOOR = 53;
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -39,7 +39,9 @@ const SDK = /@netlify[\\/+]blobs/;
 const realSetTimeout = global.setTimeout; const realClearTimeout = global.clearTimeout;
 const timers = new Map(); let timerSeq = 0;
 global.setTimeout = function (fn, ms, ...a) {
-  const stack = new Error().stack || ''; const rec = { id: ++timerSeq, ms: Number(ms) || 0, ours: OURS.test(stack), sdk: SDK.test(stack), cleared: false, fired: false };
+  // Classified by the frame that called setTimeout (async stacks also list awaiting callers, so the whole stack is not used).
+  const top = (new Error().stack || '').split(String.fromCharCode(10))[2] || '';
+  const rec = { id: ++timerSeq, ms: Number(ms) || 0, ours: OURS.test(top), sdk: SDK.test(top), top, cleared: false, fired: false };
   const h = realSetTimeout(function (...x) { rec.fired = true; return fn.apply(this, x); }, ms, ...a);
   timers.set(h, rec); return h;
 };
@@ -67,7 +69,7 @@ const cfgShim = {
   REPAIR_APPROVAL_DISABLED: realCfg.REPAIR_APPROVAL_DISABLED,
   repairApprovalActiveFor: (env, config) => realCfg.repairApprovalActiveFor(env, config === undefined ? currentCfg : config),
 };
-const useV = (over = {}) => { currentCfg = { ...base, verifyPassDelayMs: 30, saveDeadline: { ...REAL_D, ...over, floorsMs: { ...REAL_D.floorsMs, ...(over.floorsMs || {}) } } }; };
+const useV = (over = {}, verifyPassDelayMs = 30) => { currentCfg = { ...base, verifyPassDelayMs, saveDeadline: { ...REAL_D, ...over, floorsMs: { ...REAL_D.floorsMs, ...(over.floorsMs || {}) } } }; };
 const useR = () => { currentCfg = { ...base, verifyPassDelayMs: 15, saveDeadline: SCALED_D }; };
 const originalResolve = Module._resolveFilename; const originalLoad = Module._load;
 Module._resolveFilename = function (name, parent, ...rest) {
@@ -168,6 +170,7 @@ async function main() {
   const saveHandler = require('../netlify/functions/repair-approval-save.ts').handler;
   const { issueAppSession } = require('../netlify/functions/lib/app-write-auth.ts');
   const { getConfig } = require('../shared/ghl-config.ts');
+  const EV = require('../netlify/functions/lib/repair-evidence.ts');
   const OM = require('../src/lib/repair-estimation/operator-model.ts');
   const config = getConfig('test'); const LOC = config.locationId; const F_EST = config.opportunityFacts.repairs;
   const lambdaEvent = { blobs: Buffer.from(JSON.stringify({ url: EDGE, token: 'edge-synthetic-token' })).toString('base64'), headers: { 'x-nf-site-id': EDGE_SITE, 'x-nf-deploy-id': 'deploy-synthetic' } };
@@ -187,7 +190,8 @@ async function main() {
   const authorityState = (fx) => { const v = fake.blobs.get(BA.authorityKey(fx.scope)); return v ? JSON.parse(v.text).state : null; };
   const run = async (fx, remaining, requestId) => { const t0 = Date.now(); const r = await saveHandler(saveEvent(fx, requestId), ctx(remaining)); return { r, b: parse(r), t0, t1: Date.now() }; };
   const flush = (ms = 250) => new Promise((r) => realSetTimeout(r, ms));
-  const claimOpts = (o = {}) => ({ deadline: Date.now() + 10_000, capMs: 200, minStartMs: 3, ...o });
+  // 1 s cap: headroom for a cold first request; the hang checks pass their own small caps.
+  const claimOpts = (o = {}) => ({ deadline: Date.now() + 10_000, capMs: 1_000, minStartMs: 3, ...o });
   const claim = (o) => R.claimWriteRecorded('op:repair.approval:opp', crypto.randomUUID(), { a: 1 }, claimOpts(o));
 
   try {
@@ -216,7 +220,7 @@ async function main() {
       fake.reset(); fake.rule({ cls: 'edge', status: 200, hang: 'body' }); const m2 = mark(); const r2 = await within(2000, claim({ capMs: 40 }));
       // Not a body-settlement test: the SDK decides a conditional setJSON from status and ETag and does not read the body.
       check('CL6b 200 headers then a hung body -> claimed (the status was recorded at the headers); no live timer', r2.kind === 'claimed' && liveOurs(m2.t).length === 0, r2); }
-    { fake.reset(); const m = mark(); const r = await claim({ deadline: Date.now() + 100, capMs: 200 });
+    { fake.reset(); const m = mark(); const r = await claim({ deadline: Date.now() + 500, capMs: 1_000 });
       check('CL7 deadline closer than the cap -> 0 requests, unavailable(deadline)', r.kind === 'unavailable' && r.reason === 'deadline' && cls(m, 'edge').length === 0, r); }
     useV();
     { fake.reset(); const fx = fixture(); fake.rule({ cls: 'edge', status: 500 }); const m = mark(); const { r, b } = await run(fx, 60_000);
@@ -288,6 +292,18 @@ async function main() {
       fake.reset(); const fx3 = fixture(); fake.rule({ cls: 'signed', method: 'GET', nth: 2, v: 39_000 }, { cls: 'signed', method: 'GET', nth: 3, v: 1_500 }); const m3 = mark(); const y = await run(fx3, 60_000);
       check('DL7c release read sent, then < 10 s left: the release CAS is not sent -> blocked release_not_sent; ADMITTED; 0 POSTs', y.r.statusCode === 409 && y.b.code === 'release_not_sent' && authorityState(fx3) === 'ADMITTED' && cls(m3, 'ghl', 'POST').length === 0 && cls(m3, 'signed', 'PUT').length === 1, [y.b, cls(m3, 'signed', 'PUT').length]); }
     useR();
+    { // DL7d (module, virtual clock): the note's D1 read cannot use the release reserve. With 15 s left, its first
+      // abort timer is min(5 s cap, deadline - 12 s reserve - now) = 3 s; a D1 limited only by the deadline would get 5 s.
+      const tag = (url) => String(url).replace(LOOP, 'https://api.netlify.com');
+      const ghlTag = (url) => String(url).replace(LOOP, 'https://services.leadconnectorhq.com');
+      let t = 2_000_000; const v0 = vOffset; const now = () => t + (vOffset - v0);
+      const client = BA.createAuthorityClient({ siteID: 's', token: 'k', apiURL: LOOP, fetch: (u, i) => globalThis.fetch(tag(u), i), timeoutMs: 5_000, now, deadline: t + 15_000, minStartMs: 250, releaseReserveMs: 12_000, closeReserveMs: 12_000, sendFloorsMs: { note: 28_000, fields: 22_000 } });
+      const transport = BA.createFakeTargetTransport({ fetch: (u, i) => globalThis.fetch(ghlTag(u), i), origin: LOOP, fieldIds: { repairEstimate: F_EST, repairApprovalId: APPROVAL_FIELD }, timeoutMs: 8_000, readTimeoutMs: 5_000 });
+      const payload = EV.validatePayload({ opportunityId: 'oppDl7d', contactId: 'contactDl7d', operator: OPERATOR, total: 5000, complete: true, lineCount: 1, basisDigest: 'c'.repeat(64) });
+      fake.reset(); const open = await BA.openAdmission(client, 'scope-dl7d', { operator: OPERATOR, opportunityId: 'oppDl7d', contactId: 'contactDl7d', preconditionDigest: 'a'.repeat(64), expectedResultHash: EV.payloadDigest(payload) });
+      const tm = timerMark(); const m = mark(); const note = await BA.dispatchNote(open.admission, transport, payload);
+      const d1 = timersSince(tm).filter((r) => /blob-authority/.test(r.top)).map((r) => r.ms);
+      check('DL7d the note D1 read is clamped to deadline - release reserve (first timer 3 000 ms, not the 5 000 ms cap); then the POST gate refuses: not_sent, 0 POSTs', open.kind === 'committed' && d1[0] === 3_000 && note.kind === 'not_sent' && cls(m, 'ghl', 'POST').length === 0, [open.kind, d1, note]); }
     { // DL8: M2 -- bodies that are actually consumed, with real aborts
       const cOpts = () => ({ siteID: 's', token: 'k', timeoutMs: 50, deadline: Date.now() + 2_000, minStartMs: 3 });
       fake.blobs.set(BA.authorityKey('scope-dl8'), { text: '{}', etag: '"e0"' });
@@ -301,8 +317,10 @@ async function main() {
     useV();
     { fake.reset(); const fx = fixture(); fake.rule({ cls: 'signed', method: 'GET', nth: 3, v: 30_000 }); const m = mark(); const { r, b } = await run(fx, 60_000);
       check('DL9 slow fields D1 (30 s; simulated overrun of its clamp) -> PUT gate (22 s) fails -> blocked fields_not_sent; 0 PUTs; the note was sent; no release (ADMITTED)', r.statusCode === 409 && b.code === 'fields_not_sent' && cls(m, 'ghl', 'PUT').length === 0 && cls(m, 'ghl', 'POST').length === 1 && authorityState(fx) === 'ADMITTED', [b, authorityState(fx)]); }
-    { fake.reset(); const fx = fixture(); fake.rule({ cls: 'signed', method: 'GET', nth: 3, v: 27_000 }, { cls: 'ghl', kind: 'noteGet', hide: true, v: 9_000 }); const m = mark(); const t = realNow(); const { r, b } = await run(fx, 60_000); const el = realNow() - t;
-      check('DL10 pass 1 pending (9 s, inside the module window), leaving < verifyPassDelay (30 ms here) + 14 s -> blocked deadline_verify; no second pass (4 GHL GETs: Opportunity + contact, one pass); no sleep; ADMITTED', r.statusCode === 409 && b.code === 'deadline_verify' && cls(m, 'ghl', 'GET').length === 4 && el < 1000 && authorityState(fx) === 'ADMITTED', [b, cls(m, 'ghl', 'GET').length, el]); }
+    useV({}, 1_500); // the production pass delay, so a sleep would show in the elapsed real time
+    { fake.reset(); const fx = fixture(); fake.rule({ cls: 'signed', method: 'GET', nth: 3, v: 27_000 }, { cls: 'ghl', kind: 'noteGet', hide: true, v: 8_000 }); const m = mark(); const t = realNow(); const { r, b } = await run(fx, 60_000); const el = realNow() - t;
+      check('DL10 pass 1 pending (8 s, inside the module window), leaving ~15 s < 1.5 s pass delay + 14 s -> blocked deadline_verify; no second pass (4 GHL GETs: Opportunity + contact, one pass); no sleep; ADMITTED', r.statusCode === 409 && b.code === 'deadline_verify' && cls(m, 'ghl', 'GET').length === 4 && el < 1000 && authorityState(fx) === 'ADMITTED', [b, cls(m, 'ghl', 'GET').length, el]); }
+    useV();
     { // DL11: CLOSE, row by row (r3 §5)
       fake.reset(); const fx = fixture(); fake.rule({ cls: 'ghl', kind: 'noteGet', v: 37_500 }, { cls: 'signed', method: 'GET', nth: 5, v: 1_000 }); const m = mark(); const a = await run(fx, 60_000);
       check('DL11a verified, then 11.5 s < 12 s left (a2 simulated overrun) -> blocked deadline_before_close; 0 CLOSE requests; never verified', a.r.statusCode === 409 && a.b.code === 'deadline_before_close' && !fake.log.slice(m.l).some((x) => /COMPLETED/.test(x.body)) && authorityState(fx) === 'ADMITTED', a.b);
