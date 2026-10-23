@@ -260,6 +260,8 @@ jobs:
 
       - name: Durable call-log operations (lifecycle v3) — real ghl-write and call-log handlers, D1/D2 two-browser orderings, stale calls, storage failures, legacy records, review findings B1-B3 (PR 131) — 47 offline checks
         run: node app/scripts/test-call-log-barrier.cjs
+      - name: Shared receipt helpers — recorded outcomes, no SDK retries, release failures (pinned SDK) — 34 offline checks
+        run: node app/scripts/test-shared-receipts.cjs
 
       - name: Seller Call deal bar, incl. recorded Current Offer note (Pass 1 F31, PR 126 re-reviews) — 42 offline checks
         run: node app/scripts/test-seller-call-deal-bar.cjs
