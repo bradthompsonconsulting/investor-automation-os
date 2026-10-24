@@ -257,6 +257,8 @@ jobs:
 
       - name: Durable Current Offer barrier — real ghl-write and barrier handlers, reloads, late handlers, storage failures (PR 126 stacked server PR) — 45 offline checks
         run: node app/scripts/test-current-offer-barrier.cjs
+      - name: Current Offer barrier suite — completion guard proof (normal / assertion failure / unsettled await / premature exit) — 6 checks
+        run: node app/scripts/test-current-offer-barrier-exit-guard.cjs
 
       - name: Durable call-log operations (lifecycle v3) — real ghl-write and call-log handlers, D1/D2 two-browser orderings, stale calls, storage failures, legacy records, review findings B1-B3 (PR 131) — 47 offline checks
         run: node app/scripts/test-call-log-barrier.cjs

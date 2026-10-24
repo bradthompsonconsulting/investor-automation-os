@@ -170,6 +170,10 @@ const body = (res) => JSON.parse(res.body);
 const offerPuts = () => ghlWrites.filter((w) => w.method === 'PUT' && w.pathname === `/opportunities/${opportunity.id}`);
 const currentOfferInGhl = () => (opportunity.customFields.find((f) => f.id === OFFER_FIELD) || {}).fieldValue ?? null;
 
+/* A wait that never resolves empties the event loop and Node exits 0 mid-suite, before the summary: that must FAIL,
+   never pass. Event-driven (the process 'exit' event), not a timer. Same guard as test-call-log-barrier.cjs. */
+let finished = false;
+process.on('exit', (code) => { if (!finished && code === 0) { console.error('FAIL the suite ended before it finished (a wait never resolved)'); process.exitCode = 1; } });
 let count = 0;
 let failures = 0;
 async function check(name, fn) {
@@ -742,6 +746,7 @@ function fresh() {
     for (let i = 0; i < 3; i++) assert.equal(body(await reconcile()).state, 'blocked');
   });
 
+  finished = true;
   console.log(`\nCurrent Offer durable barrier: ${count}/${count + failures} checks passed`);
   process.exit(failures ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
