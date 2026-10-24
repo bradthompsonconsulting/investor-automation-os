@@ -1,4 +1,5 @@
 /** INV-95 offline handler regressions. Every outbound call is intercepted. */
+const receiptShim = require('./lib/receipt-recorder-shim.cjs'); // the repaired receipt helpers' recorded fetch (test-only)
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -33,7 +34,7 @@ Module._resolveFilename = function(name, parent, ...rest) {
 };
 Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
 Module._load = function(name, ...rest) {
-  if (name === '@netlify/blobs') return {
+  if (name === '@netlify/blobs') return receiptShim.wrap({
     connectLambda: event => { blobConnections++; realBlobs.connectLambda(event); },
     getStore: () => { blobCalls++; realBlobs.getStore('iaos-write-receipts'); return ({
       async get(key, options) {
@@ -60,7 +61,7 @@ Module._load = function(name, ...rest) {
         const blobs = [...rawBlobs.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key, etag: 'fixture-etag' }));
         return { blobs, directories: [] };
       },
-    }); } };
+    }); } });
   return originalLoad.call(this, name, ...rest);
 };
 process.env.IAOS_ENV = 'test';
