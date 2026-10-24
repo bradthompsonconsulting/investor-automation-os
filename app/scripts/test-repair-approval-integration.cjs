@@ -109,10 +109,12 @@ function blobFake() {
   api.ready = listen((req, res, body) => {
     const url = new URL(req.url, 'http://x'); const m = req.method;
     if (url.pathname.startsWith(`/${EDGE_SITE}/`)) {
-      // Edge-mode receipts (the save's recorded claim): conditional create only. Logged separately from the authority's requests.
+      // Edge-mode receipts (the save's recorded claim and, since main's PR #143, ghl-write's recorded lock/claim): create, read, delete. Logged separately from the authority's requests.
       const key = url.pathname; edgeLog.push({ method: m });
       if (m === 'PUT') { if (req.headers['if-none-match'] === '*' && edge.has(key)) { res.writeHead(412); return res.end(); } const etag = `"x${++etagN}"`; edge.set(key, body); res.writeHead(200, { etag }); return res.end(); }
       if (m === 'GET') { if (!edge.has(key)) { res.writeHead(404); return res.end(); } res.writeHead(200); return res.end(edge.get(key)); }
+      // main's repaired lock release (PR #143) deletes through the same edge store; answer like a store does.
+      if (m === 'DELETE') { edge.delete(key); res.writeHead(204); return res.end(); }
       res.writeHead(405); return res.end();
     }
     if (url.pathname.startsWith('/api/v1/blobs/')) {

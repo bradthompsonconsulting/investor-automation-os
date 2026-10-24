@@ -278,13 +278,14 @@ async function main() {
       const m2 = mark(); const low = await run(fx, 40_000);
       check('DL1d handler: an insufficient budget (35 s < the 44 s claim floor) -> 503 deadline_before_start, 0 requests', low.r.statusCode === 503 && low.b.code === 'deadline_before_start' && since(m2).length === 0, low.b); }
     console.log('NOTE  DL2 was replaced by CL1-CL10 in r4');
-    { // DL3: existing callers keep their behaviour -- the shared defect is preserved here on purpose (separate remediation)
+    { // DL3: the shared helpers behave as main's accepted repair (204a66f, PR #143) defines -- a 400 now refuses. This
+      // suite pinned the pre-repair 400-as-success defect until main and this branch were combined (candidate f110a62).
       const rows = [];
       for (const [label, fn] of [['claimWrite', () => R.claimWrite('op:x:t', crypto.randomUUID(), { a: 1 })], ['lockContact', () => R.lockContact(`c-${crypto.randomUUID()}`)], ['claimStageTransition', () => R.claimStageTransition(`o-${crypto.randomUUID()}`, 'req', 'op')]]) {
         for (const s of [200, 400, 412]) { fake.reset(); fake.rule({ cls: 'edge', status: s }); let out; try { out = await fn(); out = 'resolved'; } catch (e) { out = 'threw'; } rows.push(`${label}:${s}:${out}`); }
       }
-      const want = ['claimWrite:200:resolved', 'claimWrite:400:resolved', 'claimWrite:412:threw', 'lockContact:200:resolved', 'lockContact:400:resolved', 'lockContact:412:threw', 'claimStageTransition:200:resolved', 'claimStageTransition:400:resolved', 'claimStageTransition:412:threw'];
-      check('DL3a claimWrite / lockContact / claimStageTransition unchanged (incl. the known 400-as-success defect; separate remediation)', JSON.stringify(rows) === JSON.stringify(want), rows);
+      const want = ['claimWrite:200:resolved', 'claimWrite:400:threw', 'claimWrite:412:threw', 'lockContact:200:resolved', 'lockContact:400:threw', 'lockContact:412:threw', 'claimStageTransition:200:resolved', 'claimStageTransition:400:threw', 'claimStageTransition:412:threw'];
+      check('DL3a claimWrite / lockContact / claimStageTransition as main\'s accepted repair: 200 resolves; 400 and 412 refuse', JSON.stringify(rows) === JSON.stringify(want), rows);
       check('DL3b configuredBoundary() without a fetcher keeps the global fetch (every existing caller)', configuredBoundary().fetcher === globalThis.fetch && configuredBoundary(undefined, undefined).fetcher === globalThis.fetch); }
     useR();
     { fake.reset(); const fx = fixture(); fake.rule({ cls: 'ghl', kind: 'oppGet', hang: 'body' }); const m = mark(); const t = realNow(); const { r, b } = await within(3000, run(fx, 600)); const el = realNow() - t;
