@@ -35,7 +35,7 @@ import { formatPhone } from "../lib/format";
    would replace. */
 import {
   subjectAddress, handoffToPropStream, copyAddressAgain, browserHandoffEnvironment,
-  PROPSTREAM_LOGIN_URL, type HandoffResult,
+  PROPSTREAM_LOGIN_URL, NO_SUBJECT_ADDRESS_REASON, type HandoffResult,
 } from "../lib/propstream";
 import { ADDITIONAL_INFO_SUBGROUPS, type AdditionalInfoSubgroup } from "../config/additionalInfoSubgroups";
 import { getRuntimeConfig } from "../../shared/ghl-config";
@@ -2129,7 +2129,9 @@ export default function ContactWorkspace() {
           NEVER greys a row (§6: "call + no disposition (no note) = no grey").
           tabIndex=-1 + mousedown-prevent keep it from stealing focus from the
           note input (Dashboard parity). */}
-      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px" }}>
+      {/* Pass 1 F44: wraps, so the Get Comps reason moves to the next line
+          with its button instead of squeezing the other buttons. */}
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "12px", marginBottom: "18px" }}>
         <button
           tabIndex={-1}
           onMouseDown={(e) => e.preventDefault()}
@@ -2240,25 +2242,41 @@ export default function ContactWorkspace() {
             DISABLED WITHOUT A COMPLETE ADDRESS, with the reason in the title.
             A comp search on a partial address returns the wrong parcel and
             looks exactly like the right one. */}
-        <button
-          tabIndex={-1}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={handleGetComps}
-          disabled={loading || compsBusy || !compsAddress}
-          data-testid="get-comps"
-          title={compsAddress
-            ? `Copies ${compsAddress} and opens PropStream, where you paste it into the property search`
-            : "No complete subject-property address on this record (street, city and state are all required)"}
-          style={{
-            display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", fontWeight: 600,
-            padding: "8px 14px", borderRadius: "8px",
-            border: "1px solid rgba(30,200,255,0.35)", background: "rgba(30,200,255,0.08)",
-            color: "#1EC8FF", opacity: compsAddress ? 1 : 0.45,
-            cursor: loading || compsBusy || !compsAddress ? "not-allowed" : "pointer",
-          }}
-        >
-          <Copy size={14} /> Get Comps
-        </button>
+        {/* Pass 1 F44 follow-up (Bones, 2026-10-24): the group wraps on its own,
+            so on a narrow window the reason moves below the button instead of
+            squeezing its label onto two lines. */}
+        <span data-testid="get-comps-group" style={{ display: "inline-flex", flexWrap: "wrap", alignItems: "center", gap: "8px", maxWidth: "100%" }}>
+          <button
+            tabIndex={-1}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={handleGetComps}
+            disabled={loading || compsBusy || !compsAddress}
+            data-testid="get-comps"
+            title={compsAddress
+              ? `Copies ${compsAddress} and opens PropStream, where you paste it into the property search`
+              : NO_SUBJECT_ADDRESS_REASON}
+            aria-describedby={contact && !compsAddress ? "get-comps-reason" : undefined}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "12px", fontWeight: 600,
+              padding: "8px 14px", borderRadius: "8px",
+              border: "1px solid rgba(30,200,255,0.35)", background: "rgba(30,200,255,0.08)",
+              color: "#1EC8FF", opacity: compsAddress ? 1 : 0.45,
+              cursor: loading || compsBusy || !compsAddress ? "not-allowed" : "pointer",
+              whiteSpace: "nowrap", flexShrink: 0,
+            }}
+          >
+            <Copy size={14} /> Get Comps
+          </button>
+          {/* Pass 1 F44 (Jess, 2026-10-23): the disabled reason is also visible
+              text beside the button once the contact has loaded; the tooltip
+              and the disabled rule are unchanged. */}
+          {contact && !compsAddress ? (
+            <span id="get-comps-reason" data-testid="get-comps-reason"
+              style={{ maxWidth: "240px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.4 }}>
+              {NO_SUBJECT_ADDRESS_REASON}
+            </span>
+          ) : null}
+        </span>
         <div style={{ position: "relative" }}>
           <button
             onClick={() => { setCallbackOpen((v) => !v); setCallbackError(null); }}

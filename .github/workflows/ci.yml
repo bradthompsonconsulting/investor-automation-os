@@ -369,6 +369,10 @@ jobs:
         run: node app/scripts/test-deal-calculator-interaction.cjs
       - name: Incomplete repairs read as provisional, never a green Meets; numbers unchanged, real page (INV-134 B15-26, INV-100 B15-01) — 55 checks
         run: node app/scripts/test-b15-26-provisional-repairs.cjs
+      - name: Get Comps stays on one line and its reason wraps below at 640/480px; wide layout unchanged, real App (Pass 1 F44) — 26 checks
+        run: node app/scripts/test-b15-44-get-comps-layout.cjs
+      - name: Offer Readiness decision panel starting state, loading lockout and per-deal choice, real Seller Call page (Pass 1 F33) — 31 checks, floor 24
+        run: node app/scripts/test-b15-33-readiness-panel.cjs
       - name: B1 repair approval ENABLED path on the real page, offline (committed switch on for Test; legacy viewer served the switch-off capability) (INV-134) — 81 checks
         run: node app/scripts/test-repair-approval-browser.cjs
       # Both Production negotiation settings against the real write scope and barrier rules; floor 105

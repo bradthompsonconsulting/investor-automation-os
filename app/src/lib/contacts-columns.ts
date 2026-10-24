@@ -69,6 +69,42 @@ export function stageCell(contactId: string, source: DealStageSource): StageCell
   return { kind: "multiple", text: `${list.length} deals: ${parts.join(", ")}` };
 }
 
+/* Contacts grid name casing (Spock, Test observation 2026-10-23). The contact
+   list read returns first and last names lowercased
+   (CONTACTS_OPPORTUNITIES_SPEC.md §5.1 and CONTACT_WORKSPACE_SPEC_v2.md §10,
+   OBSERVED; cause unproven), while the Seller Leads pipeline read the Stage
+   column already uses carries each deal's contact name as GHL shows it. The
+   grid shows that name ONLY when it is the same name ignoring letter case and
+   spacing, and only when every loaded deal for the contact agrees, so the
+   letters never change -- only their case. Otherwise the list's own value
+   stands: nothing is title-cased or guessed (McCormack, de la Cruz). Display
+   only: sorting and search keep using the list value, and nothing is
+   written. */
+type NamedDeal = { contactId: string; contactName: string };
+
+const sameName = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+
+/** Each contact's deal-side name, kept only when every loaded deal for that contact gives the same one. */
+export function indexDealContactNames(deals: readonly NamedDeal[]): Map<string, string> {
+  const seen = new Map<string, string | null>();
+  for (const d of deals) {
+    if (!d.contactId) continue;
+    const name = (d.contactName ?? "").trim().replace(/\s+/g, " ");
+    if (!name) continue;
+    const prior = seen.get(d.contactId);
+    seen.set(d.contactId, prior === undefined || prior === name ? name : null);
+  }
+  const out = new Map<string, string>();
+  for (const [id, name] of seen) if (name !== null) out.set(id, name);
+  return out;
+}
+
+/** The list name, or the deal-side name when the two differ only in case and spacing. */
+export function displayGridName(listName: string, dealName: string | undefined): string {
+  if (!listName || !dealName) return listName;
+  return sameName(dealName) === sameName(listName) ? dealName : listName;
+}
+
 /* B15-20 F2 (Bones, 2026-10-19): a value is shown only when the WHOLE value
    is one of the supported shapes below and is a real date (and time). Every
    other value -- a malformed clock or suffix ("2026-10-01Tbad",

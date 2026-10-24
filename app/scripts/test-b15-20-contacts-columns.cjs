@@ -65,6 +65,26 @@ check('stage: a deal without a contact id joins no contact', loaded.stageNamesBy
 check('stage: closed/lost is shown only as its stage name (no status implied)', K.stageCell('two', loaded).text.includes('won') || K.stageCell('two', loaded).text.includes('status'), false);
 check('stage: empty data', K.stageCell('x', { kind: 'loaded', stageNamesByContact: K.indexDealStages([], []) }).kind, 'no_loaded_deal');
 
+// ── Name display casing (display only) ──────────────────────────────────────
+const NAMED = [
+  { contactId: 'mc', contactName: 'Sean McCormack' },
+  { contactId: 'dlc', contactName: ' Ana  de la Cruz ' },
+  { contactId: 'agree', contactName: 'Bo Li' }, { contactId: 'agree', contactName: 'Bo Li' },
+  { contactId: 'split', contactName: 'Jo Ray' }, { contactId: 'split', contactName: 'JO RAY' },
+  { contactId: 'other', contactName: 'Pat Smith - 12 Elm' },
+  { contactId: '', contactName: 'Nobody' },
+  { contactId: 'blank', contactName: '  ' },
+];
+const N = K.indexDealContactNames(NAMED);
+check('names: the deal-side case is shown when only case differs', K.displayGridName('sean mccormack', N.get('mc')), 'Sean McCormack');
+check('names: spacing is normalised, letters unchanged', K.displayGridName('ana de la cruz', N.get('dlc')), 'Ana de la Cruz');
+check('names: deals that agree are used', K.displayGridName('bo li', N.get('agree')), 'Bo Li');
+check('names: deals that disagree are not used (no pick)', [N.has('split'), K.displayGridName('jo ray', N.get('split'))], [false, 'jo ray']);
+check('names: a different name is never shown (letters must match)', K.displayGridName('pat smith', N.get('other')), 'pat smith');
+check('names: no deal leaves the list value as returned (never title-cased)', K.displayGridName('neelima bale', N.get('none')), 'neelima bale');
+check('names: an empty list name stays empty (Unnamed contact)', K.displayGridName('', N.get('mc')), '');
+check('names: deals without a contact id or a name join nothing', [N.has(''), N.has('blank')], [false, false]);
+
 // ── Last call attempt ────────────────────────────────────────────────────────
 check('attempt: precise value shows date and time', K.lastCallAttemptText('2026-10-01T15:30:00.000Z', '2026-10-01T00:00:00.000Z'), 'Oct 1, 2026, 10:30 AM');
 check('attempt: date-only value is not shifted a day in US time', K.lastCallAttemptText(null, '2026-10-01T00:00:00.000Z'), 'Oct 1, 2026');
@@ -139,10 +159,15 @@ check('Stage and Last call attempt are not sortable (no sort semantics invented)
   /label: "Stage",\n\s+render:/.test(page) && /label: "Last call attempt",\n\s+render:/.test(page), true);
 check('skeleton row matches the column count', /\[160, 120, 180, 200, 140, 120, 90\]\.map/.test(page), true);
 check('stage read is the existing pipeline read, current read only, re-read on recovery',
-  /return startCurrentRead\(\(\) => ghl\.opportunities\.listPipeline\(\), \{\n\s+data: \(p\) => setStageSource\(\{ kind: "loaded", stageNamesByContact: indexDealStages\(p\.stages, p\.opportunities\) \}\),\n\s+error: \(e\) => setStageSource\(\{ kind: "failed", detail: e\.message \}\),/.test(page)
+  /return startCurrentRead\(\(\) => ghl\.opportunities\.listPipeline\(\), \{\n\s+data: \(p\) => \{\n\s+setStageSource\(\{ kind: "loaded", stageNamesByContact: indexDealStages\(p\.stages, p\.opportunities\) \}\);\n\s+setDealNames\(indexDealContactNames\(p\.opportunities\)\);\n\s+\},\n\s+error: \(e\) => \{\n\s+setStageSource\(\{ kind: "failed", detail: e\.message \}\);\n\s+setDealNames\(new Map\(\)\);/.test(page)
     && (page.match(/\}, \[readRecovered\]\);/g) || []).length === 2, true);
-check('a stage-read failure only marks the Stage column unavailable', page.includes('error: (e) => setStageSource({ kind: "failed", detail: e.message })'), true);
+check('a stage-read failure only marks the Stage column unavailable (names fall back to the list value)', page.includes('setStageSource({ kind: "failed", detail: e.message });\n        setDealNames(new Map());'), true);
 check('cells render through the pure module', page.includes('stageCell(r.id, ctx.stages)') && page.includes('lastCallAttemptText(r.lastCallAttemptPrecise, r.lastCallAttempt)'), true);
+check('names: only the Name cell display changes; sort and search still use the list value',
+  page.includes('{displayGridName(r.name, ctx.dealNames.get(r.id)) || <span')
+    && page.includes('copy.sort((a, b) => dir * a.name.localeCompare(b.name));')
+    && page.includes('r.name.toLowerCase().includes(lc) ||')
+    && (page.match(/displayGridName\(/g) || []).length === 1, true);
 check('no "last contact" or "not contacted" claim in the new cells', !/Not yet contacted|label: "Last contact"/i.test(page), true);
 const ghl = read('src/lib/ghl.ts');
 check('grid rows carry the existing attempt fields, both forms',

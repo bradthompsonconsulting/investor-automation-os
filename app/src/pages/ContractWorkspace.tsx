@@ -1316,7 +1316,7 @@ export default function ContractWorkspace() {
       const result = await ghl.proposals.readback({ opportunityId: screen.opportunity.id });
       setProviderReadback({ kind: "loaded", result, fetchedAt: new Date().toISOString() });
     } catch (e: any) {
-      setProviderReadback({ kind: "error", message: e?.message ?? "Could not fetch the live provider readback." });
+      setProviderReadback({ kind: "error", message: e?.message ?? "Could not read this document from GHL." });
     }
   }
 
@@ -1801,7 +1801,7 @@ export default function ContractWorkspace() {
       }
       setUnderContractWriteState({
         kind: "failed",
-        message: `The write may have succeeded, but the readback fetch itself failed: ${e?.message ?? "unknown error"} -- verify directly in GHL before retrying; this action does not retry automatically.`,
+        message: `The save may have gone through, but IAOS could not read it back from GHL to confirm: ${e?.message ?? "unknown error"} -- check in GHL before trying again; IAOS will not retry on its own.`,
         writeMayHaveOccurred: true,
       });
       return;
@@ -1816,7 +1816,7 @@ export default function ContractWorkspace() {
     if (!readbackCheck.ok) {
       setUnderContractWriteState({
         kind: "failed",
-        message: `${readbackCheck.reason} A note carrying this exact evidence may or may not now exist in GHL -- verify directly before retrying; this action does not retry automatically.`,
+        message: `${readbackCheck.reason} GHL may or may not now hold a note with this exact evidence. Check in GHL before trying again; IAOS will not retry on its own.`,
         writeMayHaveOccurred: true,
       });
       return;
@@ -2307,7 +2307,7 @@ export default function ContractWorkspace() {
       }
       setDispositionWriteState({
         kind: "failed",
-        message: `The write may have succeeded, but the readback fetch itself failed: ${e?.message ?? "unknown error"} -- verify directly in GHL before retrying; this action does not retry automatically.`,
+        message: `The save may have gone through, but IAOS could not read it back from GHL to confirm: ${e?.message ?? "unknown error"} -- check in GHL before trying again; IAOS will not retry on its own.`,
         writeMayHaveOccurred: true,
       });
       return;
@@ -2333,7 +2333,7 @@ export default function ContractWorkspace() {
     if (matchingReadback === null) {
       setDispositionWriteState({
         kind: "failed",
-        message: "No note carrying this exact requested snapshot was found on fresh readback -- the write, the read, or the read's own parse failed. A note may or may not now exist in GHL -- verify directly before retrying; this action does not retry automatically.",
+        message: "IAOS read GHL again and did not find a note matching this handoff (same deal, agreement, contract version and Under Contract record). The save, the read, or reading its result failed. GHL may or may not now hold the note. Check in GHL before trying again; IAOS will not retry on its own.",
         writeMayHaveOccurred: true,
       });
       return;
@@ -3688,11 +3688,11 @@ export default function ContractWorkspace() {
                 Verify Execution &amp; Under Contract
               </div>
               <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
-                Verifies whether the three locked Under Contract facts actually hold: every signer completed (by provider recipient id, never GHL's generic role), the provider independently reports completion, and a manually-selected executed PDF is present and hashed. Fetching the live readback above is read-only against GHL, and selecting/hashing the PDF happens locally in this browser. But clicking Record signer mapping or Record attestation below DOES write a durable IAOS note in GHL -- only when that button is clicked, never automatically. Neither of those two steps uploads the PDF file itself; Preserve executed PDF, further below, is a separate action that DOES upload and durably store the actual PDF bytes.
+                This checks the three facts required before Under Contract: every signer has completed (matched by GHL recipient ID, never by GHL's generic role), GHL itself reports the document complete, and an executed PDF you selected is present and fingerprinted (SHA-256). Reading this document from GHL is read-only, and the PDF is read in this browser only. Record signer mapping and Record attestation each save an IAOS record note in GHL, only when you click them, never automatically. Neither uploads the PDF. Preserve executed PDF, further down, is the separate step that uploads the PDF and stores it in IAOS's own file storage.
               </div>
 
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Provider document being verified</div>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>GHL document being verified</div>
                 <div data-testid="contract-execution-document-id" style={{ fontSize: "12px", color: "#E2E8F0" }}>
                   Document id: <span style={{ fontFamily: "monospace" }}>{providerDocumentId ?? "unknown"}</span>
                 </div>
@@ -3706,7 +3706,7 @@ export default function ContractWorkspace() {
               {/* -------------------------------------------------------------- */}
               <div style={{ marginBottom: "12px" }}>
                 <Btn testId="contract-execution-fetch-readback-button" onClick={handleFetchProviderReadback} busy={providerReadback.kind === "loading"}>
-                  Fetch live provider readback
+                  Read this document from GHL
                 </Btn>
                 {providerReadback.kind === "error" ? (
                   <ErrorText testId="contract-execution-readback-error">{providerReadback.message}</ErrorText>
@@ -3744,13 +3744,13 @@ export default function ContractWorkspace() {
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>2. Signer-recipient mapping</div>
                 {providerReadback.kind !== "loaded" ? (
-                  <div data-testid="contract-execution-mapping-awaiting-readback" style={{ fontSize: "11px", color: "#64748B" }}>Fetch the live provider readback above before mapping signers to recipients.</div>
+                  <div data-testid="contract-execution-mapping-awaiting-readback" style={{ fontSize: "11px", color: "#64748B" }}>Read this document from GHL above before matching signers to GHL recipients.</div>
                 ) : requiredSigners.length === 0 ? (
                   <div style={{ fontSize: "11px", color: "#F59E0B" }}>Resolve the required signer set above before mapping can begin.</div>
                 ) : (
                   <>
                     <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "8px" }}>
-                      Visually verify each mapping directly in GHL, then assign every required signer below to exactly one provider recipient id. Every recipient observed in this document must be assigned to exactly one signer -- nothing is auto-paired.
+                      Visually verify each mapping directly in GHL, then assign each required signer below to exactly one GHL recipient ID. Every recipient on this document must be assigned to exactly one signer; nothing is matched automatically.
                     </div>
                     <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "8px" }}>
                       {requiredSigners.map((s) => (
@@ -3762,7 +3762,7 @@ export default function ContractWorkspace() {
                             onChange={(e) => setMappingAssignments((prev) => ({ ...prev, [s.role]: e.target.value }))}
                             style={selectStyle}
                           >
-                            <option value="">-- select provider recipient id --</option>
+                            <option value="">-- choose GHL recipient ID --</option>
                             {availableProviderRecipientIds.map((id) => <option key={id} value={id}>{id}</option>)}
                           </select>
                         </li>
@@ -3792,7 +3792,7 @@ export default function ContractWorkspace() {
                         <span data-testid="contract-execution-mapping-stale" style={{ color: "#F59E0B" }}>not current for this exact evidence ({signerMappingCurrencyResult.reasons.map((r) => r.message).join(" ")})</span>
                       )
                     ) : (
-                      <span>currency not yet checked.</span>
+                      <span>not yet checked against the current evidence.</span>
                     )}
                   </div>
                 ) : null}
@@ -3805,7 +3805,7 @@ export default function ContractWorkspace() {
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>3. Signer completion</div>
                 {providerReadback.kind !== "loaded" ? (
-                  <div data-testid="contract-execution-signers-awaiting-readback" style={{ fontSize: "11px", color: "#64748B" }}>Fetch the live provider readback above to check signer completion.</div>
+                  <div data-testid="contract-execution-signers-awaiting-readback" style={{ fontSize: "11px", color: "#64748B" }}>Read this document from GHL above to check whether every signer has completed.</div>
                 ) : signerCompletionResult && signerCompletionResult.ok ? (
                   <ul data-testid="contract-execution-signers-complete" style={{ margin: 0, padding: 0, listStyle: "none", fontSize: "12px", color: "#22C55E" }}>
                     {signerCompletionResult.matches.map((m) => (
@@ -3817,7 +3817,7 @@ export default function ContractWorkspace() {
                     {signerCompletionResult.reasons.map((r) => <li key={r.code} data-testid={`contract-execution-signer-reason-${r.code}`}>{r.message}</li>)}
                   </ul>
                 ) : (
-                  <div style={{ fontSize: "11px", color: "#64748B" }}>Waiting on readback evidence.</div>
+                  <div style={{ fontSize: "11px", color: "#64748B" }}>Waiting for this document to be read from GHL.</div>
                 )}
               </div>
 
@@ -3830,7 +3830,7 @@ export default function ContractWorkspace() {
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>3. Buyer signer identity</div>
                 {!buyerIdentityResult ? (
-                  <div data-testid="contract-execution-buyer-identity-awaiting-mapping" style={{ fontSize: "11px", color: "#64748B" }}>Fetch the live provider readback above to check this.</div>
+                  <div data-testid="contract-execution-buyer-identity-awaiting-mapping" style={{ fontSize: "11px", color: "#64748B" }}>Read this document from GHL above to check this.</div>
                 ) : buyerIdentityResult.ok ? (
                   <div data-testid="contract-execution-buyer-identity-verified" style={{ fontSize: "12px", color: "#22C55E" }}>
                     The buyer's mapped provider recipient's reported identity matches the authorized buyer signer name.
@@ -3846,9 +3846,9 @@ export default function ContractWorkspace() {
               {/* 2. Provider completion -- reuses INV-64's own chronology        */}
               {/* -------------------------------------------------------------- */}
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>4. Provider completion</div>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>4. Completion reported by GHL</div>
                 {providerReadback.kind !== "loaded" ? (
-                  <div data-testid="contract-execution-provider-completion-awaiting-readback" style={{ fontSize: "11px", color: "#64748B" }}>Fetch the live provider readback above to check provider completion.</div>
+                  <div data-testid="contract-execution-provider-completion-awaiting-readback" style={{ fontSize: "11px", color: "#64748B" }}>Read this document from GHL above to check whether GHL reports it complete.</div>
                 ) : providerCompletionResult ? (
                   providerCompletionResult.ok ? (
                     <div data-testid="contract-execution-provider-completion-true" style={{ fontSize: "12px", color: "#22C55E" }}>
@@ -3860,7 +3860,7 @@ export default function ContractWorkspace() {
                     </ul>
                   )
                 ) : (
-                  <div data-testid="contract-execution-provider-completion-unavailable" style={{ fontSize: "11px", color: "#F59E0B" }}>The live readback did not confirm this document's own record -- provider completion cannot be evaluated.</div>
+                  <div data-testid="contract-execution-provider-completion-unavailable" style={{ fontSize: "11px", color: "#F59E0B" }}>The read from GHL did not confirm this exact document's record, so IAOS cannot evaluate whether GHL reports it complete.</div>
                 )}
               </div>
 
@@ -3870,7 +3870,7 @@ export default function ContractWorkspace() {
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>5. Executed artifact (manual selection)</div>
                 <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "8px" }}>
-                  GHL's Documents &amp; Contracts API has no download endpoint -- download the completed document for this exact provider document id directly from GHL, then select that PDF file below. It is read and hashed in this browser only; the file itself is never uploaded, saved, or sent anywhere.
+                  IAOS cannot download the signed document from GHL. Download the completed document with this exact document ID from GHL yourself, then select that PDF below. IAOS reads it and computes its SHA-256 fingerprint in this browser only; this file is never uploaded, saved or sent anywhere.
                 </div>
                 <input
                   type="file"
@@ -3881,7 +3881,7 @@ export default function ContractWorkspace() {
                   style={{ fontSize: "11px", color: "#94A3B8" }}
                 />
                 {manualFileBusy ? (
-                  <div data-testid="contract-execution-manual-file-busy" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>Reading and hashing selected file...</div>
+                  <div data-testid="contract-execution-manual-file-busy" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>Reading the file and computing its SHA-256 fingerprint...</div>
                 ) : null}
                 {manualArtifactVerificationResult ? (
                   manualArtifactVerificationResult.ok ? (
@@ -3980,7 +3980,7 @@ export default function ContractWorkspace() {
                         <span data-testid="contract-execution-terms-attestation-stale" style={{ color: "#F59E0B" }}>not current for this exact evidence ({attestationCurrencyResult.reasons.map((r) => r.message).join(" ")})</span>
                       )
                     ) : (
-                      <span>currency not yet checked (fetch readback and select the PDF above).</span>
+                      <span>not yet checked against the current evidence (read this document from GHL and select the PDF above).</span>
                     )}
                   </div>
                 ) : null}
@@ -4014,7 +4014,7 @@ export default function ContractWorkspace() {
                       onChange={handlePreservePdfFileSelected}
                     />
                     {preserveFileBusy ? (
-                      <div data-testid="contract-execution-artifact-selection-busy" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>Reading and hashing selected file...</div>
+                      <div data-testid="contract-execution-artifact-selection-busy" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>Reading the file and computing its SHA-256 fingerprint...</div>
                     ) : preserveFileOutcome && preserveFileOutcome.kind === "selected" ? (
                       <div data-testid="contract-execution-artifact-selected" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "6px" }}>
                         Selected locally (not yet uploaded): {preserveFileOutcome.fileName} -- {(preserveSelectedFile?.size ?? 0).toLocaleString()} bytes, SHA-256 <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{preserveFileOutcome.sha256}</span>, {preserveFileOutcome.pageCount ?? "unknown"} page(s).
@@ -4101,7 +4101,7 @@ export default function ContractWorkspace() {
                   <div>
                     {underContractWriteState.kind === "success" ? (
                       <div data-testid="contract-execution-under-contract-write-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
-                        Recorded and verified by fresh readback -- the written note round-trips exactly.
+                        Recorded. GHL confirmed this exact note was saved, and IAOS's fresh read found the matching record.
                       </div>
                     ) : (
                       <div data-testid="contract-execution-under-contract-already-recorded" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "8px" }}>
@@ -4122,7 +4122,7 @@ export default function ContractWorkspace() {
                         </Btn>
                         {stageTransitionState.kind === "success" ? (
                           <div data-testid="contract-execution-stage-transition-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
-                            {stageTransitionState.alreadyInStage ? "Already in the Under Contract stage." : "Transitioned and confirmed by fresh readback -- pipeline and stage both verified exact."}
+                            {stageTransitionState.alreadyInStage ? "Already in the Under Contract stage." : "Moved to Under Contract. IAOS read the deal back from GHL and confirmed the exact pipeline and stage."}
                           </div>
                         ) : stageTransitionState.kind === "refused" ? (
                           <div data-testid="contract-execution-stage-transition-refused" style={{ fontSize: "12px", color: "#EF4444", marginTop: "8px" }}>
@@ -4189,7 +4189,7 @@ export default function ContractWorkspace() {
                     </div>
                   )
                 ) : (
-                  <div style={{ fontSize: "11px", color: "#64748B" }}>Fetch the live readback, map signers to recipients, and select the executed PDF above to see exactly which stage this evidence reaches.</div>
+                  <div style={{ fontSize: "11px", color: "#64748B" }}>Read this document from GHL, match signers to GHL recipients, and select the executed PDF above to see exactly which verification stage this evidence reaches.</div>
                 )}
               </div>
             </div>
@@ -4312,7 +4312,7 @@ export default function ContractWorkspace() {
                 <div style={{ marginBottom: "12px" }}>
                   {dispositionWriteState.kind === "success" ? (
                     <div data-testid="disposition-handoff-write-success" style={{ fontSize: "12px", color: "#22C55E", marginTop: "8px" }}>
-                      Recorded and verified by fresh readback -- the written note round-trips exactly. Buyer disposition can now use handoff id <span style={{ fontFamily: "monospace" }}>{dispositionWriteState.record.handoffId}</span>.
+                      Recorded. GHL confirmed this exact note was saved, and IAOS's fresh read found the matching handoff. Buyer disposition can now use handoff ID <span style={{ fontFamily: "monospace" }}>{dispositionWriteState.record.handoffId}</span>.
                     </div>
                   ) : (
                     <div data-testid="disposition-handoff-already-recorded" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "8px" }}>
@@ -4354,14 +4354,14 @@ export default function ContractWorkspace() {
                     return (
                       <>
                         <div data-testid="disposition-handoff-preview-authoritative" style={{ ...groupCardStyle, marginBottom: "12px" }}>
-                          <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Authoritative data (reused verbatim, never recalculated)</div>
+                          <div style={{ fontSize: "11px", fontWeight: 700, color: "#94A3B8", marginBottom: "6px" }}>Recorded deal data (copied exactly, never recalculated)</div>
                           <ul style={{ margin: 0, padding: 0, listStyle: "none", fontSize: "12px", color: "#E2E8F0", lineHeight: 1.9 }}>
                             <li>Property: {pkg.propertyAddress.kind === "populated" ? pkg.propertyAddress.value : "unconfirmed"}</li>
                             <li>Seller contract price: {money(pkg.sellerContractPrice)}</li>
-                            <li>Approved ARV: {money(pkg.approvedArv.amount)} {pkg.approvedArv.approvalEvidenceState ? `(${pkg.approvedArv.approvalEvidenceState}, ${pkg.approvedArv.approvalDecision})` : "(no matching approval-ledger entry)"}</li>
+                            <li>Approved ARV: {money(pkg.approvedArv.amount)} {pkg.approvedArv.approvalEvidenceState ? `(${pkg.approvedArv.approvalEvidenceState}, ${pkg.approvedArv.approvalDecision})` : "(no matching ARV approval record)"}</li>
                             <li>Approved repairs: {money(pkg.approvedRepairs)}</li>
                             <li>Required signers: {pkg.requiredSigners.map((s) => `${s.role} (${s.displayName})`).join(", ")}</li>
-                            <li>Provider document: {pkg.underContract.providerDocumentId} (revision {pkg.underContract.providerDocumentRevision ?? "unavailable"})</li>
+                            <li>GHL document: {pkg.underContract.providerDocumentId} (revision {pkg.underContract.providerDocumentRevision ?? "unavailable"})</li>
                             <li>Artifact SHA-256: <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{pkg.underContract.artifactSha256}</span></li>
                             <li>Execution verified at: {new Date(pkg.underContract.verifiedAt).toLocaleString()}</li>
                           </ul>
@@ -4369,7 +4369,7 @@ export default function ContractWorkspace() {
 
                         {missingOptional.length > 0 ? (
                           <div data-testid="disposition-handoff-preview-missing-optional" style={{ ...groupCardStyle, marginBottom: "12px", borderColor: "rgba(245,158,11,0.35)" }}>
-                            <div style={{ fontSize: "11px", fontWeight: 700, color: "#F59E0B", marginBottom: "6px" }}>Missing optional data (disclosed honestly, never fabricated)</div>
+                            <div style={{ fontSize: "11px", fontWeight: 700, color: "#F59E0B", marginBottom: "6px" }}>Optional details IAOS does not have (listed here, never made up)</div>
                             <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
                               {missingOptional.map((i) => <li key={i.label}>{i.label}: not yet recorded.</li>)}
                               <li>Photos/documents: {pkg.documentReferencesNote}</li>
