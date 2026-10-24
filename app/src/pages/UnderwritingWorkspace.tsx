@@ -54,6 +54,8 @@ import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstima
    (Contact-only by its own deliberate design) is unaffected. */
 import { persistApprovedRepairTotalToOpportunity, persistGate } from "../lib/repair-estimation/persist";
 import type { PersistResult, RepairApproval } from "../lib/repair-estimation/persist";
+import { REPAIR_APPROVAL_APPROVE_LABEL, REPAIR_APPROVAL_SAVING_TEXT, fetchRepairApprovalStatus, repairApprovalAvailable, recordedRepairTotalText, repairApprovalDraftNotice, repairApprovalReasonText, saveRepairApproval, type RepairApprovalSaveResult, type RepairApprovalStatus } from "../lib/repair-approval-client";
+import { PROVISIONAL_HEADLINE } from "../lib/provisional-repairs";
 import ArvCompsWorkspace from "../components/ArvCompsWorkspace";
 
 /**
@@ -598,6 +600,7 @@ function RepairEstimator({ opportunityId, onPersisted }: {
   opportunityId: string;
   onPersisted: () => void;
 }) {
+  const approvalActive = repairApprovalAvailable(); // server-confirmed (iaos-runtime-config), never a browser-side environment
   const [answers, setAnswers] = useState<Answers>({});
   /* 2026-10-04 amendment, rule 5: Miscellaneous / Other repairs. Session
      state only, like every Known Amount (no persisted itemization). */
@@ -732,6 +735,10 @@ function RepairEstimator({ opportunityId, onPersisted }: {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "14px", flexWrap: "wrap" }}>
+          {approvalActive ? (
+            <RepairApprovalActions opportunityId={opportunityId} answers={answers} misc={misc} total={total} incomplete={result.incomplete} revision={revision} onPersisted={onPersisted} />
+          ) : (
+          <>
           <button
             onClick={() => {
               const next: RepairApproval = { kind: "approved", total, revision };
@@ -794,14 +801,16 @@ function RepairEstimator({ opportunityId, onPersisted }: {
               Try saving again
             </button>
           ) : null}
+          </>
+          )}
         </div>
 
         <div style={{ marginTop: "12px", fontSize: "11px", color: "#475569", lineHeight: 1.5 }}>
           Actual condition and repair scope are subject to inspection. This is an underwriting estimate,
-          not a contractor bid or a guaranteed repair cost. Approving saves the TOTAL ONLY to this deal's
+          not a contractor bid or a guaranteed repair cost.{approvalActive ? " Approve saves the repair total and approval ID on this deal, adds an evidence note to its contact in GHL, and verifies the saved details." : null}{approvalActive ? null : <> Approving saves the TOTAL ONLY to this deal's
           Repairs field in GHL (on the opportunity, not the contact) — no itemization is stored and no
           other field is touched. Nothing is written without approval, and
-          the underwriting figures above update from GHL on the next read, not from this session.
+          the underwriting figures above update from GHL on the next read, not from this session.</>}
         </div>
       </div>
     </div>
@@ -809,6 +818,105 @@ function RepairEstimator({ opportunityId, onPersisted }: {
 }
 
 
+
+/**
+ * B15-26 B1 repair-save completion -- the enabled action bar (rendered only
+ * while the server reports the approval path active). The browser sends the answers; the
+ * server recomputes, writes, verifies and closes. Texts come from the server
+ * (accepted wording); a blocked or unconfirmed save is never retried from
+ * here, and an incomplete estimate cannot be submitted. The recorded total is
+ * the reader's, labelled as recorded, and is kept apart from the editable
+ * estimate (Jess, 2026-10-22).
+ */
+function RepairApprovalActions({ opportunityId, answers, misc, total, incomplete, revision, onPersisted }: {
+  opportunityId: string; answers: Answers; misc: MiscAnswer; total: number; incomplete: boolean; revision: number; onPersisted: () => void;
+}) {
+  const [save, setSave] = useState<{ status: "idle" } | { status: "saving" } | { status: "done"; result: RepairApprovalSaveResult; revision: number }>({ status: "idle" });
+  const [status, setStatus] = useState<RepairApprovalStatus | null>(null);
+  const inFlight = useRef(false);
+  /* One "visit" per opportunity shown. The page can move from deal A to deal
+     B (or back to A) without remounting this component, so every save and
+     status result is tagged with the visit it was started in and is dropped
+     if that visit has ended -- before it changes any state or starts another
+     request. A dropped save is never cancelled or retried: it was already
+     sent, and the next status read of its own deal reports it. */
+  const visit = useRef(0);
+  /* Within one visit, only the most recently issued status read may update
+     the line: a slow earlier read never replaces a newer answer. */
+  const statusSeq = useRef(0);
+  async function refreshStatus(forVisit: number) {
+    const seq = ++statusSeq.current;
+    const s = await fetchRepairApprovalStatus(opportunityId);
+    if (visit.current === forVisit && seq === statusSeq.current) setStatus(s);
+  }
+  useEffect(() => {
+    const thisVisit = ++visit.current;
+    // A new deal starts clean: nothing from the previous deal's save or status carries over.
+    inFlight.current = false;
+    setSave({ status: "idle" });
+    setStatus(null);
+    void refreshStatus(thisVisit);
+    return () => { visit.current += 1; };
+  }, [opportunityId]);
+  async function approve() {
+    if (inFlight.current) return; // one request per click; never a second one while the first is open
+    const thisVisit = visit.current;
+    inFlight.current = true;
+    setSave({ status: "saving" });
+    const result = await saveRepairApproval(opportunityId, answers, misc);
+    if (visit.current !== thisVisit) return; // the deal on screen changed (or this view closed): drop the stale completion
+    setSave({ status: "done", result, revision });
+    inFlight.current = false;
+    if (result.outcome === "verified") onPersisted();
+    await refreshStatus(thisVisit);
+  }
+  const saving = save.status === "saving";
+  const done = save.status === "done" && save.revision === revision ? save.result : null;
+  const settled = done !== null && done.outcome !== "not_sent"; // verified, blocked or unknown: no second submit of this estimate
+  const blockedNow = status?.kind === "needs_review";
+  const disabled = saving || incomplete || blockedNow || settled;
+  const reasonText = status?.kind === "not_verified" ? repairApprovalReasonText(status.reason) : null;
+  const draftNotice = repairApprovalDraftNotice(status, { total, incomplete, edited: revision > 0 });
+  return (
+    <>
+      <button
+        data-testid="repair-approval-approve"
+        onClick={() => void approve()}
+        disabled={disabled}
+        style={{
+          padding: "8px 16px", borderRadius: "8px", fontSize: "12px", fontWeight: 600,
+          cursor: disabled ? "not-allowed" : "pointer",
+          border: `1px solid ${disabled ? "#1E293B" : "rgba(34,197,94,0.45)"}`,
+          background: disabled ? "transparent" : "rgba(34,197,94,0.12)",
+          color: disabled ? "#334155" : "#22C55E",
+        }}
+      >
+        {saving ? "Saving…" : REPAIR_APPROVAL_APPROVE_LABEL}
+      </button>
+      {incomplete ? <span data-testid="repair-approval-incomplete" style={{ fontSize: "12px", color: "#F59E0B" }}>{PROVISIONAL_HEADLINE}</span> : null}
+      {saving ? (
+        <span style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#64748B" }}>
+          <Loader2 size={13} className="animate-spin" /> {REPAIR_APPROVAL_SAVING_TEXT}
+        </span>
+      ) : null}
+      {done ? (
+        <span data-testid="repair-approval-result" style={{ fontSize: "12px", color: done.outcome === "verified" ? "#22C55E" : done.outcome === "not_sent" ? "#94A3B8" : "#EF4444" }}>
+          {done.outcome === "verified" || done.outcome === "blocked" ? done.text : done.outcome === "not_sent" ? (done.text ?? done.error) : done.error}
+        </span>
+      ) : null}
+      {status && status.kind !== "none" ? (
+        <span data-testid="repair-approval-status" style={{ fontSize: "12px", color: status.kind === "checked" ? "#22C55E" : status.kind === "needs_review" ? "#EF4444" : "#F59E0B" }}>
+          {status.kind === "unavailable" ? "Repair approval could not be verified" : status.text}
+          {reasonText ? `. ${reasonText}` : null}
+        </span>
+      ) : null}
+      {status?.kind === "checked" ? (
+        <span data-testid="repair-approval-recorded-total" style={{ fontSize: "12px", color: "#94A3B8" }}>{recordedRepairTotalText(status.total)}</span>
+      ) : null}
+      {draftNotice ? <span data-testid="repair-approval-draft-notice" style={{ fontSize: "12px", color: "#F59E0B" }}>{draftNotice}</span> : null}
+    </>
+  );
+}
 
 export default function UnderwritingWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -925,6 +1033,23 @@ export default function UnderwritingWorkspace() {
       };
     }
   }, [contact, opps, policyValues, selected]);
+
+  /* B15-26 B1 (Jess ruling): repair answers and approval state belong to the
+     opportunity being edited. Keyed by the opportunity, so a different deal
+     always gets a fresh estimator (answers, Miscellaneous, revision, approval
+     and save state together), on the enabled and the legacy path alike; and
+     not rendered at all while the page still holds the previous contact's
+     data after a direct navigation, so nothing from that deal can be shown or
+     submitted under the new one. Nothing is derived from a saved total. A save
+     already dispatched is not cancelled; its late result lands on the
+     unmounted estimator and changes nothing on screen. */
+  const repairEstimatorFor = (opportunityId: string) => (contact?.id === contactId ? (
+    <RepairEstimator
+      key={opportunityId}
+      opportunityId={opportunityId}
+      onPersisted={() => setReloadTick((t) => t + 1)}
+    />
+  ) : null);
 
   const screen: ScreenState = toViewModel({
     loading,
@@ -1199,10 +1324,7 @@ export default function UnderwritingWorkspace() {
           {/* INV-12. Repairs is a Gate 1 input, so an unresolved deal is
               frequently unresolved BECAUSE the repair number does not exist
               yet. This is the surface that produces one during the call. */}
-          <RepairEstimator
-            opportunityId={screen.opportunity.id}
-            onPersisted={() => setReloadTick((t) => t + 1)}
-          />
+          {repairEstimatorFor(screen.opportunity.id)}
         </>
       ) : null}
 
@@ -1321,10 +1443,7 @@ export default function UnderwritingWorkspace() {
           {/* INV-12, resolved-state placement. Beside the mode selector, in
               the same revise-the-inputs zone: a resolved deal can still have
               its repair allowance worked during the call. */}
-          <RepairEstimator
-            opportunityId={screen.opportunity.id}
-            onPersisted={() => setReloadTick((t) => t + 1)}
-          />
+          {repairEstimatorFor(screen.opportunity.id)}
         </>
       ) : null}
     </Shell>

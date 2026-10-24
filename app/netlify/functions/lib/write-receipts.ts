@@ -64,6 +64,63 @@ export async function claimWrite(scope: string, requestId: string, payload: unkn
  * An unconfirmed release is not retried: the original lock may remain (writes to this contact then stay refused
  * until inspected), may be absent, or may already have been re-acquired by another caller.
  */
+
+/** claimWriteRecorded's key and record: the same expressions claimWrite uses above, so the receipts are byte-identical (CL9). */
+const claimKey = (scope: string, requestId: string) => digest(`${process.env.IAOS_ENV}:${scope}:${requestId}`);
+const claimRecord = (payload: unknown) => ({ fingerprint: digest(JSON.stringify(payload)), claimedAt: new Date().toISOString() });
+
+export type RecordedClaim = { kind: "claimed" } | { kind: "duplicate" } | { kind: "unavailable"; reason: string };
+type ClaimAttempt = { sent: boolean; status: number | null; threw: boolean; aborted: boolean; suppressed: boolean; refused: boolean };
+
+/**
+ * B15-26 B1 save deadline (proposal r4 + erratum 1). The same receipt as
+ * claimWrite, but decided ONLY from this call's own record of the real
+ * request, after the SDK has settled -- never from the SDK's `modified`, which
+ * @netlify/blobs 11.1.0 reports for any non-412 conditional result. One real
+ * attempt: a retryable status or a throw is recorded and answered to the SDK
+ * with a synthetic 400, so it neither sleeps nor retries; any further call is
+ * suppressed. The request is not started unless its cap fits before the
+ * deadline; its timer covers the body. `unavailable` may still have written the
+ * receipt: it is never retried or deleted. claimWrite is unchanged.
+ */
+export async function claimWriteRecorded(scope: string, requestId: string, payload: unknown, options: { deadline: number; capMs: number; minStartMs: number; now?: () => number }): Promise<RecordedClaim> {
+  const now = options.now ?? Date.now;
+  const attempts: ClaimAttempt[] = [];
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const none = { sent: false, status: null, threw: false, aborted: false, suppressed: false, refused: false };
+  const recorded = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    if (attempts.length > 0) { attempts.push({ ...none, suppressed: true }); return new Response(null, { status: 400 }); }
+    const left = options.deadline - now();
+    if (left < Math.max(options.capMs, options.minStartMs)) { attempts.push({ ...none, refused: true }); return new Response(null, { status: 400 }); }
+    const ac = new AbortController();
+    timers.push(setTimeout(() => ac.abort(), options.capMs));
+    try {
+      const res = await globalThis.fetch(input, { ...init, signal: ac.signal });
+      attempts.push({ ...none, sent: true, status: res.status });
+      if (res.status === 412 || (res.status >= 200 && res.status < 300)) return res;
+      await res.arrayBuffer().catch(() => undefined);
+      return new Response(null, { status: 400 });
+    } catch {
+      attempts.push({ ...none, sent: true, threw: true, aborted: ac.signal.aborted });
+      return new Response(null, { status: 400 });
+    }
+  };
+  try {
+    await getStore({ name: "iaos-write-receipts", fetch: recorded }).setJSON(claimKey(scope, requestId), claimRecord(payload), { onlyIfNew: true });
+  } catch { /* decided from the record below */ } finally {
+    for (const t of timers) clearTimeout(t);
+  }
+  const real = attempts.filter((a) => a.sent);
+  const a = attempts[0];
+  if (!a) return { kind: "unavailable", reason: "no_attempt" };
+  if (a.refused) return { kind: "unavailable", reason: "deadline" };
+  if (attempts.some((x) => x.suppressed)) return { kind: "unavailable", reason: "suppressed_retry" };
+  if (real.length !== 1) return { kind: "unavailable", reason: "attempts" };
+  if (a.threw) return { kind: "unavailable", reason: a.aborted ? "aborted" : "threw" };
+  if (a.status === 412) return { kind: "duplicate" };
+  if (a.status !== null && a.status >= 200 && a.status < 300) return { kind: "claimed" };
+  return { kind: "unavailable", reason: `status_${a.status}` };
+}
 export async function lockContact(contactId: string) {
   const key="lock/"+digest(getConfig(process.env.IAOS_ENV).locationId+contactId);
   if (await atomicCreate(key, { claimedAt: new Date().toISOString() }) !== "created") throw new WriteUncertain("Another write is in progress or unresolved; inspect before retrying");
