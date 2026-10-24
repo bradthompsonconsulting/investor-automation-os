@@ -3568,7 +3568,7 @@ export default function SellerCallWorkspace() {
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>ARV &amp; Comps</div>
               <div style={{ fontSize: "13px", color: "#E2E8F0", marginBottom: "12px" }} data-testid="arv-provenance">
                 {screen.known.arv === null
-                  ? "Not yet established."
+                  ? "No ARV yet — start with Get Comps."
                   : matchedArvApproval
                   ? `Approved: ${money(screen.known.arv)} (evidence: ${matchedArvApproval.evidenceState})`
                   : latestArvLedgerEntry

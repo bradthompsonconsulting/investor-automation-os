@@ -80,8 +80,10 @@ check('F33 the readiness decision panel is collapsed until opened (open once a d
 check('F32 the sticky deal bar still states ARV and Repairs (unchanged)',
   /factCell\("arv", "ARV", input\.arv, "Not yet established"\),\r?\n\s+factCell\("repairs", "Repairs", input\.repairs, "Not yet established"\),/.test(read('src/lib/seller-call-deal-bar.ts'))
     && page.includes('<DealBar cells={dealBarCells} />'), true);
-check('F32 the operator checklist and the ARV & Comps line are unchanged',
-  page.includes('data-testid="operator-underwriting-checklist"') && page.includes('? "Not yet established."'), true);
+check('F32 the operator checklist is unchanged',
+  page.includes('data-testid="operator-underwriting-checklist"'), true);
+check('F32 with no ARV the ARV & Comps line names the next action (Jess, option B)',
+  page.includes('? "No ARV yet — start with Get Comps."') && !page.includes('? "Not yet established."'), true);
 check('F35 each transaction-assumption input has a visible label and "None known"',
   ['How the deal is structured', 'Closing and move-out (possession) expectations', 'Known title problems'].every((l) => page.includes(l))
     && (page.match(/\/> None known\r?\n/g) || []).length === 3, true);
