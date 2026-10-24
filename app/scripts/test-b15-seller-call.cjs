@@ -72,6 +72,18 @@ check('F32 the readiness badge collapses its reasons to a count',
   /<details data-testid="readiness-reasons"/.test(page) && /open \{readiness\.reasons\.length === 1 \? "item" : "items"\}/.test(page), true);
 check('F33 the readiness decision panel is collapsed until opened (open once a decision exists)',
   /<details\s+data-testid="readiness-human-action-panel"\s+open=\{readinessHumanActionRecord \? true : undefined\}/.test(page), true);
+{
+  const known = page.slice(page.indexOf('>Known facts</div>'), page.indexOf('What We Still Need / Offer Readiness -- item 3'));
+  check('F32 Known facts no longer repeats ARV or Repairs; Seller Ask stays',
+    known.length > 0 && !/<div>ARV:|<div>Repairs:/.test(known) && known.includes('<div>Seller Ask:'), true);
+}
+check('F32 the sticky deal bar still states ARV and Repairs (unchanged)',
+  /factCell\("arv", "ARV", input\.arv, "Not yet established"\),\r?\n\s+factCell\("repairs", "Repairs", input\.repairs, "Not yet established"\),/.test(read('src/lib/seller-call-deal-bar.ts'))
+    && page.includes('<DealBar cells={dealBarCells} />'), true);
+check('F32 the operator checklist is unchanged',
+  page.includes('data-testid="operator-underwriting-checklist"'), true);
+check('F32 with no ARV the ARV & Comps line names the next action (Jess, option B)',
+  page.includes('? "No ARV yet — start with Get Comps."') && !page.includes('? "Not yet established."'), true);
 check('F35 each transaction-assumption input has a visible label and "None known"',
   ['How the deal is structured', 'Closing and move-out (possession) expectations', 'Known title problems'].every((l) => page.includes(l))
     && (page.match(/\/> None known\r?\n/g) || []).length === 3, true);

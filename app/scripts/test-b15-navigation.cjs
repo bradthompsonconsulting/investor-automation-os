@@ -78,6 +78,28 @@ check('F44 ARV explains a missing address beside the disabled Get Comps',
 check('F44 Get Comps is still disabled without an address (unchanged)',
   /data-testid="arv-get-comps" disabled=\{!address \|\| handoffBusy\}/.test(arv), true);
 
+// F44 (Jess, 2026-10-23): the same reason is visible beside the Contact and
+// Seller Call Get Comps buttons; tooltip and disabled rules unchanged.
+{
+  const cw = read('src/pages/ContactWorkspace.tsx').replace(/\r\n/g, '\n');
+  const sc = read('src/pages/SellerCallWorkspace.tsx').replace(/\r\n/g, '\n');
+  const ps = read('src/lib/propstream.ts').replace(/\r\n/g, '\n');
+  check('F44 one shared reason text, identical to the former tooltip',
+    ps.includes('export const NO_SUBJECT_ADDRESS_REASON =\n  "No complete subject-property address on this record (street, city and state are all required)";'), true);
+  check('F44 Contact page: visible reason beside Get Comps, shown only for a loaded contact without an address',
+    /<\/button>\n\s+\{\/\* Pass 1 F44[\s\S]{0,250}\{contact && !compsAddress \? \(\n\s+<span id="get-comps-reason" data-testid="get-comps-reason"[\s\S]{0,200}\{NO_SUBJECT_ADDRESS_REASON\}/.test(cw), true);
+  check('F44 Seller Call: visible reason beside Get Comps, shown only for a loaded contact without an address',
+    /<\/button>\n\s+\{\/\* Pass 1 F44[\s\S]{0,250}\{contact && !compsAddress \? \(\n\s+<span id="seller-call-get-comps-reason" data-testid="seller-call-get-comps-reason"[\s\S]{0,200}\{NO_SUBJECT_ADDRESS_REASON\}/.test(sc), true);
+  check('F44 Contact page: button and reason are grouped; the action row wraps instead of squeezing',
+    cw.includes('<span data-testid="get-comps-group" style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>')
+      && cw.includes('<div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "12px", marginBottom: "18px" }}>'), true);
+  check('F44 tooltips kept on both buttons',
+    [cw, sc].every((s) => (s.match(/: NO_SUBJECT_ADDRESS_REASON\}/g) || []).length === 1), true);
+  check('F44 disabled rules unchanged on both buttons',
+    /disabled=\{loading \|\| compsBusy \|\| !compsAddress\}\n\s+data-testid="get-comps"/.test(cw)
+      && sc.includes('disabled={compsBusy || !compsAddress}\n                  data-testid="seller-call-get-comps"'), true);
+}
+
 // ── F12 ─────────────────────────────────────────────────────────────────────
 const importPage = read('src/pages/Import.tsx');
 check('F12 Import page says leads are added in GHL', /Leads are added in GHL, not here/.test(importPage), true);
