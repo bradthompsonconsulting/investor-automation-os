@@ -77,6 +77,8 @@ check('F33 the decision panel opens only from the per-deal state, set once input
 check('F33 the default is set once per deal: open only for a current decision; stale or none starts closed',
   page.includes('if (decisionInputsReady && decisionPanelKey !== null && !decisionPanelOpenByDeal.has(decisionPanelKey)) {')
     && page.includes('decisionPanelOpenByDeal.set(decisionPanelKey, readinessHumanActionRecord !== null && !decisionIsStale);'), true);
+check('F33 until inputs are ready the panel is a plain loading line, not a control',
+  /\{readiness && !decisionInputsReady \? \([\s\S]{0,400}<div\r?\n\s+data-testid="readiness-human-action-panel-loading"[\s\S]{0,400}Offer Readiness decision — loading this deal…\r?\n\s+<\/div>\r?\n\s+\) : readiness \? \(\r?\n\s+<details\r?\n\s+data-testid="readiness-human-action-panel"/.test(page), true);
 check('F33 a stale decision says so in the panel summary',
   page.includes('"Offer Readiness decision — last decision is stale; a fresh one is needed to authorize (optional)"'), true);
 check('F35 each transaction-assumption input has a visible label and "None known"',

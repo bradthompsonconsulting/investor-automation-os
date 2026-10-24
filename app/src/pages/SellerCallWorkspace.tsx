@@ -2643,7 +2643,23 @@ export default function SellerCallWorkspace() {
               operator's toggles are kept per contact and deal
               (`decisionPanelOpen` above). Same controls, same gates; layout
               only. */}
-          {readiness ? (
+          {readiness && !decisionInputsReady ? (
+            /* Pass 1 F33 follow-up (Jess, 2026-10-24): until this contact's and
+               deal's inputs are ready, the panel is a plain line, not a
+               control -- there is nothing to click or key whose choice would
+               then be discarded. The panel itself appears once they are. */
+            <div
+              data-testid="readiness-human-action-panel-loading"
+              aria-busy="true"
+              style={{
+                marginBottom: "16px", padding: "14px 16px", borderRadius: "10px",
+                background: "#0F172A", border: "1px solid #1E293B",
+                fontSize: "12px", fontWeight: 700, color: "#64748B",
+              }}
+            >
+              Offer Readiness decision — loading this deal…
+            </div>
+          ) : readiness ? (
             <details
               data-testid="readiness-human-action-panel"
               open={decisionPanelOpen}

@@ -44,7 +44,7 @@ const { parseOutcomeNote } = require(path.join(APP, 'src/lib/seller-call-outcome
 const { latestReadinessHumanActionForOpportunity, formatSellerPricePositionNote } = require(path.join(APP, 'src/lib/seller-call-readiness-carriers.ts'));
 
 /** One per check() call site, taken from the finished file. */
-const FLOOR = 21;
+const FLOOR = 24;
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1;
@@ -286,6 +286,50 @@ async function main() {
       check("4 back on F: the operator's close is kept (F's default was open)", f2 && f2.open === false && f2.contact === F, f2);
       await context.close();
     });
+
+    // ═══ 5. No interaction while loading (Jess, 2026-10-24) ══════════════════
+    // F (current decision) -> E (none) with E's reads delayed; try to open the
+    // panel during the load by mouse, Enter and Space (one per fresh page, so
+    // one attempt each); then E's start, then open, leave and return.
+    for (const via of ['mouse', 'Enter', 'Space']) {
+      await step(`loading interaction (${via})`, async () => {
+        const { context, page } = await open();
+        await go(page, 'F');
+        slowReads[E] = 2500;
+        await go(page, 'E', { wait: false });
+        await page.waitForTimeout(400);
+        const during = await page.evaluate(() => {
+          const d = document.querySelector('[data-testid="readiness-human-action-panel"]');
+          const l = document.querySelector('[data-testid="readiness-human-action-panel-loading"]');
+          return { panel: !!d, summary: !!(d && d.querySelector('summary')), loading: !!l, onE: location.pathname.includes('f33ContactE') };
+        });
+        if (via === 'mouse') {
+          const target = page.locator('[data-testid="readiness-human-action-panel"] summary, [data-testid="readiness-human-action-panel-loading"]').first();
+          if (await target.count()) await target.click({ force: true });
+        } else {
+          await page.evaluate(() => {
+            const t = document.querySelector('[data-testid="readiness-human-action-panel"] summary') || document.querySelector('[data-testid="readiness-human-action-panel-loading"]');
+            if (t) t.focus();
+          });
+          await page.keyboard.press(via);
+        }
+        await page.waitForTimeout(150);
+        check(`5 (${via}) while E's reads are delayed, no panel control is offered (a plain loading line only)`,
+          during.onE && during.panel === false && during.summary === false && during.loading === true, during);
+        delete slowReads[E];
+        await until(page, async () => (await page.getByTestId('readiness-human-action-panel').count()) === 1, "E's panel", 60000);
+        await page.waitForTimeout(300);
+        const e0 = await panel(page);
+        check(`5 (${via}) after E's load the panel starts closed (E has no decision); the attempt during loading left nothing behind`,
+          e0 && e0.open === false && e0.contact === E, e0);
+        await toggle(page);
+        await go(page, 'F');
+        await go(page, 'E');
+        const e1 = await panel(page);
+        check(`5 (${via}) opened after readiness, left and returned: the operator's open is kept`, e1 && e1.open === true && e1.contact === E, e1);
+        await context.close();
+      });
+    }
 
     // ═══ 2 + 4. Deal navigation ═══════════════════════════════════════════
     // Once a deal is chosen the page offers no in-page switch; choosing another
