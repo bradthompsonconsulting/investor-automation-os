@@ -32,7 +32,7 @@ import { buildOfferReadinessInputs } from "../lib/seller-call-readiness-inputs";
 import { latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
 import {
   subjectAddress, handoffToPropStream, copyAddressAgain, browserHandoffEnvironment,
-  PROPSTREAM_LOGIN_URL, type HandoffResult,
+  PROPSTREAM_LOGIN_URL, NO_SUBJECT_ADDRESS_REASON, type HandoffResult,
 } from "../lib/propstream";
 import {
   computeNegotiationPosition, attemptOverride, isOverrideCurrent, requiresOverrideDecision,
@@ -3582,11 +3582,21 @@ export default function SellerCallWorkspace() {
                   data-testid="seller-call-get-comps"
                   title={compsAddress
                     ? `Copies ${compsAddress} and opens PropStream, where you paste it into the property search`
-                    : "No complete subject-property address on this record (street, city and state are all required)"}
+                    : NO_SUBJECT_ADDRESS_REASON}
+                  aria-describedby={contact && !compsAddress ? "seller-call-get-comps-reason" : undefined}
                   style={{ ...COMPACT_BUTTON_STYLE, opacity: compsAddress ? 1 : 0.45, cursor: compsBusy || !compsAddress ? "not-allowed" : "pointer" }}
                 >
                   <Copy size={12} /> Get Comps
                 </button>
+                {/* Pass 1 F44 (Jess, 2026-10-23): the disabled reason is also
+                    visible text beside the button once the contact has
+                    loaded; the tooltip and the disabled rule are unchanged. */}
+                {contact && !compsAddress ? (
+                  <span id="seller-call-get-comps-reason" data-testid="seller-call-get-comps-reason"
+                    style={{ flex: "1 1 220px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.4, alignSelf: "center" }}>
+                    {NO_SUBJECT_ADDRESS_REASON}
+                  </span>
+                ) : null}
                 <Link to={`/contacts/${contactId}/underwriting`} data-testid="seller-call-view-import-comps" style={COMPACT_LINK_STYLE}>
                   <ExternalLink size={12} /> View / Import Comps
                 </Link>

@@ -95,6 +95,12 @@ export function subjectAddress(parts: SubjectAddressParts | null | undefined): s
   return `${street}, ${city}, ${state}${zip ? ` ${zip}` : ""}`;
 }
 
+/** Why Get Comps is disabled when subjectAddress() finds no complete address.
+ *  Shown as the button's tooltip and, since Pass 1 F44, as visible text
+ *  beside it on the Contact and Seller Call pages. */
+export const NO_SUBJECT_ADDRESS_REASON =
+  "No complete subject-property address on this record (street, city and state are all required)";
+
 /** Whether the clipboard actually received the address. */
 export type ClipboardOutcome = "copied" | "denied";
 
