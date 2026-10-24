@@ -550,6 +550,14 @@ function offerSaveCoordinator(): OfferSaveCoordinator {
   return sharedOfferSaves;
 }
 
+/* Pass 1 F33 (Brad, 2026-10-24) -- the operator's open/closed choice for the
+   Offer Readiness decision panel, per contact and deal, for this browser
+   session (in memory only; a reload starts again from the default). Kept
+   outside the component so returning to a contact or deal visited earlier
+   finds the choice made there. Presentation only: nothing here is read by
+   readiness, gating or any write. */
+const decisionPanelOpenByDeal = new Map<string, boolean>();
+
 export default function SellerCallWorkspace() {
   const { id } = useParams<{ id: string }>();
   const contactId = id ?? "";
@@ -558,6 +566,11 @@ export default function SellerCallWorkspace() {
   const [opps, setOpps] = useState<import("../lib/ghl").OpportunityRow[] | null>(null);
   const [policyValues, setPolicyValues] = useState<{ id: string; value: string }[] | null>(null);
   const [notes, setNotes] = useState<{ id: string; body: string; dateAdded: string }[] | null>(null);
+  /* Pass 1 F33 (Brad, 2026-10-24): the contact whose four reads below were
+     ALL stored last. Set after them, so it never names a contact whose data
+     is still partly the previous contact's -- whether or not React batches
+     those updates into one render. */
+  const [loadCompleteFor, setLoadCompleteFor] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [chosenId, setChosenId] = useState<string | null>(null);
 
@@ -771,6 +784,7 @@ export default function SellerCallWorkspace() {
         setOpps(opportunitiesForContact(pipeline.opportunities, contactId));
         setPolicyValues(policy.values);
         setNotes(notesResult.notes ?? []);
+        setLoadCompleteFor(contactId);
         loadedFor.current = contactId;
         setRefreshReadError(null);
       })
@@ -1516,6 +1530,24 @@ export default function SellerCallWorkspace() {
   }, [readinessHumanActionRecord, readinessDecisionCurrency]);
 
   const observedStaleThisSession = readinessHumanActionRecord !== null && !!observedStaleForAt[readinessHumanActionRecord.at];
+
+  /* Pass 1 F33 (Brad, 2026-10-24) -- the decision panel's starting state.
+     Decided ONCE per contact and deal, and only when everything the stale
+     check reads belongs to the contact on screen: the route's contact is
+     displayed, its load completed (`loadCompleteFor`), notes are loaded and
+     the deal is resolved. Then: open for a current decision; closed for no
+     decision or a stale one. After that only the operator's own toggles
+     change it -- a save, a re-read or a decision going stale mid-call never
+     does. Presentation only: the staleness rule, gating and writes above are
+     untouched. */
+  const decisionPanelKey = screen.state === "resolved" || screen.state === "unresolved" ? `${contactId}|${screen.opportunity.id}` : null;
+  const decisionInputsReady = decisionPanelKey !== null && loadCompleteFor === contactId && contact?.id === contactId && notes !== null;
+  const decisionIsStale = readinessHumanActionRecord !== null && (readinessDecisionCurrency?.current === false || observedStaleThisSession);
+  const [, setDecisionPanelTick] = useState(0);
+  if (decisionInputsReady && decisionPanelKey !== null && !decisionPanelOpenByDeal.has(decisionPanelKey)) {
+    decisionPanelOpenByDeal.set(decisionPanelKey, readinessHumanActionRecord !== null && !decisionIsStale);
+  }
+  const decisionPanelOpen = decisionInputsReady && decisionPanelKey !== null && decisionPanelOpenByDeal.get(decisionPanelKey) === true;
   const readinessHumanAction: HumanAction = readinessHumanActionRecord === null
     || readinessDecisionCurrency?.current === false
     || observedStaleThisSession
@@ -2605,20 +2637,32 @@ export default function SellerCallWorkspace() {
               evidence: ... -- overridden"). */}
           {/* Pass 1 F33: "Override anyway" sat open near the top, before any
               question was asked. The decision panel is now collapsed until
-              opened (open by default only once a decision is on record), so
-              the call starts with the conversation. Same controls, same
-              gates; layout only. */}
+              opened, so the call starts with the conversation. It starts open
+              only for a CURRENT decision (Brad, 2026-10-24); a stale one starts
+              closed and says so in its summary. The starting state and the
+              operator's toggles are kept per contact and deal
+              (`decisionPanelOpen` above). Same controls, same gates; layout
+              only. */}
           {readiness ? (
             <details
               data-testid="readiness-human-action-panel"
-              open={readinessHumanActionRecord ? true : undefined}
+              open={decisionPanelOpen}
+              onToggle={(e) => {
+                if (!decisionInputsReady || decisionPanelKey === null) return;
+                const open = e.currentTarget.open;
+                if (decisionPanelOpenByDeal.get(decisionPanelKey) === open) return;
+                decisionPanelOpenByDeal.set(decisionPanelKey, open);
+                setDecisionPanelTick((n) => n + 1);
+              }}
               style={{
                 marginBottom: "16px", padding: "14px 16px", borderRadius: "10px",
                 background: "#0F172A", border: "1px solid #1E293B",
               }}
             >
               <summary style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "8px", cursor: "pointer" }}>
-                Offer Readiness decision — approve or override (optional)
+                {decisionIsStale
+                  ? "Offer Readiness decision — last decision is stale; a fresh one is needed to authorize (optional)"
+                  : "Offer Readiness decision — approve or override (optional)"}
               </summary>
               {readinessHumanActionRecord ? (
                 <div data-testid="readiness-human-action-current" style={{ fontSize: "12px", color: "#94A3B8", marginBottom: "10px" }}>

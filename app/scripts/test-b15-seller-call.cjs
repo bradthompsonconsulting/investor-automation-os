@@ -70,8 +70,15 @@ check('F30 the two sets stay separate (Seller Call does not mount the call log)'
   /<CallLogControl/.test(page), false);
 check('F32 the readiness badge collapses its reasons to a count',
   /<details data-testid="readiness-reasons"/.test(page) && /open \{readiness\.reasons\.length === 1 \? "item" : "items"\}/.test(page), true);
-check('F33 the readiness decision panel is collapsed until opened (open once a decision exists)',
-  /<details\s+data-testid="readiness-human-action-panel"\s+open=\{readinessHumanActionRecord \? true : undefined\}/.test(page), true);
+check('F33 the decision panel opens only from the per-deal state, set once inputs belong to the contact on screen',
+  /<details\s+data-testid="readiness-human-action-panel"\s+open=\{decisionPanelOpen\}/.test(page)
+    && page.includes('const decisionInputsReady = decisionPanelKey !== null && loadCompleteFor === contactId && contact?.id === contactId && notes !== null;')
+    && /setNotes\(notesResult\.notes \?\? \[\]\);\r?\n\s+setLoadCompleteFor\(contactId\);/.test(page), true);
+check('F33 the default is set once per deal: open only for a current decision; stale or none starts closed',
+  page.includes('if (decisionInputsReady && decisionPanelKey !== null && !decisionPanelOpenByDeal.has(decisionPanelKey)) {')
+    && page.includes('decisionPanelOpenByDeal.set(decisionPanelKey, readinessHumanActionRecord !== null && !decisionIsStale);'), true);
+check('F33 a stale decision says so in the panel summary',
+  page.includes('"Offer Readiness decision — last decision is stale; a fresh one is needed to authorize (optional)"'), true);
 check('F35 each transaction-assumption input has a visible label and "None known"',
   ['How the deal is structured', 'Closing and move-out (possession) expectations', 'Known title problems'].every((l) => page.includes(l))
     && (page.match(/\/> None known\r?\n/g) || []).length === 3, true);
