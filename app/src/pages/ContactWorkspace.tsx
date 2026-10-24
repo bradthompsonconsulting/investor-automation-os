@@ -2242,7 +2242,10 @@ export default function ContactWorkspace() {
             DISABLED WITHOUT A COMPLETE ADDRESS, with the reason in the title.
             A comp search on a partial address returns the wrong parcel and
             looks exactly like the right one. */}
-        <span data-testid="get-comps-group" style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+        {/* Pass 1 F44 follow-up (Bones, 2026-10-24): the group wraps on its own,
+            so on a narrow window the reason moves below the button instead of
+            squeezing its label onto two lines. */}
+        <span data-testid="get-comps-group" style={{ display: "inline-flex", flexWrap: "wrap", alignItems: "center", gap: "8px", maxWidth: "100%" }}>
           <button
             tabIndex={-1}
             onMouseDown={(e) => e.preventDefault()}
@@ -2259,6 +2262,7 @@ export default function ContactWorkspace() {
               border: "1px solid rgba(30,200,255,0.35)", background: "rgba(30,200,255,0.08)",
               color: "#1EC8FF", opacity: compsAddress ? 1 : 0.45,
               cursor: loading || compsBusy || !compsAddress ? "not-allowed" : "pointer",
+              whiteSpace: "nowrap", flexShrink: 0,
             }}
           >
             <Copy size={14} /> Get Comps
