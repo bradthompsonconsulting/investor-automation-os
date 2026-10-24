@@ -351,6 +351,16 @@ export const POPULATION_NOT_VERIFIED = "POPULATION_NOT_VERIFIED" as const;
  */
 export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVISIONED" as const;
 
+/**
+ * B15-26 B1 repair approval -- the Test Opportunity field "Repair Approval Id"
+ * (fieldKey opportunity.repair_approval_id, TEXT, location
+ * SoTgVoaFGHtBdRFvXWQV). Created in Test 2026-10-23; the post-creation
+ * read-only list returned exactly one match by name and fieldKey. Kept here
+ * (the identifier boundary) and read only by `shared/repair-approval-config.ts`'s
+ * Test pin. No Production field is provisioned; that pin stays unprovisioned.
+ */
+export const REPAIR_APPROVAL_TEST_FIELD_ID = "BqncWEZQ6Uim67qBC7xr" as const;
+
 /** B14-12 — the ONE value that opens the Production call-log permission class. */
 export const PRODUCTION_CALL_LOG_ENABLED = "PRODUCTION_CALL_LOG_ENABLED" as const;
 /** B14-12 — the value PRODUCTION carries until the enable commit; TEST carries it as documentation only. */
