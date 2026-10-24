@@ -27,6 +27,7 @@
  *   - status needs a read session; begin/reconcile need the write session;
  *   - every other ghl-write operation is unchanged.
  */
+const receiptShim = require('./lib/receipt-recorder-shim.cjs'); // the repaired receipt helpers' recorded fetch (test-only)
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -60,7 +61,7 @@ Module._resolveFilename = function (name, parent, ...rest) {
 };
 Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
 Module._load = function (name, ...rest) {
-  if (name === '@netlify/blobs') return {
+  if (name === '@netlify/blobs') return receiptShim.wrap({
     connectLambda: (event) => realBlobs.connectLambda(event),
     getStore: () => ({
       async get(key) {
@@ -85,7 +86,7 @@ Module._load = function (name, ...rest) {
       },
       async delete(key) { maybeFail('delete', key); receipts.delete(key); etags.delete(key); },
     }),
-  };
+  });
   return originalLoad.call(this, name, ...rest);
 };
 process.env.IAOS_ENV = 'test';
@@ -170,6 +171,10 @@ const body = (res) => JSON.parse(res.body);
 const offerPuts = () => ghlWrites.filter((w) => w.method === 'PUT' && w.pathname === `/opportunities/${opportunity.id}`);
 const currentOfferInGhl = () => (opportunity.customFields.find((f) => f.id === OFFER_FIELD) || {}).fieldValue ?? null;
 
+/* A wait that never resolves empties the event loop and Node exits 0 mid-suite, before the summary: that must FAIL,
+   never pass. Event-driven (the process 'exit' event), not a timer. Same guard as test-call-log-barrier.cjs. */
+let finished = false;
+process.on('exit', (code) => { if (!finished && code === 0) { console.error('FAIL the suite ended before it finished (a wait never resolved)'); process.exitCode = 1; } });
 let count = 0;
 let failures = 0;
 async function check(name, fn) {
@@ -742,6 +747,7 @@ function fresh() {
     for (let i = 0; i < 3; i++) assert.equal(body(await reconcile()).state, 'blocked');
   });
 
+  finished = true;
   console.log(`\nCurrent Offer durable barrier: ${count}/${count + failures} checks passed`);
   process.exit(failures ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
