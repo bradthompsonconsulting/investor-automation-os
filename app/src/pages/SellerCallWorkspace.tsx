@@ -3339,9 +3339,10 @@ export default function SellerCallWorkspace() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginTop: "16px" }}>
             <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Known facts</div>
+              {/* Pass 1 F32 (Jess, 2026-10-23): ARV and Repairs are stated once,
+                  in the sticky deal bar above (same values); this card keeps
+                  Seller Ask, which the bar does not show. */}
               <div style={{ fontSize: "13px", color: "#E2E8F0", lineHeight: 1.8 }}>
-                <div>ARV: {screen.known.arv !== null ? screen.known.arv.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }) : "Not yet established"}</div>
-                <div>Repairs: {screen.known.repairs !== null ? screen.known.repairs.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }) : "Not yet established"}</div>
                 <div>Seller Ask: {screen.known.askingPrice !== null ? screen.known.askingPrice.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }) : "Not yet established"}</div>
               </div>
             </div>
