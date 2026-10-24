@@ -56,7 +56,7 @@ const appRequire = Module.createRequire(path.join(APP, 'package.json'));
 const SDK_MAIN = appRequire.resolve('@netlify/blobs').replace(/main\.js$/, 'main.cjs');
 const SDK_SHA = crypto.createHash('sha256').update(fs.readFileSync(fs.existsSync(SDK_MAIN) ? SDK_MAIN : appRequire.resolve('@netlify/blobs'))).digest('hex');
 const realBlobs = appRequire('@netlify/blobs');
-const realCfg = (() => { const m = { exports: {} }; const src = ts.transpileModule(fs.readFileSync(path.join(APP, 'shared', 'repair-approval-config.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText; new Function('module', 'exports', 'require', src)(m, m.exports, require); return m.exports; })();
+const realCfg = (() => { const m = { exports: {} }; const src = ts.transpileModule(fs.readFileSync(path.join(APP, 'shared', 'repair-approval-config.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText; new Function('module', 'exports', 'require', src)(m, m.exports, (id) => (id === './ghl-config' ? require('./ghl-config-loader.cjs') : require(id))); return m.exports; })();
 const APPROVAL_FIELD = 'fldApprovalSynthetic01';
 const REAL_D = realCfg.REPAIR_APPROVAL_CONFIG.saveDeadline;
 const scale = (o, f) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === 'number' ? Math.max(1, Math.round(v * f)) : scale(v, f)]));

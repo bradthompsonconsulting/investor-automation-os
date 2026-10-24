@@ -2,7 +2,8 @@
  * Repair-save completion integration (B15-26 B1, contracts r1-r5.1) --
  * the single switch and the per-environment configuration it needs.
  *
- * DEFAULT-DISABLED, IN CODE. While `enabled` is false:
+ * Switched on for Test by one reviewed commit (B15-26 activation); turning it
+ * off is a revert of that commit. While `enabled` is false:
  *   - the browser renders the existing repair estimator exactly as before
  *     (no new request, no new text);
  *   - both new functions (repair-approval-save, repair-approval-status)
@@ -18,6 +19,8 @@
  * When enabled, ghl-write refuses `opportunity.repairs`: the module's own
  * dispatch is then the ONLY way a repair total reaches GHL.
  */
+import { REPAIR_APPROVAL_TEST_FIELD_ID } from "./ghl-config";
+
 export const REPAIR_APPROVAL_FIELD_NOT_PROVISIONED = "REPAIR_APPROVAL_ID_FIELD_NOT_YET_PROVISIONED" as const;
 
 export type RepairApprovalConfig = Readonly<{
@@ -53,9 +56,9 @@ export type SaveDeadlineConfig = Readonly<{
 }>;
 
 export const REPAIR_APPROVAL_CONFIG: RepairApprovalConfig = Object.freeze({
-  enabled: false,
+  enabled: true,
   environments: Object.freeze(["test"]),
-  approvalFieldId: Object.freeze({ test: REPAIR_APPROVAL_FIELD_NOT_PROVISIONED, production: REPAIR_APPROVAL_FIELD_NOT_PROVISIONED }),
+  approvalFieldId: Object.freeze({ test: REPAIR_APPROVAL_TEST_FIELD_ID, production: REPAIR_APPROVAL_FIELD_NOT_PROVISIONED }),
   verifyPassDelayMs: 1500,
   saveDeadline: Object.freeze({
     budgetMs: 50_000,

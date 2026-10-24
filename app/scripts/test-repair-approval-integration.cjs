@@ -23,7 +23,7 @@ const ts = require('typescript');
 
 const APP = path.resolve(__dirname, '..');
 /** Literal count of check() executions below (loops expanded by hand); never back-filled from a run. */
-const FLOOR = 51; // 45 check() call sites + 4 extra V1 iterations (5 cases) + 2 extra M1 iterations (3 cases)
+const FLOOR = 52; // 46 check() call sites + 4 extra V1 iterations (5 cases) + 2 extra M1 iterations (3 cases)
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -51,11 +51,13 @@ const blobsShim = {
       : memBlobStore),
 };
 let cfgMode = 'real';
-const realCfg = (() => { const m = { exports: {} }; const src = ts.transpileModule(fs.readFileSync(path.join(APP, 'shared', 'repair-approval-config.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText; new Function('module', 'exports', 'require', src)(m, m.exports, require); return m.exports; })();
+const realCfg = (() => { const m = { exports: {} }; const src = ts.transpileModule(fs.readFileSync(path.join(APP, 'shared', 'repair-approval-config.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText; new Function('module', 'exports', 'require', src)(m, m.exports, (id) => (id === './ghl-config' ? require('./ghl-config-loader.cjs') : require(id))); return m.exports; })();
 const APPROVAL_FIELD = 'fldApprovalSynthetic01';
 const cfgVariants = {
   enabled: Object.freeze({ ...realCfg.REPAIR_APPROVAL_CONFIG, enabled: true, approvalFieldId: Object.freeze({ test: APPROVAL_FIELD, production: realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED }), verifyPassDelayMs: 30 }),
-  enabledUnprovisioned: Object.freeze({ ...realCfg.REPAIR_APPROVAL_CONFIG, enabled: true, verifyPassDelayMs: 30 }),
+  enabledUnprovisioned: Object.freeze({ ...realCfg.REPAIR_APPROVAL_CONFIG, enabled: true, approvalFieldId: Object.freeze({ test: realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED, production: realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED }), verifyPassDelayMs: 30 }),
+  // The switch OFF with both pins unprovisioned: main ecbfbc7's committed config, and the state a rollback (revert of the enabling commit) restores.
+  disabled: Object.freeze({ ...realCfg.REPAIR_APPROVAL_CONFIG, enabled: false, approvalFieldId: Object.freeze({ test: realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED, production: realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED }) }),
 };
 const cfgShim = {
   get REPAIR_APPROVAL_CONFIG() { return cfgMode === 'real' ? realCfg.REPAIR_APPROVAL_CONFIG : cfgVariants[cfgMode]; },
@@ -221,8 +223,14 @@ async function main() {
   const reset = () => { ghl.reset(); blobs.reset(); };
 
   try {
-    // ============================================== DISABLED (the default) ===
-    cfgMode = 'real';
+    // ===================================================== COMMITTED SWITCH ===
+    { const c = realCfg.REPAIR_APPROVAL_CONFIG; const P = realCfg.repairApprovalActiveFor;
+      const seen = { enabled: c.enabled, environments: c.environments, approvalFieldId: c.approvalFieldId, test: P('test'), production: P('production') };
+      check('C0 committed switch (the enabling commit): enabled, environments exactly ["test"], the Test pin is the verified field BqncWEZQ6Uim67qBC7xr, the Production pin stays unprovisioned; active for Test only',
+        c.enabled === true && JSON.stringify(c.environments) === '["test"]' && c.approvalFieldId.test === 'BqncWEZQ6Uim67qBC7xr' && c.approvalFieldId.production === realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED && seen.test === true && seen.production === false, seen);
+    }
+    // ====================================== DISABLED (switch off / rollback) ===
+    cfgMode = 'disabled';
     { reset(); const fx = fixture(); const m = mark();
       const r1 = await save(saveEvent(body(fx), { auth: false, origin: null }));
       const r2 = await status(statusEvent(fx.opp, { cookie: false }));
@@ -381,7 +389,7 @@ async function main() {
       check('L1 enabled: the legacy opportunity.repairs write is refused (409 not_sent) and sends nothing -- no alternate approval path', w.statusCode === 409 && parse(w).outcome === 'not_sent' && ghl.log.length === 0, [w.statusCode, w.body]);
     }
     // ================================== TEST-ONLY SCOPING (Jess, 2026-10-23) ===
-    { const P = realCfg.repairApprovalActiveFor; const on = cfgVariants.enabled; const off = realCfg.REPAIR_APPROVAL_CONFIG;
+    { const P = realCfg.repairApprovalActiveFor; const on = cfgVariants.enabled; const off = cfgVariants.disabled;
       const table = typeof P === 'function' ? [P('test', on), P('production', on), P('staging', on), P(undefined, on), P('TEST', on), P('test', off), P('test', { ...on, environments: [] })] : null;
       check('T1 one predicate: active ONLY with the switch on, IAOS_ENV exactly "test" and listed (production, unknown, absent, wrong case, switch off, unlisted -> inactive)', JSON.stringify(table) === JSON.stringify([true, false, false, false, false, false, false]), table);
     }
@@ -397,12 +405,12 @@ async function main() {
         const b = (() => { try { return JSON.parse(w.body); } catch { return null; } })();
         return { status: w.statusCode, outcome: b && b.outcome, confirmed: b && b.confirmed, error: b && b.error, wrote: ghl.opps.get(fx.opp).customFields.some((f) => f.id === F_EST && f.fieldValue === 4321), ghlRequests: ghl.log.length }; };
       process.env.IAOS_ENV = 'production';
-      cfgMode = 'real'; const committed = await legacyWrite('legacyProdReq01');
+      cfgMode = 'disabled'; const committed = await legacyWrite('legacyProdReq01');
       cfgMode = 'enabled'; const switchedOn = await legacyWrite('legacyProdReq02');
       process.env.IAOS_ENV = 'test';
       const same = ['status', 'outcome', 'confirmed', 'error', 'wrote', 'ghlRequests'].every((k) => committed[k] === switchedOn[k]);
       console.log('INFO T3 observed (IAOS_ENV production, ghl-write opportunity.repairs):', JSON.stringify({ committed, switchedOn }));
-      check('T3 Production with the shared switch ON keeps its legacy repair save: ghl-write opportunity.repairs behaves exactly as with the committed (disabled) switch, never the approval refusal', same && !/saved through repair approval/.test(String(switchedOn.error)), { committed, switchedOn });
+      check('T3 Production with the shared switch ON keeps its legacy repair save: ghl-write opportunity.repairs behaves exactly as with the switch off, never the approval refusal', same && !/saved through repair approval/.test(String(switchedOn.error)), { committed, switchedOn });
     }
     { cfgMode = 'enabled'; let r;
       try {
@@ -410,10 +418,12 @@ async function main() {
         const body = JSON.parse((await RC.handler({ httpMethod: 'GET' })).body);
         const pay = typeof RC.runtimePayload === 'function' ? RC.runtimePayload : null;
         r = { served: body.repairApproval, restUnchanged: JSON.stringify({ ...body, repairApproval: undefined }) === JSON.stringify(GC.projectRuntimeConfig(getConfig('test'))),
-          production: pay && pay('production').repairApproval, committed: pay && pay('test', (env) => realCfg.repairApprovalActiveFor(env, realCfg.REPAIR_APPROVAL_CONFIG)).repairApproval };
+          production: pay && pay('production').repairApproval, off: pay && pay('test', (env) => realCfg.repairApprovalActiveFor(env, cfgVariants.disabled)).repairApproval,
+          committedTest: pay && pay('test', (env) => realCfg.repairApprovalActiveFor(env, realCfg.REPAIR_APPROVAL_CONFIG)).repairApproval,
+          committedProduction: pay && pay('production', (env) => realCfg.repairApprovalActiveFor(env, realCfg.REPAIR_APPROVAL_CONFIG)).repairApproval };
       } catch (err) { r = { error: String(err) }; }
-      check('T4 iaos-runtime-config serves the SERVER-computed capability: { active: true } in Test with the switch on; { active: false } for Production with the switch on and for the committed switch; the rest of the payload unchanged',
-        !!(r.served && r.served.active === true && r.restUnchanged && r.production && r.production.active === false && r.committed && r.committed.active === false), r);
+      check('T4 iaos-runtime-config serves the SERVER-computed capability: { active: true } in Test with the switch on; { active: false } for Production with the switch on and for the switch off; the committed switch gives Test { active: true } and Production { active: false }; the rest of the payload unchanged',
+        !!(r.served && r.served.active === true && r.restUnchanged && r.production && r.production.active === false && r.off && r.off.active === false && r.committedTest && r.committedTest.active === true && r.committedProduction && r.committedProduction.active === false), r);
     }
     // ============================================================== CLIENT ===
     { let seen = null;

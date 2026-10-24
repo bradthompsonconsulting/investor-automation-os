@@ -5,8 +5,10 @@
  * Vite serves scripts/harness/repair-approval, which renders the REAL
  * UnderwritingWorkspace in headless Chromium. The repair-approval switch is
  * enabled ONLY inside this test's Vite server (a resolveId alias to
- * harness/repair-approval/enabled-config.ts); the committed
- * shared/repair-approval-config.ts stays `enabled: false` and is checked.
+ * harness/repair-approval/enabled-config.ts). The committed
+ * shared/repair-approval-config.ts (switched on for Test by the enabling
+ * commit) is checked in H1; the legacy viewer is served the switch-OFF
+ * capability, i.e. what a rollback (revert of that commit) serves.
  *
  * Every /.netlify/functions request is answered here. repair-approval-save and
  * repair-approval-status are the REAL handlers (module ea525f6 unchanged),
@@ -54,7 +56,7 @@ const EDGE_ORIGIN = 'https://edge-blobs.example.invalid'; const EDGE_SITE = 'sit
 const blobsShim = { ...realBlobs, connectLambda: () => {}, getStore: (opts) => (opts && typeof opts === 'object' && opts.siteID && opts.token ? realBlobs.getStore(opts)
   : opts && typeof opts === 'object' && typeof opts.fetch === 'function' ? realBlobs.getStore({ name: opts.name, fetch: opts.fetch, edgeURL: EDGE_ORIGIN, siteID: EDGE_SITE, token: 'edge-synthetic-token' })
     : memBlobStore) };
-const realCfg = (() => { const m = { exports: {} }; const src = ts.transpileModule(fs.readFileSync(path.join(APP, 'shared', 'repair-approval-config.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText; new Function('module', 'exports', 'require', src)(m, m.exports, require); return m.exports; })();
+const realCfg = (() => { const m = { exports: {} }; const src = ts.transpileModule(fs.readFileSync(path.join(APP, 'shared', 'repair-approval-config.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText; new Function('module', 'exports', 'require', src)(m, m.exports, (id) => (id === './ghl-config' ? require('./ghl-config-loader.cjs') : require(id))); return m.exports; })();
 const APPROVAL_FIELD = 'fldApprovalSynthetic01';
 const cfgShim = {
   REPAIR_APPROVAL_CONFIG: Object.freeze({ ...realCfg.REPAIR_APPROVAL_CONFIG, enabled: true, approvalFieldId: Object.freeze({ test: APPROVAL_FIELD, production: realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED }), verifyPassDelayMs: 40 }),
@@ -63,6 +65,8 @@ const cfgShim = {
   // The REAL predicate, evaluated on this test's enabled config unless another is given.
   repairApprovalActiveFor: (env, config) => (typeof realCfg.repairApprovalActiveFor === 'function' ? realCfg.repairApprovalActiveFor(env, config === undefined ? cfgShim.REPAIR_APPROVAL_CONFIG : config) : false),
 };
+// The switch OFF with both pins unprovisioned: main ecbfbc7's committed config, and the state a rollback restores.
+const OFF_CFG = Object.freeze({ ...realCfg.REPAIR_APPROVAL_CONFIG, enabled: false, approvalFieldId: Object.freeze({ test: realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED, production: realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED }) });
 const originalResolve = Module._resolveFilename; const originalLoad = Module._load;
 Module._resolveFilename = function (name, parent, ...rest) {
   if (name.startsWith('.') && parent && parent.filename) { const c = path.resolve(path.dirname(parent.filename), name + '.ts'); if (fs.existsSync(c)) return c; }
@@ -225,7 +229,7 @@ async function main() {
   });
   await server.listen();
   const base = server.resolvedUrls.local[0].replace(/\/$/, '');
-  // The LEGACY (committed, disabled) path: the same harness served WITHOUT the alias, so the page runs on enabled: false.
+  // The LEGACY (switch off) path: the same harness served WITHOUT the alias; its viewer is served the switch-off capability.
   const legacyServer = await createServer({
     root: APP, configFile: false, plugins: [react()], logLevel: 'error', clearScreen: false, cacheDir: path.join(APP, 'node_modules', '.vite-repair-approval-legacy'),
     server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false },
@@ -245,14 +249,14 @@ async function main() {
     const u = new URL(url); const fn = u.pathname.replace('/.netlify/functions/', ''); const method = req.method();
     const fulfill = (status, body) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     if (fn === 'iaos-runtime-config') { // as main.tsx fetches it; the REAL handler unless this viewer asks for another case
-      const mode = viewer.capability || (viewer.legacy ? 'committed' : 'server'); const rc = { mode }; runtimeCalls.push(rc);
+      const mode = viewer.capability || (viewer.legacy ? 'off' : 'server'); const rc = { mode }; runtimeCalls.push(rc);
       if (mode === 'error') { rc.status = 500; return fulfill(500, { error: 'synthetic configuration failure' }); }
       const served = async () => JSON.parse((await runtimeMod.handler({ httpMethod: 'GET' })).body);
       const pay = typeof runtimeMod.runtimePayload === 'function' ? runtimeMod.runtimePayload : (env) => projectRuntimeConfig(getConfig(env));
-      const committedActive = (env) => (typeof realCfg.repairApprovalActiveFor === 'function' ? realCfg.repairApprovalActiveFor(env, realCfg.REPAIR_APPROVAL_CONFIG) : false);
+      const offActive = (env) => (typeof realCfg.repairApprovalActiveFor === 'function' ? realCfg.repairApprovalActiveFor(env, OFF_CFG) : false);
       let b;
       if (mode === 'server') b = await served();
-      else if (mode === 'committed') b = pay('test', committedActive);
+      else if (mode === 'off') b = pay('test', offActive);
       else if (mode === 'production') b = pay('production');
       else if (mode === 'missing') { b = await served(); delete b.repairApproval; }
       else if (mode === 'malformed') { b = await served(); b.repairApproval = { active: 'true' }; }
@@ -340,8 +344,8 @@ async function main() {
     // ------------------------------------------------------------- harness ---
     const committedSrc = fs.readFileSync(path.join(APP, 'shared', 'repair-approval-config.ts'), 'utf8');
     { const fx = fixture(); const { page, context, T } = await open(fx);
-      check('H1 committed switch is disabled (shared/repair-approval-config.ts enabled: false); the page\'s capability came from the REAL iaos-runtime-config handler ({ active: true } only because this test\'s server config has the switch on)',
-        /\n\s+enabled: false,\n/.test(committedSrc.replace(/\r\n/g, '\n')) && realCfg.REPAIR_APPROVAL_CONFIG.enabled === false && runtimeCalls.some((r) => r.mode === 'server' && r.active === true), runtimeCalls);
+      check('H1 committed switch is the enabling commit (shared/repair-approval-config.ts enabled: true; Test pinned, Production unprovisioned; active for Test only); the page\'s capability came from the REAL iaos-runtime-config handler',
+        /\n\s+enabled: true,\n/.test(committedSrc.replace(/\r\n/g, '\n')) && realCfg.REPAIR_APPROVAL_CONFIG.enabled === true && realCfg.REPAIR_APPROVAL_CONFIG.approvalFieldId.production === realCfg.REPAIR_APPROVAL_FIELD_NOT_PROVISIONED && realCfg.repairApprovalActiveFor('test') === true && realCfg.repairApprovalActiveFor('production') === false && runtimeCalls.some((r) => r.mode === 'server' && r.active === true), runtimeCalls);
       check('H2 the enabled action bar rendered on the real page (enabled-only control present, W2 as ruled)', (await T('repair-approval-approve').count()) === 1 && (await page.getByText('Approve saves the repair total and approval ID on this deal, adds an evidence note to its contact in GHL, and verifies the saved details.').count()) === 1);
       await settle(page);
       const st = calls.filter((c) => c.fn === 'repair-approval-status');
@@ -757,7 +761,7 @@ async function main() {
       check('CP4 failed capability loading (runtime configuration 500) -> the application is not started: no save control of either kind, no other function request', r.unavailable === 1 && r.approve === 0 && r.approvalControl === 0 && r.functionCalls === 0 && r.runtime.length === 1, r);
     }
 
-    // Legacy (committed, disabled) path, on the same page served without the alias.
+    // Legacy (switch off: the rollback state) path, on the same page served without the alias.
     { const fxA = fixture(); const fxB = fixture(); legacyWrites.length = 0; calls.length = 0;
       const legacy = { write: true, readSession: true, legacy: true };
       const { page, context } = await open(fxA, legacy);
