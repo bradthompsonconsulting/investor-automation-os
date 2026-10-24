@@ -60,7 +60,7 @@ check('F24 Pipeline stays read-only (no write call)', WRITES.test(code(pipeline)
 // ── F16 ─────────────────────────────────────────────────────────────────────
 const contacts = read('src/pages/Contacts.tsx');
 check('F16 a nameless contact reads "Unnamed contact", inside the link',
-  /\{r\.name \|\| <span data-testid=\{`contacts-unnamed-\$\{r\.id\}`\}[^>]*>Unnamed contact<\/span>\}/.test(contacts), true);
+  /\{displayGridName\(r\.name, ctx\.dealNames\.get\(r\.id\)\) \|\| <span data-testid=\{`contacts-unnamed-\$\{r\.id\}`\}[^>]*>Unnamed contact<\/span>\}/.test(contacts), true);
 check('F16 the old dim "Unknown" placeholder is gone from the name link',
   /\{r\.name \|\| <em style=\{\{ color: "#475569" \}\}>Unknown<\/em>\}/.test(contacts), false);
 
