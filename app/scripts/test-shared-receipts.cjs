@@ -137,7 +137,7 @@ const pathOf = (key) => `/${SITE}/site:iaos-write-receipts/${key}`;
     for (const r of [{ status: 400 }, { status: 500 }, { fail: 'throw' }]) { reset(); const key = `relf-${JSON.stringify(r)}`; const rel = await R.lockContact(key); const m = log.length; const t = tmark(); rule({ method: 'DELETE', ...r }); let threw = false; try { await rel(); } catch { threw = true; }
       res.push(!threw && dels(m) === 1 && sdkSleeps(t) === 0 && blobs.has(pathOf(`lock/${sha(LOC + key)}`))); }
     console.warn = warn;
-    check('RS2 lock release unconfirmed (400 / 500 / thrown): never throws, 1 DELETE, no retry, the lock stays (fail closed), logged', res.every(Boolean) && warned === 3, [res, warned]); }
+    check('RS2 lock release unconfirmed (400 / 500 / thrown, none applied by this fake): never throws, 1 DELETE, no retry, logged; here the lock remains (in general it may remain, be absent or have been re-acquired)', res.every(Boolean) && warned === 3, [res, warned]); }
   { reset(); const rel = await R.lockContact('single-use'); await rel(); const b = await R.lockContact('single-use'); const m = log.length; await rel();
     check('RS2 a release is single-use: calling it again after another caller re-acquired sends nothing; the new lock stays', dels(m) === 0 && blobs.has(pathOf(`lock/${sha(LOC + 'single-use')}`)) && typeof b === 'function'); await b(); }
   { const res = [];
@@ -147,6 +147,9 @@ const pathOf = (key) => `/${SITE}/site:iaos-write-receipts/${key}`;
     check('RS3 clearStageTransition: 204 -> resolves; unconfirmed -> still THROWS (INV-98: never success), 1 DELETE, no retry, the marker stays', res.every(Boolean), res); }
 
   // ----------------------------------------- RS4: a delete lands, its response is lost, another caller re-acquires ---
+  // What this demonstrates: extra-DELETE detection -- no second DELETE for the key after the SDK's retry delay.
+  // It does NOT demonstrate that a retry would delete B's record: the old code's retry completes inside A's own
+  // awaited release, before B re-acquires, so its control shows the extra DELETE only.
   { reset(); const relA = await R.lockContact('aba-contact'); const lockPath = pathOf(`lock/${sha(LOC + 'aba-contact')}`);
     await R.claimStageTransition('aba-opp', 'reqA', 'opA'); const markerPath = pathOf(R.stageTransitionMarkerKey('aba-opp'));
     const m = log.length; const t = tmark();
@@ -156,8 +159,8 @@ const pathOf = (key) => `/${SITE}/site:iaos-write-receipts/${key}`;
     await R.claimStageTransition('aba-opp', 'reqB', 'opB');                                  // B claims the marker again
     const bMarker = blobs.get(markerPath);
     await wait(5_600);                                                                        // past the SDK's 5 s retry delay
-    check('RS4a lock: A\'s DELETE lands with its response lost; B re-acquires; 5.6 s later A sent no 2nd DELETE and B\'s lock still exists', typeof relB === 'function' && blobs.has(lockPath) && log.slice(m).filter((x) => x.method === 'DELETE' && x.path === lockPath).length === 1 && sdkSleeps(t) === 0, log.slice(m).map((x) => x.method));
-    check('RS4b marker: A\'s clear lands with its response lost (it throws); B claims again; 5.6 s later no 2nd DELETE and B\'s marker is the stored one', clearThrew && blobs.get(markerPath) === bMarker && JSON.parse(bMarker).requestIdDigest === sha('reqB') && log.slice(m).filter((x) => x.method === 'DELETE' && x.path === markerPath).length === 1);
+    check('RS4a lock (extra-DELETE detection): A\'s DELETE lands with its response lost; B re-acquires; 5.6 s later A has sent no 2nd DELETE for the key', typeof relB === 'function' && blobs.has(lockPath) && log.slice(m).filter((x) => x.method === 'DELETE' && x.path === lockPath).length === 1 && sdkSleeps(t) === 0, log.slice(m).map((x) => x.method));
+    check('RS4b marker (extra-DELETE detection): A\'s clear lands with its response lost (it throws); B claims again; 5.6 s later no 2nd DELETE for the key', clearThrew && blobs.get(markerPath) === bMarker && JSON.parse(bMarker).requestIdDigest === sha('reqB') && log.slice(m).filter((x) => x.method === 'DELETE' && x.path === markerPath).length === 1);
     await relB(); }
 
   // --------------------------------------------- RS5: same keys and records as before (independent derivation) ---

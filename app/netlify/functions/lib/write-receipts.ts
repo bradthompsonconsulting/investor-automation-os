@@ -14,8 +14,9 @@ const RECEIPTS = "iaos-write-receipts";
  *   create: one 2xx -> created; one 412 -> exists (contention or duplicate; nothing of ours stored);
  *           anything else -> uncertain (ours MAY be stored: it is refused, never retried, never deleted)
  *   delete: one 200/204/404 -> deleted; anything else -> uncertain (it MAY have landed: never retried)
- * No retry of a delete means a delete that landed with its response lost cannot, on a later attempt, remove a
- * record another caller has since created. Scope: the inspected callers of these helpers only; this is not a
+ * No retry of a delete means this call never sends a second DELETE for the same key. After an uncertain delete the
+ * original record may remain, may be absent, or may already have been re-acquired by another caller; nothing here
+ * decides which. Scope: the inspected callers of these helpers only; this is not a
  * general ownership guarantee against arbitrary repeated releases or external cleanup.
  */
 type ReceiptAttempt = { sent: boolean; status: number | null; threw: boolean };
@@ -60,7 +61,8 @@ export async function claimWrite(scope: string, requestId: string, payload: unkn
  * Atomic per-contact serialization. No expiry: an interrupted critical section fails closed. A release is
  * returned ONLY for a lock this call definitely created. The release is single-use and never throws: it runs in
  * callers' `finally` blocks, after the protected write's outcome is decided, and must not replace that outcome.
- * An unconfirmed release leaves the lock in place (writes to this contact stay refused until inspected).
+ * An unconfirmed release is not retried: the original lock may remain (writes to this contact then stay refused
+ * until inspected), may be absent, or may already have been re-acquired by another caller.
  */
 export async function lockContact(contactId: string) {
   const key="lock/"+digest(getConfig(process.env.IAOS_ENV).locationId+contactId);
@@ -69,7 +71,7 @@ export async function lockContact(contactId: string) {
   return async () => {
     if (released) return;
     released = true;
-    if (await recordedDelete(key) !== "deleted") console.warn("[write-receipts] contact lock release unconfirmed; the lock may remain and refuse this contact's writes until inspected");
+    if (await recordedDelete(key) !== "deleted") console.warn("[write-receipts] contact lock release unconfirmed; the lock may remain, be absent or have been re-acquired -- inspect");
   };
 }
 
