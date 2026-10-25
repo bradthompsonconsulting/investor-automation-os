@@ -343,7 +343,7 @@ jobs:
       - name: B1 repair-save completion -- owned transport, dispatch reservation/send gate, verifier, single-use CLOSE, abandonment, reader (INV-134) — 134 checks
         run: node app/scripts/test-repair-completion.cjs
 
-      - name: B1 repair approval integration (default-disabled) -- save/status handlers, server recompute, auth, duplicates, blocking, display, disabled path unchanged, Test-only scoping (INV-134) — 51 checks
+      - name: B1 repair approval integration (enabled for Test; switch-off path checked) -- committed switch, save/status handlers, server recompute, auth, duplicates, blocking, display, disabled path unchanged, Test-only scoping (INV-134) — 52 checks
         run: node app/scripts/test-repair-approval-integration.cjs
       - name: Repair save whole-save deadline (B15-26 B1, r4; pinned SDK) — 60 offline checks
         run: node app/scripts/test-repair-save-deadline.cjs
@@ -373,7 +373,7 @@ jobs:
         run: node app/scripts/test-b15-44-get-comps-layout.cjs
       - name: Offer Readiness decision panel starting state, loading lockout and per-deal choice, real Seller Call page (Pass 1 F33) — 31 checks, floor 24
         run: node app/scripts/test-b15-33-readiness-panel.cjs
-      - name: B1 repair approval ENABLED path on the real page, offline (switch aliased on for this test only; committed switch stays disabled) (INV-134) — 81 checks
+      - name: B1 repair approval ENABLED path on the real page, offline (committed switch on for Test; legacy viewer served the switch-off capability) (INV-134) — 81 checks
         run: node app/scripts/test-repair-approval-browser.cjs
       # Both Production negotiation settings against the real write scope and barrier rules; floor 105
       # (NB6-NB8: a live, unspent reservation for A's deal is refused on B, then writes A once; 23770f6).
