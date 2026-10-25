@@ -8,6 +8,11 @@
  *   static       -- padding set once, never tracked: wrong after resize / rail growth
  *   nocleanup    -- previous value not restored on exit: padding leaks to other pages
  *   nodisconnect -- observer not disconnected on exit: it rewrites main's padding later
+ *   nofallback   -- the a0fd10a implementation (always sticky, no reveal): fails the
+ *                   clearance rule and the full-visibility check where the rail leaves no room
+ *   noreturn     -- once released the rail never sticks again: fails 'rail mode is sticky'
+ *   noreveal     -- keyboard focus not brought fully into view: fails full visibility
+ *   nolistenercleanup -- focus listener left on <main> after exit
  *
  *   node scripts/test-b15-rail-focus-mutations.cjs
  */
@@ -20,6 +25,10 @@ const EXPECT = {
   static: [/^(resize|grow) .*scroll-padding-top == padding-top/, /^(resize|grow) .*leaves no focused control under the rail/],
   nocleanup: [/^away \(Deal Calculator\): .*previous value/, /^away again: main's previous scroll padding \(7px\) restored/],
   nodisconnect: [/^away.*(previous value|still no scroll padding|still 7px)/],
+  nofallback: [/rail mode follows the clearance rule/, /^height 480x600.*every focused control fully visible/],
+  noreturn: [/^(height 480x600 -> 900|ungrown down 480px|fallback -> sticky after return).*rail mode is sticky/],
+  noreveal: [/every focused control fully visible/],
+  nolistenercleanup: [/no focus listener left on <main>/],
 };
 
 let failures = 0;
@@ -37,5 +46,5 @@ for (const [name, patterns] of Object.entries(EXPECT)) {
   for (const f of failed.slice(0, 6)) console.log(`      FAIL ${f.slice(0, 160)}`);
   if (failed.length > 6) console.log(`      ... ${failed.length - 6} more`);
 }
-console.log(`\nB15 rail focus mutation controls: ${4 - failures}/4 caught`);
+console.log(`\nB15 rail focus mutation controls: ${Object.keys(EXPECT).length - failures}/${Object.keys(EXPECT).length} caught`);
 process.exit(failures ? 1 : 0);

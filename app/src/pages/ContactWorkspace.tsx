@@ -160,30 +160,65 @@ function TierBadge({ tier }: { tier: BucketTag }) {
    which is where the rail sticks, and the browser does not account for a
    sticky element. So the rail's scroll container (Layout's <main>) gets
    scroll-padding-top = its own padding-top + the rail's CURRENT height + 8px.
-   scroll-padding only moves where scrolling stops; it changes no layout, and
-   the rail keeps sticky / top 0 / zIndex 1.
+   scroll-padding only moves where scrolling stops; it changes no layout.
    - Tracked with a ResizeObserver: the rail's height changes with the window
      width and when values replace waiting texts. A value set once goes stale.
    - <main> belongs to Layout and outlives this page, so on exit the observer
      is disconnected and main's PREVIOUS value is put back; otherwise every
-     later page inherits this padding. */
-function useRailScrollPadding(rail: HTMLElement | null) {
+     later page inherits this padding.
+
+   CLEARANCE RULE (fallback, Jess 2026-10-25, PR #147 CI): a stuck rail can be
+   taller than the window leaves room for (narrow widths, short windows, a rail
+   that grows). Then no scroll padding can show a focused control below it.
+     room = main.clientHeight − main padding-top − rail height − 8px
+     need = height of the TALLEST visible, enabled focusable control in <main>
+            outside the rail (measured, not assumed)
+   room >= need → sticky, with the scroll padding above.
+   room <  need → the rail scrolls with the page (position: relative) and
+            main's previous scroll padding is put back. PERMANENT MAO VISIBILITY
+            IS RELAXED IN THIS FALLBACK ONLY: a rail that leaves no room cannot
+            keep both the MAO and the focused control in view, and an obscured
+            focus fails WCAG 2.4.11. Re-checked whenever the rail, <main> or the
+            page content changes size, so sticky returns without a reload.
+   - A focused TEXTAREA is only scrolled far enough to show its caret, which
+     can leave the box cut at the bottom edge. For keyboard focus
+     (:focus-visible) the control is brought fully into view ("nearest"), which
+     honours the same scroll padding. */
+const RAIL_GAP = 8;
+const RAIL_FOCUSABLE = "a[href],button,input,select,textarea,summary,[tabindex]:not([tabindex='-1'])";
+function useRailScrollPadding(rail: HTMLElement | null): boolean {
+  const [sticky, setSticky] = useState(true);
   useLayoutEffect(() => {
     const scroller = rail?.closest("main");
     if (!rail || !scroller) return;
     const previous = scroller.style.scrollPaddingTop;
     const update = () => {
       const padTop = parseFloat(getComputedStyle(scroller).paddingTop) || 0;
-      scroller.style.scrollPaddingTop = `${Math.ceil(padTop + rail.getBoundingClientRect().height + 8)}px`;
+      const railHeight = rail.getBoundingClientRect().height;
+      let need = 0;
+      scroller.querySelectorAll<HTMLElement>(RAIL_FOCUSABLE).forEach((el) => {
+        if (rail.contains(el) || (el as HTMLButtonElement).disabled || el.offsetParent === null) return;
+        need = Math.max(need, el.getBoundingClientRect().height);
+      });
+      const fits = scroller.clientHeight - padTop - railHeight - RAIL_GAP >= need;
+      setSticky(fits);
+      scroller.style.scrollPaddingTop = fits ? `${Math.ceil(padTop + railHeight + RAIL_GAP)}px` : previous;
+    };
+    const reveal = (e: FocusEvent) => {
+      const el = e.target as HTMLElement;
+      if (el.matches(":focus-visible")) el.scrollIntoView({ block: "nearest", inline: "nearest" });
     };
     update();
+    scroller.addEventListener("focusin", reveal);
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
-    observer?.observe(rail);
+    [rail, scroller, rail.parentElement].forEach((el) => { if (el) observer?.observe(el); });
     return () => {
       observer?.disconnect();
+      scroller.removeEventListener("focusin", reveal);
       scroller.style.scrollPaddingTop = previous;
     };
   }, [rail]);
+  return sticky;
 }
 
 function ScoreChip({ label, score }: { label: string; score: number | null }) {
@@ -1253,9 +1288,10 @@ export default function ContactWorkspace() {
   const [notesError, setNotesError] = useState<string | null>(null);
 
   // Narrow-width F3 — the rail element (callback ref), so the scroll padding
-  // follows it in and out of the DOM. See useRailScrollPadding.
+  // follows it in and out of the DOM; railSticky is the clearance rule's
+  // verdict. See useRailScrollPadding.
   const [railEl, setRailEl] = useState<HTMLDivElement | null>(null);
-  useRailScrollPadding(railEl);
+  const railSticky = useRailScrollPadding(railEl);
 
   // Step 5 — conversation history (read-only, scoped by explicit contactId).
   const [conversations, setConversations]           = useState<ConvMessageRow[] | null>(null);
@@ -1973,6 +2009,12 @@ export default function ContactWorkspace() {
           Layout.tsx:22; nothing between it and this div sets `overflow`, so
           nothing clips the sticky.
 
+          ⚠ EXCEPT WHEN IT CANNOT LEAVE ROOM: when the stuck rail would leave
+          less room below it than the tallest focusable control needs, it
+          scrolls with the page instead (narrow-width F3 clearance rule, Jess
+          2026-10-25; see useRailScrollPadding). MAO visibility is relaxed in
+          that fallback only, and sticky returns as soon as there is room.
+
           ⚠ `top: 0` PINS TO THE SCROLLPORT TOP, ABOVE main's p-6 — so the stuck
           rail sits flush under the Header, and both are near #0D1B3E. THAT
           OUTCOME IS KNOWN AND ACCEPTED, not an oversight. Do NOT "fix" it with
@@ -1985,12 +2027,13 @@ export default function ContactWorkspace() {
           Decided in the S1 amendment — see claude/board-5-s1-review-2026-08-28.md. */}
       <div
         data-testid="deal-rail"
+        data-rail-mode={railSticky ? "sticky" : "scrolls"}
         ref={setRailEl}
         style={{
           display: "flex", flexWrap: "wrap", gap: "28px",
           background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)",
           borderRadius: "10px", padding: "12px 18px", marginBottom: "18px",
-          position: "sticky", top: 0, zIndex: 1,
+          position: railSticky ? "sticky" : "relative", top: 0, zIndex: 1,
         }}
       >
         {/* Board #5 S2 — WHOSE DEAL THIS IS. Closes the S1 risk that a sticky
