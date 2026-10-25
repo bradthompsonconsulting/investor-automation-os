@@ -155,6 +155,37 @@ function TierBadge({ tier }: { tier: BucketTag }) {
   );
 }
 
+/* Narrow-width F3 (2026-10-25) — a keyboard-focused control must never land
+   under the STUCK deal rail. Focus scrolls a control to the scrollport edge,
+   which is where the rail sticks, and the browser does not account for a
+   sticky element. So the rail's scroll container (Layout's <main>) gets
+   scroll-padding-top = its own padding-top + the rail's CURRENT height + 8px.
+   scroll-padding only moves where scrolling stops; it changes no layout, and
+   the rail keeps sticky / top 0 / zIndex 1.
+   - Tracked with a ResizeObserver: the rail's height changes with the window
+     width and when values replace waiting texts. A value set once goes stale.
+   - <main> belongs to Layout and outlives this page, so on exit the observer
+     is disconnected and main's PREVIOUS value is put back; otherwise every
+     later page inherits this padding. */
+function useRailScrollPadding(rail: HTMLElement | null) {
+  useLayoutEffect(() => {
+    const scroller = rail?.closest("main");
+    if (!rail || !scroller) return;
+    const previous = scroller.style.scrollPaddingTop;
+    const update = () => {
+      const padTop = parseFloat(getComputedStyle(scroller).paddingTop) || 0;
+      scroller.style.scrollPaddingTop = `${Math.ceil(padTop + rail.getBoundingClientRect().height + 8)}px`;
+    };
+    update();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    observer?.observe(rail);
+    return () => {
+      observer?.disconnect();
+      scroller.style.scrollPaddingTop = previous;
+    };
+  }, [rail]);
+}
+
 function ScoreChip({ label, score }: { label: string; score: number | null }) {
   let color = "#475569";
   if (score !== null) {
@@ -1221,6 +1252,11 @@ export default function ContactWorkspace() {
   const [notes, setNotes]           = useState<NoteRow[] | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
 
+  // Narrow-width F3 — the rail element (callback ref), so the scroll padding
+  // follows it in and out of the DOM. See useRailScrollPadding.
+  const [railEl, setRailEl] = useState<HTMLDivElement | null>(null);
+  useRailScrollPadding(railEl);
+
   // Step 5 — conversation history (read-only, scoped by explicit contactId).
   const [conversations, setConversations]           = useState<ConvMessageRow[] | null>(null);
   const [conversationsError, setConversationsError] = useState<string | null>(null);
@@ -1868,7 +1904,9 @@ export default function ContactWorkspace() {
           </div>
         </div>
         {!loading && contact && (
-          <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+          /* Narrow-width F1 — the badge and chips wrap inside the card instead
+             of running past it (69px at 480px). One line at 1024px and up. */
+          <div data-testid="identity-scores" style={{ display: "flex", alignItems: "center", gap: "8px 14px", flexWrap: "wrap" }}>
             <TierBadge tier={tier} />
             <ScoreChip label="Combined" score={contact.combinedScore} />
             <ScoreChip label="Mot" score={contact.motivationScore} />
@@ -1947,6 +1985,7 @@ export default function ContactWorkspace() {
           Decided in the S1 amendment — see claude/board-5-s1-review-2026-08-28.md. */}
       <div
         data-testid="deal-rail"
+        ref={setRailEl}
         style={{
           display: "flex", flexWrap: "wrap", gap: "28px",
           background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)",
