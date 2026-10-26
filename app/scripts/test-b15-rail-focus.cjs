@@ -64,7 +64,7 @@
  *      3): the mode switches before the next task, i.e. before keyboard focus
  *      can need it; Tab then shows it whole; reverting restores sticky.
  *
- * RAIL_FOCUS_MUTATION=<name> rewrites ContactWorkspace.tsx IN THE DEV SERVER
+ * RAIL_FOCUS_MUTATION=<name> rewrites ContactWorkspace.tsx / lib/rail-clearance.ts IN THE DEV SERVER
  * ONLY (no file is touched) to prove these checks catch a broken fix:
  *   off          -- the hook is not called (the original defect)
  *   static       -- nothing tracked: padding and mode set once
@@ -120,6 +120,20 @@ const MUTATIONS = {
 const MUTATION = process.env.RAIL_FOCUS_MUTATION || '';
 if (MUTATION && !MUTATIONS[MUTATION]) { console.error(`FAIL  unknown RAIL_FOCUS_MUTATION ${MUTATION}`); process.exit(2); }
 let mutationApplied = false;
+/* B15-06: the hook lives in lib/rail-clearance.ts and is called from
+   ContactWorkspace.tsx. Each mutation target must occur exactly once across
+   the two files; it is applied in the file that holds it. */
+const MUTATION_FILES = ['/src/pages/ContactWorkspace.tsx', '/src/lib/rail-clearance.ts'];
+const mutationTarget = new Map();
+let mutationsDone = 0;
+if (MUTATION) {
+  for (const m of MUTATIONS[MUTATION]) {
+    const hits = MUTATION_FILES.map((f) => [f, fs.readFileSync(path.join(APP, f), 'utf8').replace(/\r\n/g, '\n').split(m[0]).length - 1]);
+    const found = hits.filter(([, n]) => n > 0);
+    if (found.length !== 1 || found[0][1] !== 1) { console.error(`FAIL  mutation ${MUTATION}: target not found exactly once across ${MUTATION_FILES.join(', ')}`); process.exit(2); }
+    mutationTarget.set(m, found[0][0]);
+  }
+}
 
 let checks = 0;
 let failures = 0;
@@ -290,14 +304,15 @@ async function main() {
   const mutate = {
     name: 'rail-focus-mutation', enforce: 'pre',
     transform(code, id) {
-      if (!MUTATION || !id.replace(/\\/g, '/').endsWith('/src/pages/ContactWorkspace.tsx')) return null;
-      const src = code.replace(/\r\n/g, '\n');
-      let out = src;
-      for (const [from, to] of MUTATIONS[MUTATION]) {
+      const file = MUTATION_FILES.find((f) => id.replace(/\\/g, '/').endsWith(f));
+      if (!MUTATION || !file) return null;
+      let out = code.replace(/\r\n/g, '\n');
+      for (const [from, to] of MUTATIONS[MUTATION].filter((m) => mutationTarget.get(m) === file)) {
         if (out.split(from).length !== 2) throw new Error(`mutation ${MUTATION}: target not found exactly once`);
         out = out.replace(from, to);
+        mutationsDone += 1;
       }
-      mutationApplied = true;
+      mutationApplied = mutationsDone === MUTATIONS[MUTATION].length;
       return out;
     },
   };
