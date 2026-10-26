@@ -421,7 +421,7 @@ async function main() {
         const RC = require('../netlify/functions/iaos-runtime-config.ts'); const GC = require('../shared/ghl-config.ts');
         const body = JSON.parse((await RC.handler({ httpMethod: 'GET' })).body);
         const pay = typeof RC.runtimePayload === 'function' ? RC.runtimePayload : null;
-        r = { served: body.repairApproval, restUnchanged: JSON.stringify({ ...body, repairApproval: undefined }) === JSON.stringify(GC.projectRuntimeConfig(getConfig('test'))),
+        r = { served: body.repairApproval, restUnchanged: JSON.stringify({ ...body, repairApproval: undefined }) === JSON.stringify(GC.projectRuntimeConfig(getConfig('test'), 'test')),
           production: pay && pay('production').repairApproval, off: pay && pay('test', (env) => realCfg.repairApprovalActiveFor(env, cfgVariants.disabled)).repairApproval,
           committedTest: pay && pay('test', (env) => realCfg.repairApprovalActiveFor(env, realCfg.REPAIR_APPROVAL_CONFIG)).repairApproval,
           committedProduction: pay && pay('production', (env) => realCfg.repairApprovalActiveFor(env, realCfg.REPAIR_APPROVAL_CONFIG)).repairApproval };
