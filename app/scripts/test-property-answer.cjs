@@ -18,6 +18,7 @@ const crypto = require('node:crypto');
 const receipts = new Map(); const etags = new Map(); let etagSeq = 0;
 let failNext = []; let applyThenThrow = []; let staleNext = []; let blobOps = 0;
 const realBlobs = require('@netlify/blobs');
+const receiptShim = require('./lib/receipt-recorder-shim.cjs'); // main's recorded-receipt adapter (204a66f): fetch-bearing receipt stores go through the helpers' recorder (test-only; Bones step 070)
 delete process.env.NETLIFY_BLOBS_CONTEXT;
 const lambdaHeaders = { 'x-nf-site-id': 'offline-site', 'x-nf-deploy-id': 'offline-deploy' };
 const lambdaBlobs = Buffer.from(JSON.stringify({ url: 'https://blobs.example.invalid', token: 'offline-blob-fixture' })).toString('base64');
@@ -40,10 +41,10 @@ const memStore = {
     if (take(applyThenThrow, 'setJSON', key, value)) throw new Error('fixture: write applied, acknowledgement lost');
     return { modified: true, etag };
   },
-  async delete(key) { blobOps++; receipts.delete(key); etags.delete(key); },
+  async delete(key) { blobOps++; if (take(failNext, 'delete', key)) throw new Error('fixture: blob delete failed'); receipts.delete(key); etags.delete(key); },
 };
 Module._load = function (name, ...rest) {
-  if (name === '@netlify/blobs') return { connectLambda: (event) => realBlobs.connectLambda(event), getStore: () => memStore };
+  if (name === '@netlify/blobs') return receiptShim.wrap({ connectLambda: (event) => realBlobs.connectLambda(event), getStore: () => memStore });
   return originalLoad.call(this, name, ...rest);
 };
 process.env.IAOS_ENV = 'test';
@@ -991,6 +992,52 @@ async function t(name, fn) {
   await t('LEASE_MS prerequisite: app/netlify.toml sets no function timeout, so the platform\'s synchronous limit (well under 120 s) applies -- a timeout setting must re-open this review', async () => {
     const toml = fs.readFileSync(path.join(__dirname, '..', 'netlify.toml'), 'utf8');
     assert.ok(!/^\s*timeout\s*=/m.test(toml), 'no timeout key'); assert.equal(ledger.LEASE_MS, 120000);
+  });
+
+  // ── Bones step 070: the contact lock through main's recorded receipts (receipt-recorder-shim) ─────────
+  const wb = require('../netlify/functions/lib/ghl-write-boundary.ts');
+  const lockKey = (c = X1) => 'lock/' + wb.digest(config.locationId + c);
+  /** Spy on the lock key's backing-store writes/deletes and on every real (non-sentinel) network origin. */
+  async function withLockSpy(fn) {
+    const spy = { set: 0, del: 0, origins: [] }; const os = memStore.setJSON, od = memStore.delete, prev = global.fetch;
+    memStore.setJSON = async function (k, ...a) { if (k === lockKey()) spy.set++; return os.call(this, k, ...a); };
+    memStore.delete = async function (k, ...a) { if (k === lockKey()) spy.del++; return od.call(this, k, ...a); };
+    global.fetch = async (url, init) => { spy.origins.push(new URL(String(url)).origin); return prev(url, init); };
+    try { await fn(spy); } finally { memStore.setJSON = os; memStore.delete = od; global.fetch = prev; }
+    return spy;
+  }
+  async function saveAfter(beforeSave, c = X1, o = DA) {
+    const ctx = (await context(c, o)).body; await beforeSave();
+    return post({ action: 'save', contactId: c, opportunityId: o, field: 'seller_reason', operationId: crypto.randomUUID(), value: 'Relocating for work', expectedAddressDigest: ctx.address?.digest ?? model.EMPTY_ADDRESS_DIGEST, expectedDealSetDigest: ctx.verdict.digest });
+  }
+  await t('LK1 (step 070) an EXISTING contact lock refuses the save BEFORE any GHL request (409 locked); the other holder\'s lock is untouched', async () => {
+    fresh(); seedOtherLedgers(X1); let n = 0, r;
+    const spy = await withLockSpy(async () => { r = await saveAfter(async () => { receipts.set(lockKey(), { claimedAt: 'held-elsewhere' }); etags.set(lockKey(), 'held-etag'); n = ghlCount(); }); });
+    assert.equal(r.status, 409, JSON.stringify(r.body)); assert.equal(r.body.code, 'locked'); assert.equal(ghlCount(), n, 'no GHL request after the refusal');
+    assert.deepEqual(receipts.get(lockKey()), { claimedAt: 'held-elsewhere' }); assert.equal(etags.get(lockKey()), 'held-etag'); assert.equal(spy.del, 0, 'no DELETE of a lock this request never held');
+  });
+  await t('LK2 (step 070) an UNCONFIRMED lock creation (the recorded create fails) prevents every protected GHL dispatch (409 locked; zero PUT/POST)', async () => {
+    fresh(); seedOtherLedgers(X1); let n = 0, r;
+    const spy = await withLockSpy(async () => { r = await saveAfter(async () => { failNext.push((op, k) => op === 'setJSON' && k === lockKey()); n = ghlCount(); }); });
+    assert.equal(r.status, 409, JSON.stringify(r.body)); assert.equal(r.body.code, 'locked'); assert.equal(ghlCount(), n); assert.equal(puts(), 0); assert.equal(posts(), 0);
+    assert.equal(spy.set, 1, 'one create attempt, never retried'); assert.equal(spy.del, 0, 'no DELETE of an unconfirmed lock'); assert.equal(receipts.has(lockKey()), false);
+  });
+  await t('LK4 (step 070, control) a normal save creates and releases the lock exactly once; result saved_history_pending', async () => {
+    fresh(); seedOtherLedgers(X1); let r; await commitAnswer('property_address', ADDR);   // a seller-reason save needs a confirmed address (outside the spy)
+    const spy = await withLockSpy(async () => { r = await saveAfter(async () => {}); });
+    assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.outcome, 'saved_history_pending'); assert.equal(spy.set, 1); assert.equal(spy.del, 1); assert.equal(receipts.has(lockKey()), false);
+  });
+  await t('LK3 (step 070) RELEASE uncertainty (the recorded DELETE fails) does not replace the protected result; exactly ONE DELETE; no reacquisition', async () => {
+    fresh(); seedOtherLedgers(X1); let r; await commitAnswer('property_address', ADDR);
+    const spy = await withLockSpy(async () => { r = await saveAfter(async () => { failNext.push((op, k) => op === 'delete' && k === lockKey()); }); });
+    assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.outcome, 'saved_history_pending', 'the save result stands');
+    assert.equal(spy.del, 1, 'no second DELETE after uncertainty'); assert.equal(spy.set, 1, 'no reacquisition'); assert.equal(receipts.has(lockKey()), true, 'the lock is left in place (unconfirmed release), never guessed away');
+    assert.equal(failNext.length, 0, 'the armed fault was consumed by that one DELETE');
+  });
+  await t('LK5 (step 070) no external network: every real request in an LK save flow goes to GHL only (receipt traffic stays on the in-process recorder)', async () => {
+    fresh(); seedOtherLedgers(X1); await commitAnswer('property_address', ADDR);
+    const spy = await withLockSpy(async () => { await saveAfter(async () => {}); });
+    assert.ok(spy.origins.length > 0); assert.deepEqual([...new Set(spy.origins)], ['https://services.leadconnectorhq.com']);
   });
 
   finished = true;

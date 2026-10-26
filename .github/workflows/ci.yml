@@ -391,6 +391,11 @@ jobs:
       - name: Property answers recovery and authority, server (B15-04 C1-C4) - 21 cases
         run: node app/scripts/test-property-answer-recovery.cjs
 
+      # B15-04 step 070 (Bones): main's receipt-recorder-shim in the property-answer harnesses; with the adapter removed the
+      # recovery suite must reproduce the original lock refusal (code locked, 8 scenarios).
+      - name: Property answers receipt-shim negative control (B15-04 step 070) - 5 checks
+        run: node app/scripts/test-property-answer-receipt-shim-control.cjs
+
       # B15-04 close (design r3, Jess D0-D4, Bones clearance 2026-10-20): the server close action, exact recovery pairs
       # and their runtime projection (real handler, offline).
       - name: Property answers close, server (B15-04 close) - 17 cases

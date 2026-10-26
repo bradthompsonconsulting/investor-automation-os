@@ -19,6 +19,7 @@ const ts = require('typescript');
 const receipts = new Map(); const etags = new Map(); let etagSeq = 0; let failNext = [];
 const take = (list, ...args) => { const i = list.findIndex((f) => f(...args)); if (i < 0) return false; list.splice(i, 1); return true; };
 const realBlobs = require('@netlify/blobs');
+const receiptShim = require('./lib/receipt-recorder-shim.cjs'); // main's recorded-receipt adapter (204a66f): fetch-bearing receipt stores go through the helpers' recorder (test-only; Bones step 070)
 delete process.env.NETLIFY_BLOBS_CONTEXT;
 const lambdaHeaders = { 'x-nf-site-id': 'offline-site', 'x-nf-deploy-id': 'offline-deploy' };
 const lambdaBlobs = Buffer.from(JSON.stringify({ url: 'https://blobs.example.invalid', token: 'offline-blob-fixture' })).toString('base64');
@@ -41,7 +42,7 @@ const memStore = {
   async delete(key) { receipts.delete(key); etags.delete(key); },
 };
 Module._load = function (name, ...rest) {
-  if (name === '@netlify/blobs') return { connectLambda: (event) => realBlobs.connectLambda(event), getStore: () => memStore };
+  if (name === '@netlify/blobs') return receiptShim.wrap({ connectLambda: (event) => realBlobs.connectLambda(event), getStore: () => memStore });
   return originalLoad.call(this, name, ...rest);
 };
 const A = 'brad@example.invalid', B = 'second@example.invalid';
