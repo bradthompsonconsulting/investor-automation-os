@@ -375,6 +375,8 @@ jobs:
         run: node app/scripts/test-b15-33-readiness-panel.cjs
       - name: Keyboard focus never lands under the stuck deal rail (Tab/Shift+Tab, 5 widths, resize without reload, rail growth, away/back) and header chips wrap, real App (narrow-width F3/F1) — 692 checks
         run: node app/scripts/test-b15-rail-focus.cjs
+      - name: Seller Call keyboard focus never lands under the stuck deal bar (1440x900 first; laptop, tablet, 480; script/Notes/details open; fallback and return; cleanup and Contact handover) and the read-only Notes panel (closed at start, focus, isolation), real App (B15-06) — 173 checks
+        run: node app/scripts/test-b15-06-seller-call-focus.cjs
       - name: B1 repair approval ENABLED path on the real page, offline (committed switch on for Test; legacy viewer served the switch-off capability) (INV-134) — 81 checks
         run: node app/scripts/test-repair-approval-browser.cjs
       # Both Production negotiation settings against the real write scope and barrier rules; floor 105
