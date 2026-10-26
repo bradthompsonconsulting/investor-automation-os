@@ -155,6 +155,149 @@ function TierBadge({ tier }: { tier: BucketTag }) {
   );
 }
 
+/* Narrow-width F3 (2026-10-25) — a keyboard-focused control must never land
+   under the STUCK deal rail. Focus scrolls a control to the scrollport edge,
+   which is where the rail sticks, and the browser does not account for a
+   sticky element. So the rail's scroll container (Layout's <main>) gets
+   scroll-padding-top = its own padding-top + the rail's CURRENT height + 8px.
+   scroll-padding only moves where scrolling stops; it changes no layout.
+   - Tracked with a ResizeObserver: the rail's height changes with the window
+     width and when values replace waiting texts. A value set once goes stale.
+   - <main> belongs to Layout and outlives this page, so on exit the observer
+     is disconnected and main's PREVIOUS value is put back; otherwise every
+     later page inherits this padding.
+
+   CLEARANCE RULE (fallback, Jess 2026-10-25, PR #147 CI): a stuck rail can be
+   taller than the window leaves room for (narrow widths, short windows, a rail
+   that grows). Then no scroll padding can show a focused control below it.
+     room = main.clientHeight − main padding-top − rail height − 8px
+     need = height of the TALLEST rendered, visible, enabled focusable control
+            in <main> outside the rail (measured, never capped: a textarea the
+            user enlarges past the room releases the pin, desktop included —
+            Jess 2026-10-25)
+   room >= need → sticky, with the scroll padding above.
+   room <  need → the rail scrolls with the page (position: relative) and
+            main's previous scroll padding is put back. PERMANENT MAO VISIBILITY
+            IS RELAXED IN THIS FALLBACK ONLY: a rail that leaves no room cannot
+            keep both the MAO and the focused control in view, and an obscured
+            focus fails WCAG 2.4.11.
+   Re-checked when the rail, <main> or the page content changes size
+   (ResizeObserver) and when an attribute or the child list changes inside
+   <main> (MutationObserver): a taller control can be enabled, shown or resized
+   without any observed box changing size. The mode is written to the rail
+   directly, not through React state, and mutation callbacks run before the
+   next input event, so the right mode is in place before keyboard focus needs
+   it. Sticky returns without a reload.
+
+   KEYBOARD REVEAL (Bones REVISE of 5b57be0, 2026-10-25). Browser focus
+   scrolling shows only a focused textarea's caret, which can leave the box cut
+   at the bottom edge. When focus arrives from the KEYBOARD, the control is
+   brought fully into view with the smallest move. The browser's Tab scroll
+   runs before focusin, so this adjusts its result:
+   - Modality is explicit: focus that lands while a keydown is being handled
+     (keydown listener on the document; cleared on the next task and on
+     pointerdown). A textarea matches :focus-visible on a mouse click too, so
+     that selector is not used. Pointer focus, clicks, selection, caret
+     placement and scripted focus get no extra scroll.
+   - Vertical only, and only <main>.scrollTop. Never scrollIntoView: it also
+     moves <main> sideways (480px overflows) and scrolls any scrollable
+     ancestor or the window.
+   - A control in the sticky rail is always in view, so keyboard focus on it
+     must not move the page. The browser's own Tab scroll does move it (the
+     rail lies inside the scroll padding), so the page is put back where the
+     key found it, in the same task.
+   - A control taller than the visible band cannot be shown whole. It is left
+     to the browser, which keeps its caret in view.
+   - When the rail returns to sticky while a keyboard-focused control is in
+     view, that control is kept clear of the rail with the same smallest move. */
+const RAIL_GAP = 8;
+const RAIL_FOCUSABLE = "a[href],button,input,select,textarea,summary,[tabindex]:not([tabindex='-1'])";
+const RAIL_WATCHED = ["disabled", "hidden", "style", "class", "tabindex", "open", "rows", "cols"];
+function useRailClearance(rail: HTMLElement | null): void {
+  useLayoutEffect(() => {
+    const scroller = rail?.closest("main");
+    if (!rail || !scroller) return;
+    const previous = scroller.style.scrollPaddingTop;
+    const previousPosition = rail.style.position;
+    /* keyTask: inside the task of a keydown, where the browser moves focus for
+       Tab / Shift+Tab. A scripted focus in a later task (focus({preventScroll}))
+       is not keyboard focus. keyScroll: main.scrollTop when that key went down.
+       byKeyboard: the control keyboard focus landed on. */
+    let keyTask = false;
+    let keyScroll = 0;
+    let byKeyboard: Element | null = null;
+    const onKey = () => { keyTask = true; keyScroll = scroller.scrollTop; setTimeout(() => { keyTask = false; }); };
+    const onPointer = () => { keyTask = false; byKeyboard = null; };
+    const sticky = () => rail.dataset.railMode !== "scrolls";
+    const inView = (el: Element) => {
+      const b = el.getBoundingClientRect();
+      const box = scroller.getBoundingClientRect();
+      return b.bottom > box.top && b.top < box.bottom;
+    };
+    const show = (el: HTMLElement) => {
+      const box = scroller.getBoundingClientRect();
+      const style = getComputedStyle(scroller);
+      const top = box.top + scroller.clientTop + (parseFloat(style.scrollPaddingTop) || 0);
+      const bottom = box.top + scroller.clientTop + scroller.clientHeight - (parseFloat(style.scrollPaddingBottom) || 0);
+      const b = el.getBoundingClientRect();
+      if (b.height > bottom - top + 1) return;
+      const delta = b.top < top ? b.top - top : b.bottom > bottom ? b.bottom - bottom : 0;
+      if (delta) scroller.scrollTop += delta;
+    };
+    const update = () => {
+      const padTop = parseFloat(getComputedStyle(scroller).paddingTop) || 0;
+      const railHeight = rail.getBoundingClientRect().height;
+      let need = 0;
+      scroller.querySelectorAll<HTMLElement>(RAIL_FOCUSABLE).forEach((el) => {
+        if (rail.contains(el) || (el as HTMLButtonElement).disabled || !el.checkVisibility({ visibilityProperty: true })) return;
+        need = Math.max(need, el.getBoundingClientRect().height);
+      });
+      const fits = scroller.clientHeight - padTop - railHeight - RAIL_GAP >= need;
+      const padding = fits ? `${Math.ceil(padTop + railHeight + RAIL_GAP)}px` : previous;
+      /* Returning to sticky: a keyboard-focused control in view stays clear. */
+      const kept = fits && rail.dataset.railMode === "scrolls" && byKeyboard instanceof HTMLElement
+        && byKeyboard === document.activeElement && !rail.contains(byKeyboard) && inView(byKeyboard) ? byKeyboard : null;
+      if (rail.dataset.railMode !== (fits ? "sticky" : "scrolls")) {
+        rail.dataset.railMode = fits ? "sticky" : "scrolls";
+        rail.style.position = fits ? "sticky" : "relative";
+      }
+      if (scroller.style.scrollPaddingTop !== padding) scroller.style.scrollPaddingTop = padding;
+      if (kept) show(kept);
+    };
+    const reveal = (e: FocusEvent) => {
+      const el = e.target as HTMLElement;
+      if (sticky() && rail.contains(el)) {
+        /* A sticky rail is always in view, but it lies inside the scroll
+           padding, so the browser's Tab scroll (which runs before focusin)
+           moved the page to clear it (Spock, 2026-10-25). Put the page back
+           where the key found it, in the same task, before anything paints. */
+        if (keyTask && scroller.scrollTop !== keyScroll) scroller.scrollTop = keyScroll;
+        return;
+      }
+      byKeyboard = keyTask ? el : null;
+      if (keyTask) show(el);
+    };
+    update();
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onPointer, true);
+    scroller.addEventListener("focusin", reveal);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    [rail, scroller, rail.parentElement].forEach((el) => { if (el) observer?.observe(el); });
+    const mutations = typeof MutationObserver === "undefined" ? null : new MutationObserver(update);
+    mutations?.observe(scroller, { subtree: true, childList: true, attributes: true, attributeFilter: RAIL_WATCHED });
+    return () => {
+      observer?.disconnect();
+      mutations?.disconnect();
+      scroller.removeEventListener("focusin", reveal);
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("pointerdown", onPointer, true);
+      scroller.style.scrollPaddingTop = previous;
+      rail.style.position = previousPosition;
+      delete rail.dataset.railMode;
+    };
+  }, [rail]);
+}
+
 function ScoreChip({ label, score }: { label: string; score: number | null }) {
   let color = "#475569";
   if (score !== null) {
@@ -1221,6 +1364,12 @@ export default function ContactWorkspace() {
   const [notes, setNotes]           = useState<NoteRow[] | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
 
+  // Narrow-width F3 — the rail element (callback ref), so the scroll padding
+  // and the clearance rule follow it in and out of the DOM. The hook writes
+  // the rail's mode (data-rail-mode, position). See useRailClearance.
+  const [railEl, setRailEl] = useState<HTMLDivElement | null>(null);
+  useRailClearance(railEl);
+
   // Step 5 — conversation history (read-only, scoped by explicit contactId).
   const [conversations, setConversations]           = useState<ConvMessageRow[] | null>(null);
   const [conversationsError, setConversationsError] = useState<string | null>(null);
@@ -1868,7 +2017,9 @@ export default function ContactWorkspace() {
           </div>
         </div>
         {!loading && contact && (
-          <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+          /* Narrow-width F1 — the badge and chips wrap inside the card instead
+             of running past it (69px at 480px). One line at 1024px and up. */
+          <div data-testid="identity-scores" style={{ display: "flex", alignItems: "center", gap: "8px 14px", flexWrap: "wrap" }}>
             <TierBadge tier={tier} />
             <ScoreChip label="Combined" score={contact.combinedScore} />
             <ScoreChip label="Mot" score={contact.motivationScore} />
@@ -1935,6 +2086,12 @@ export default function ContactWorkspace() {
           Layout.tsx:22; nothing between it and this div sets `overflow`, so
           nothing clips the sticky.
 
+          ⚠ EXCEPT WHEN IT CANNOT LEAVE ROOM: when the stuck rail would leave
+          less room below it than the tallest focusable control needs, it
+          scrolls with the page instead (narrow-width F3 clearance rule, Jess
+          2026-10-25; see useRailClearance). MAO visibility is relaxed in
+          that fallback only, and sticky returns as soon as there is room.
+
           ⚠ `top: 0` PINS TO THE SCROLLPORT TOP, ABOVE main's p-6 — so the stuck
           rail sits flush under the Header, and both are near #0D1B3E. THAT
           OUTCOME IS KNOWN AND ACCEPTED, not an oversight. Do NOT "fix" it with
@@ -1947,11 +2104,12 @@ export default function ContactWorkspace() {
           Decided in the S1 amendment — see claude/board-5-s1-review-2026-08-28.md. */}
       <div
         data-testid="deal-rail"
+        ref={setRailEl}
         style={{
           display: "flex", flexWrap: "wrap", gap: "28px",
           background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)",
           borderRadius: "10px", padding: "12px 18px", marginBottom: "18px",
-          position: "sticky", top: 0, zIndex: 1,
+          position: "sticky", top: 0, zIndex: 1, /* "relative" in the fallback, set by useRailClearance */
         }}
       >
         {/* Board #5 S2 — WHOSE DEAL THIS IS. Closes the S1 risk that a sticky
