@@ -70,7 +70,17 @@ import { useLayoutEffect } from "react";
    Both put-backs (stuck rail, pinned region) keep the browser's own Tab scroll
    when undoing it would leave the control out of view: on Seller Call, panels
    stacked above the workspace can put the bar below the fold before it first
-   sticks. */
+   sticks.
+
+   --rail-clearance (B15-06): the scroll padding the rail currently adds ("0px"
+   when it scrolls), set on <main> for CSS and removed on exit. The padding
+   also applies when something other than keyboard focus scrolls a control of
+   the stuck rail into view (a pointer tool, assistive technology,
+   scrollIntoView): the rail lies inside the padding, so the page moved up. Seller Call's compact Call is shown
+   only while the full Call is out of view, so that scroll hid the very button
+   being reached. Seller Call gives the stuck bar's controls a matching negative
+   scroll-margin-top (SellerCallWorkspace.css).
+   Contact uses no such rule; its behaviour is unchanged. */
 const RAIL_GAP = 8;
 const RAIL_FOCUSABLE = "a[href],button,input,select,textarea,summary,[tabindex]:not([tabindex='-1'])";
 const RAIL_WATCHED = ["disabled", "hidden", "style", "class", "tabindex", "open", "rows", "cols"];
@@ -138,6 +148,8 @@ export function useRailClearance(rail: HTMLElement | null, pinned?: string): voi
         rail.style.position = fits ? "sticky" : "relative";
       }
       if (scroller.style.scrollPaddingTop !== padding) scroller.style.scrollPaddingTop = padding;
+      const clearance = fits ? padding : "0px";
+      if (scroller.style.getPropertyValue("--rail-clearance") !== clearance) scroller.style.setProperty("--rail-clearance", clearance);
       if (kept) show(kept);
     };
     const reveal = (e: FocusEvent) => {
@@ -175,6 +187,7 @@ export function useRailClearance(rail: HTMLElement | null, pinned?: string): voi
       document.removeEventListener("pointerdown", onPointer, true);
       scroller.style.scrollPaddingTop = previous;
       rail.style.position = previousPosition;
+      scroller.style.removeProperty("--rail-clearance");
       delete rail.dataset.railMode;
     };
   }, [rail]);

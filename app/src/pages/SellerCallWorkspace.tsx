@@ -77,6 +77,7 @@ import { runConfirmAcceptWrites, confirmAcceptOffered, recoverLastCallAttempt } 
 import { createOfferSaveCoordinator, classifyOfferWriteError, OfferSaveBlocked, UNRESOLVED_ACCEPT_MESSAGE, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
 import { beginReservation, reconcileReservation, readReservationStatus, newRequestIds, RESERVATION_FAILED_MESSAGE } from "../lib/current-offer-barrier-client";
 import { AppWriteSignInRequired } from "../lib/app-write-session";
+import "./SellerCallWorkspace.css";
 
 /**
  * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49,
@@ -2617,6 +2618,7 @@ export default function SellerCallWorkspace() {
               this wraps them, it does not alter what either renders. */}
           <div
             data-testid="seller-call-sticky-bar"
+            className="seller-call-sticky-bar"
             ref={setStickyBarEl}
             style={{
               position: "sticky", top: 0, zIndex: 10,

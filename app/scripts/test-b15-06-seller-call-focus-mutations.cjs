@@ -9,8 +9,9 @@
  *   static         -- nothing tracked: the bar's growth is missed
  *   nocleanup      -- main's previous scroll padding not restored on exit
  *   nofallback     -- always sticky, no reveal: the grown bar keeps covering focus
- *   noreveal       -- no focus handling (no reveal, no put-back)
- *   railjump       -- no put-back for focus entering the stuck bar
+ *   noreveal       -- no focus handling (no reveal, no put-back): focus into the sticky side column moves the page
+ *   nomargin       -- no negative scroll margin on the stuck bar's controls: scrolling one into view moves the page
+ *   railjump       -- no put-back for focus entering the stuck bar (nor the margin, which otherwise stops the jump first)
  *   nopinnedreveal -- no put-back for focus entering a pinned region
  *   nokeep         -- focus not kept clear when sticky returns
  *   nomodalitycleanup -- the keydown listener is left on the document
@@ -30,7 +31,8 @@ const EXPECT = {
   static: [/^1440x900 grown past the room: bar mode follows the clearance rule/, /^1440x900 a control taller than the room: the bar scrolls/],
   nocleanup: [/^cleanup: away from Seller Call, main's previous scroll padding/],
   nofallback: [/^1440x900 grown past the room: bar mode follows the clearance rule/, /^1440x900 grown past the room: .*every focused control fully visible/],
-  noreveal: [/entering the stuck bar moves nothing/],
+  noreveal: [/entering the sticky side column moves nothing/],
+  nomargin: [/scrolling a stuck-bar control into view other than by keyboard/],
   railjump: [/entering the stuck bar moves nothing/],
   nopinnedreveal: [/entering the sticky side column moves nothing/],
   nokeep: [/^1440x900 tall control removed: sticky returns and the keyboard-focused control/],

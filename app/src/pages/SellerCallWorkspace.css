@@ -1,0 +1,9 @@
+/* B15-06: <main>'s scroll padding (useRailClearance) clears the stuck deal bar for keyboard focus. The bar lies inside
+   that padding, so anything else that scrolls one of ITS controls into view (a pointer tool, assistive technology,
+   scrollIntoView) moved the page up -- and the compact Call, shown only while the full Call is out of view, hid itself.
+   A matching negative scroll-margin-top tells the browser the stuck bar's controls are already in view. The bar has no
+   scroll area of its own for the margin to affect. --rail-clearance is 0px when the bar scrolls with the page. */
+.seller-call-sticky-bar[data-rail-mode="sticky"],
+.seller-call-sticky-bar[data-rail-mode="sticky"] * {
+  scroll-margin-top: calc(-1 * var(--rail-clearance, 0px));
+}

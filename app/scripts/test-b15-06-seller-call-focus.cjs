@@ -22,6 +22,10 @@
  *      non-vacuous (bar stuck), focus entering the stuck bar or the sticky
  *      side column moves nothing, every scroll call writes only
  *      <main>.scrollTop. Horizontal position is NOT asserted (deferred).
+ *      While the bar is stuck, scrolling one of its controls into view other
+ *      than by keyboard (Playwright's pointer path, as assistive technology
+ *      would) moves nothing: the compact Call hid itself when it did. The
+ *      sticky side column is measured and printed as NOTE, not asserted.
  *   3. The bar's figures, every answer value and the selected deal are the
  *      same after the walks.
  *   4. Fallback: a test-only growth of the bar past the room releases it;
@@ -69,7 +73,8 @@ const MUTATIONS = {
   nocleanup: [['\n      scroller.style.scrollPaddingTop = previous;\n      rail.style.position', '\n      rail.style.position']],
   nofallback: [[FITS, '      const fits = true;\n'], [LISTEN, '\n']],
   noreveal: [[LISTEN, '\n']],
-  railjump: [['      if (sticky() && rail.contains(el)) {\n', '      if (false) {\n']],
+  nomargin: [['            className="seller-call-sticky-bar"\n', '\n']],
+  railjump: [['      if (sticky() && rail.contains(el)) {\n', '      if (false) {\n'], ['            className="seller-call-sticky-bar"\n', '\n']],
   nopinnedreveal: [['      if (inPinned(el)) {\n', '      if (false) {\n']],
   nokeep: [['      if (kept) show(kept);\n', '\n']],
   nomodalitycleanup: [['      document.removeEventListener("keydown", onKey, true);\n', '\n']],
@@ -325,6 +330,45 @@ async function main() {
       check(`${w}: ${key} -- entering the stuck bar moves nothing`, r.barJumps.length === 0, r.barJumps.join('; '));
       check(`${w}: ${key} -- entering the sticky side column moves nothing`, r.sideJumps.length === 0, r.sideJumps.join('; '));
       check(`${w}: ${key} -- every scroll call moved only <main>, vertically (scroll API log)`, r.badScroll.length === 0, r.badScroll.slice(0, 4).join('; '));
+    }
+    if (s.mode === 'sticky') {
+      /* Not keyboard focus: a pointer click (Playwright's, a user's tool), assistive technology or scrollIntoView
+         scrolls a control into view. A control of the stuck bar is already in view, so <main> must not move (the
+         compact Call hid itself when it did). The sticky side column is measured and reported, not required. */
+      /* Half-way down: the bar is stuck and the full Call is out of view, so the compact Call shows (it is revealed
+         by an observer, hence the wait). */
+      await page.evaluate(() => { const main = document.querySelector('main'); main.scrollTop = Math.floor((main.scrollHeight - main.clientHeight) / 2); });
+      await page.waitForTimeout(300);
+      const n = await page.evaluate(() => {
+        const main = document.querySelector('main');
+        const sel = 'a[href],button,input,select,textarea,summary,[tabindex]:not([tabindex="-1"])';
+        const pick = (root) => (root ? [...root.querySelectorAll(sel)] : []).filter((e) => !e.disabled && e.checkVisibility({ visibilityProperty: true }));
+        let i = 0;
+        for (const e of pick(document.querySelector('[data-testid="seller-call-sticky-bar"]'))) e.dataset.sivProbe = `bar-${i++}`;
+        const side = document.querySelector('[data-testid="seller-call-side"]');
+        if (side && getComputedStyle(side).position === 'sticky') for (const e of pick(side)) e.dataset.sivProbe = `side-${i++}`;
+        const bar = document.querySelector('[data-testid="seller-call-sticky-bar"]').getBoundingClientRect();
+        const padTop = parseFloat(getComputedStyle(main).paddingTop) || 0;
+        return { start: main.scrollTop, compact: !!document.querySelector('[data-testid="call-with-airdroid-compact"][data-siv-probe]'), stuck: main.scrollTop > 0 && Math.abs(bar.top - (main.getBoundingClientRect().top + padTop)) < 2,
+          ids: [...document.querySelectorAll('[data-siv-probe]')].map((e) => e.dataset.sivProbe) };
+      });
+      const moved = { bar: [], side: [] };
+      for (const id of n.ids) {
+        await page.evaluate((t) => { document.querySelector('main').scrollTop = t; }, n.start);
+        await page.waitForTimeout(30);
+        await page.locator(`[data-siv-probe="${id}"]`).scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+        const r = await page.evaluate((pid) => {
+          const e = document.querySelector(`[data-siv-probe="${pid}"]`);
+          return { top: document.querySelector('main').scrollTop, win: window.scrollY,
+            label: e.getAttribute('data-testid') || e.getAttribute('aria-label') || e.textContent.trim().slice(0, 30) };
+        }, id);
+        if (r.top !== n.start || r.win !== 0) moved[id.startsWith('bar-') ? 'bar' : 'side'].push(`${r.label} ${n.start} -> ${r.top}`);
+      }
+      await page.evaluate(() => { document.querySelectorAll('[data-siv-probe]').forEach((e) => { delete e.dataset.sivProbe; }); document.querySelector('main').scrollTop = 0; });
+      const barCount = n.ids.filter((x) => x.startsWith('bar-')).length;
+      check(`${w}: scrolling a stuck-bar control into view other than by keyboard (pointer, assistive technology) moves nothing (${barCount} controls)`,
+        barCount >= 2 && n.compact && n.stuck && moved.bar.length === 0, `stuck ${n.stuck}, compact Call probed ${n.compact}; ${moved.bar.slice(0, 6).join('; ')}`);
+      if (moved.side.length) console.log(`NOTE  ${w}: side column, scrolled into view other than by keyboard, moved the page for ${moved.side.length} control(s): ${moved.side.slice(0, 4).join('; ')}`);
     }
     const after = await page.evaluate(pageState);
     check(`${w}: figures, answers and the selected deal unchanged by the walks`, JSON.stringify(before) === JSON.stringify(after),
