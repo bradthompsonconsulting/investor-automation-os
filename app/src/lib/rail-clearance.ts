@@ -57,11 +57,24 @@ import { useLayoutEffect } from "react";
    - A control taller than the visible band cannot be shown whole. It is left
      to the browser, which keeps its caret in view.
    - When the rail returns to sticky while a keyboard-focused control is in
-     view, that control is kept clear of the rail with the same smallest move. */
+     view, that control is kept clear of the rail with the same smallest move.
+
+   PINNED REGIONS (B15-06, 2026-10-26). `pinned`, optional, is a selector for
+   other regions that stay in view on their own -- Seller Call's side column
+   (Full Script, Notes), sticky beside the workspace at desktop widths. Only
+   while such a region is computed sticky: keyboard focus inside it must not
+   move the page (the same put-back as for the stuck rail), and its controls
+   are not measured for the clearance rule (the rail never covers them). A
+   region in normal flow (stacked above the workspace on narrower screens) is
+   treated like any other content. Contact passes no selector.
+   Both put-backs (stuck rail, pinned region) keep the browser's own Tab scroll
+   when undoing it would leave the control out of view: on Seller Call, panels
+   stacked above the workspace can put the bar below the fold before it first
+   sticks. */
 const RAIL_GAP = 8;
 const RAIL_FOCUSABLE = "a[href],button,input,select,textarea,summary,[tabindex]:not([tabindex='-1'])";
 const RAIL_WATCHED = ["disabled", "hidden", "style", "class", "tabindex", "open", "rows", "cols"];
-export function useRailClearance(rail: HTMLElement | null): void {
+export function useRailClearance(rail: HTMLElement | null, pinned?: string): void {
   useLayoutEffect(() => {
     const scroller = rail?.closest("main");
     if (!rail || !scroller) return;
@@ -77,6 +90,21 @@ export function useRailClearance(rail: HTMLElement | null): void {
     const onKey = () => { keyTask = true; keyScroll = scroller.scrollTop; setTimeout(() => { keyTask = false; }); };
     const onPointer = () => { keyTask = false; byKeyboard = null; };
     const sticky = () => rail.dataset.railMode !== "scrolls";
+    /* Put the page back where the key found it -- only while that leaves the
+       control fully in view (B15-06: before it first sticks, a bar below the
+       fold is not in view, so the browser's own Tab scroll is kept). */
+    const putBack = (el: Element) => {
+      if (!keyTask || scroller.scrollTop === keyScroll) return;
+      const moved = scroller.scrollTop;
+      scroller.scrollTop = keyScroll;
+      const b = el.getBoundingClientRect();
+      const top = scroller.getBoundingClientRect().top + scroller.clientTop;
+      if (b.top < top - 0.5 || b.bottom > top + scroller.clientHeight + 0.5) scroller.scrollTop = moved;
+    };
+    const inPinned = (el: Element) => {
+      const region = pinned ? el.closest(pinned) : null;
+      return region !== null && scroller.contains(region) && getComputedStyle(region).position === "sticky";
+    };
     const inView = (el: Element) => {
       const b = el.getBoundingClientRect();
       const box = scroller.getBoundingClientRect();
@@ -97,7 +125,7 @@ export function useRailClearance(rail: HTMLElement | null): void {
       const railHeight = rail.getBoundingClientRect().height;
       let need = 0;
       scroller.querySelectorAll<HTMLElement>(RAIL_FOCUSABLE).forEach((el) => {
-        if (rail.contains(el) || (el as HTMLButtonElement).disabled || !el.checkVisibility({ visibilityProperty: true })) return;
+        if (rail.contains(el) || (el as HTMLButtonElement).disabled || !el.checkVisibility({ visibilityProperty: true }) || inPinned(el)) return;
         need = Math.max(need, el.getBoundingClientRect().height);
       });
       const fits = scroller.clientHeight - padTop - railHeight - RAIL_GAP >= need;
@@ -119,7 +147,13 @@ export function useRailClearance(rail: HTMLElement | null): void {
            padding, so the browser's Tab scroll (which runs before focusin)
            moved the page to clear it (Spock, 2026-10-25). Put the page back
            where the key found it, in the same task, before anything paints. */
-        if (keyTask && scroller.scrollTop !== keyScroll) scroller.scrollTop = keyScroll;
+        putBack(el);
+        return;
+      }
+      if (inPinned(el)) {
+        /* A sticky side region is in view the same way (B15-06). */
+        putBack(el);
+        byKeyboard = null;
         return;
       }
       byKeyboard = keyTask ? el : null;
