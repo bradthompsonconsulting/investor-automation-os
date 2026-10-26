@@ -23,7 +23,7 @@ const ts = require('typescript');
 
 const APP = path.resolve(__dirname, '..');
 /** Literal count of check() executions below (loops expanded by hand); never back-filled from a run. */
-const FLOOR = 52; // 46 check() call sites + 4 extra V1 iterations (5 cases) + 2 extra M1 iterations (3 cases)
+const FLOOR = 53; // 47 check() call sites (+S3 omitted customFields) + 4 extra V1 iterations (5 cases) + 2 extra M1 iterations (3 cases)
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -382,6 +382,10 @@ async function main() {
       ghl.notes.get(fx.contact)[0].body += '\nedited';
       const st2 = await status(statusEvent(fx.opp));
       check('S2 display: completed approval whose note was edited -> "Repair approval could not be verified" (evidence_mismatch), total kept', parse(st2).kind === 'not_verified' && parse(st2).reason === 'evidence_mismatch' && parse(st2).text === 'Repair approval could not be verified' && typeof parse(st2).total === 'number');
+    }
+    { reset(); const fx = fixture(); delete ghl.opps.get(fx.opp).customFields; const before = ghl.log.length;
+      const st = await status(statusEvent(fx.opp));
+      check('S3 display: GHL omits customFields on a never-written Opportunity (the B1 Test fixture shape, 2026-10-25) -> 200 kind none, not evidence_ambiguous; the Opportunity was read, nothing written', st.statusCode === 200 && parse(st).kind === 'none' && ghl.log.slice(before).some((e) => e.kind === 'oppGet') && ghl.log.slice(before).every((e) => e.kind !== 'notePost' && e.kind !== 'oppPut'), [st.statusCode, st.body, ghl.log.slice(before).map((e) => e.kind)]);
     }
     // ============================================== LEGACY PATH WHILE ENABLED ===
     { reset(); const fx = fixture();

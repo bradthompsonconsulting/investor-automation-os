@@ -340,10 +340,10 @@ jobs:
       # B1 Blob authority (B15-26 B1 r7 boundary r2/r3): isolated module, loopback fake service only, no real credential.
       - name: B1 Blob authority -- single-attempt conditional writes, process-local handles, forbidden transitions (INV-134) — 80 checks
         run: node app/scripts/test-blob-authority.cjs
-      - name: B1 repair-save completion -- owned transport, dispatch reservation/send gate, verifier, single-use CLOSE, abandonment, reader (INV-134) — 134 checks
+      - name: B1 repair-save completion -- owned transport, dispatch reservation/send gate, verifier, single-use CLOSE, abandonment, reader, omitted customFields read as zero entries (INV-134) — 140 checks
         run: node app/scripts/test-repair-completion.cjs
 
-      - name: B1 repair approval integration (enabled for Test; switch-off path checked) -- committed switch, save/status handlers, server recompute, auth, duplicates, blocking, display, disabled path unchanged, Test-only scoping (INV-134) — 52 checks
+      - name: B1 repair approval integration (enabled for Test; switch-off path checked) -- committed switch, save/status handlers, server recompute, auth, duplicates, blocking, display, disabled path unchanged, Test-only scoping, omitted customFields display (INV-134) — 53 checks
         run: node app/scripts/test-repair-approval-integration.cjs
       - name: Repair save whole-save deadline (B15-26 B1, r4; pinned SDK) — 60 offline checks
         run: node app/scripts/test-repair-save-deadline.cjs

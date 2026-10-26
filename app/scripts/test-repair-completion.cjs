@@ -27,7 +27,7 @@ const path = require('node:path');
 const APP = path.resolve(__dirname, '..');
 const TMP = path.join(APP, '.tmp-repair-completion-test');
 /** Literal count of check() executions below (loops expanded by hand); never back-filled from a run. */
-const FLOOR = 134; // 116 at 566001c; -10 N1-N4 (list contract retired); +28 r5.1 (G1 x2, A8b, A11 +9, A11m x4, A11 reader, B21b, P1/P1b/P2/P3 x2, G2 x2, G1b, G3 x2)
+const FLOOR = 140; // +6 B29 omitted customFields (B29a, B29b, B29c x2, B29d, B29e); 116 at 566001c; -10 N1-N4 (list contract retired); +28 r5.1 (G1 x2, A8b, A11 +9, A11m x4, A11 reader, B21b, P1/P1b/P2/P3 x2, G2 x2, G1b, G3 x2)
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -776,6 +776,33 @@ async function main() {
       clock += 11_000;
       const v2 = await M.verifyRepairTarget(a.admission, fxV.payload);
       check('B28 zero repair_approval_id entries with E present -> reader evidence_mismatch; verifier pending missing_field, then HOLD', r.kind === 'not_verified' && r.reason === 'evidence_mismatch' && v1.kind === 'pending' && v1.reason === 'missing_field' && v2.kind === 'hold', { r, v1, v2 });
+    }
+    // ===== B29: GHL omits customFields on an Opportunity with no custom values (INV-98 0e9558b; B1 Test fixture 2026-10-25) ===
+    // Omission is zero entries (as the write boundary reads it); a present non-array value stays malformed.
+    { const fx = fixture(); delete ghl.opps.get(fx.opportunityId).customFields; const puts = blobs.puts();
+      const r = await M.readRepairApproval(client, transport, fx.scope, fx.opportunityId);
+      check('B29a A absent, Opportunity read omits customFields (the live fixture shape) -> none; nothing written', r.kind === 'none' && blobs.puts() === puts, r);
+    }
+    { const fx = fixture();
+      const r = await M.readRepairApproval(client, transport, fx.scope, fx.opportunityId);
+      check('B29b A absent, customFields: [] -> none (the same result as omission)', r.kind === 'none', r);
+    }
+    for (const [label, value] of [['null', null], ['an object', {}]]) {
+      const fx = fixture(); ghl.opps.get(fx.opportunityId).customFields = value;
+      const r = await M.readRepairApproval(client, transport, fx.scope, fx.opportunityId);
+      check(`B29c A absent, customFields present but ${label} -> still evidence_ambiguous (malformed, not omission)`, r.kind === 'not_verified' && r.reason === 'evidence_ambiguous' && r.total === null, r);
+    }
+    { const fx = fixture(); await completed(fx); delete ghl.opps.get(fx.opportunityId).customFields;
+      const r = await M.readRepairApproval(client, transport, fx.scope, fx.opportunityId);
+      check('B29d COMPLETED, then customFields omitted -> evidence_mismatch (zero entries, as B28), total kept', r.kind === 'not_verified' && r.reason === 'evidence_mismatch' && r.total === 18500, r);
+    }
+    { const fx = fixture(); const a = await toFieldsDefinite(fx);
+      const o = ghl.opps.get(fx.opportunityId); let saved = null;
+      ghl.script([{ kind: 'oppGet', hook: () => { saved = o.customFields; delete o.customFields; setTimeout(() => { o.customFields = saved; }, 50); } }]);
+      const v1 = await M.verifyRepairTarget(a.admission, fx.payload);
+      await sleep(80);
+      const v2 = await M.verifyRepairTarget(a.admission, fx.payload);
+      check('B29e definite writes, first verify read omits customFields -> pending missing_field (not HOLD); next read with the fields -> VERIFIED', v1.kind === 'pending' && v1.reason === 'missing_field' && v2.kind === 'verified', { v1, v2: v2.kind });
     }
     // ============== P: one shared pending budget for missing fields and a note 404 (r5.1 R1, K2) ===
     { const fx = fixture(); const a = await admit(fx);

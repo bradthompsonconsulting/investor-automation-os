@@ -132,8 +132,15 @@ export type FieldRead =
  * r4 D2: count entries for `fieldId` FIRST. Zero -> none; two or more (even
  * identical) -> duplicate; exactly one -> its singular `fieldValue` must be
  * one scalar of the expected type, else ambiguous. Never picks an entry.
+ *
+ * GHL omits `customFields` entirely on an Opportunity with no custom values
+ * set (INV-98 Board #9, 0e9558b; observed again on the B1 Test fixture
+ * 2026-10-25). Omission alone is zero entries, exactly as the write boundary
+ * reads it. A present value that is not an array (null, object, string) is
+ * still malformed: ambiguous.
  */
 export function readExactlyOneField(customFields: unknown, fieldId: string, type: "number" | "string"): FieldRead {
+  if (customFields === undefined) return { kind: "none" };
   if (!Array.isArray(customFields)) return { kind: "ambiguous" };
   const entries = customFields.filter((e) => isPlain(e) && e.id === fieldId);
   if (entries.length === 0) return { kind: "none" };
