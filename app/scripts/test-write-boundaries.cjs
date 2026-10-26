@@ -1,4 +1,5 @@
 /** INV-95 offline handler regressions. Every outbound call is intercepted. */
+const receiptShim = require('./lib/receipt-recorder-shim.cjs'); // the repaired receipt helpers' recorded fetch (test-only)
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -33,7 +34,7 @@ Module._resolveFilename = function(name, parent, ...rest) {
 };
 Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
 Module._load = function(name, ...rest) {
-  if (name === '@netlify/blobs') return {
+  if (name === '@netlify/blobs') return receiptShim.wrap({
     connectLambda: event => { blobConnections++; realBlobs.connectLambda(event); },
     getStore: () => { blobCalls++; realBlobs.getStore('iaos-write-receipts'); return ({
       async get(key, options) {
@@ -60,7 +61,7 @@ Module._load = function(name, ...rest) {
         const blobs = [...rawBlobs.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key, etag: 'fixture-etag' }));
         return { blobs, directories: [] };
       },
-    }); } };
+    }); } });
   return originalLoad.call(this, name, ...rest);
 };
 process.env.IAOS_ENV = 'test';
@@ -449,7 +450,7 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
     ['contact.propertyNotes',{value:'synthetic note'}], ['contact.arv',{value:250000}], ['contact.disposition',{value:'No Answer'}],
     ['contact.routing',{value:'Stay in Cold Outreach'}], ['contact.dispositionAt',{value:'2026-09-18T01:00:00.000Z'}], ['contact.occupancy',{value:'Vacant'}],
     ['contact.callLogResult',{value:'Spoke with Seller'}], ['contact.explicitCallback',{value:'2026-09-19T01:00:00.000Z'}],
-    ['opportunity.askingPrice',{value:100000}], ['opportunity.arv',{value:250000}], ['opportunity.repairs',{value:25000}],
+    ['opportunity.askingPrice',{value:100000}], ['opportunity.arv',{value:250000}],
     ['opportunity.currentOffer',{value:110000}], ['opportunity.assignmentMode',{value:'Standard'}],
     ['opportunity.underwriting',{endBuyerMaxPrice:150000,sellerMAO:130000,assignmentMode:'Standard'}],
     ['note.create',{body:'synthetic operator note'}], ['task.complete',{taskId:task.id}],
@@ -461,6 +462,14 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   await check('an unreserved Current Offer write is refused before sending (outcome not_sent, nothing written)', async () => {
     const before = writes;
     const res = await handler(event('opportunity.currentOffer', opportunity.id, {value:110000}));
+    assert.equal(res.statusCode, 409); assert.equal(JSON.parse(res.body).outcome, 'not_sent'); assert.equal(writes, before);
+  });
+  // B15-26 B1: repair approval is active in Test (shared/repair-approval-config.ts), so the approval path is the ONLY
+  // repair-total writer there and the legacy opportunity.repairs write is refused before sending. Its Production/switch-off
+  // behaviour is covered by test-repair-approval-integration.cjs (D2, T3).
+  await check('opportunity.repairs is refused in Test while repair approval is active (409 not_sent, nothing written)', async () => {
+    const before = writes;
+    const res = await handler(event('opportunity.repairs', opportunity.id, {value:25000}));
     assert.equal(res.statusCode, 409); assert.equal(JSON.parse(res.body).outcome, 'not_sent'); assert.equal(writes, before);
   });
   for(const [op,args] of cases) await check('retained '+op, async () => {
@@ -542,7 +551,7 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
   await check('duplicate request refused before a second write',async()=>{const e=event('note.create',contact.id,{body:'replay fixture'});assert.equal((await handler(e)).statusCode,200);const before=writes;assert.equal((await handler(e)).statusCode,409);assert.equal(writes,before);});
 
 
-  await check('partial write is explicit and never confirmed',async()=>{omitReadback=true;const res=await handler(event('opportunity.repairs',opportunity.id,{value:999}));assert.equal(JSON.parse(res.body).confirmed,false);omitReadback=false;});
+  await check('partial write is explicit and never confirmed',async()=>{omitReadback=true;const res=await handler(event('opportunity.arv',opportunity.id,{value:999}));assert.equal(JSON.parse(res.body).confirmed,false);omitReadback=false;});
   await check('duplicate readback field rejected',()=>assert.throws(()=>boundaryLib.fieldValue([{id:'x',value:1},{id:'x',value:1}],'x','contact')));
   await check('wrong field representation rejected',()=>assert.throws(()=>boundaryLib.fieldValue([{id:'x',fieldValueNumber:1}],'x','opportunity')));
   // INV-98 Board #9: GHL omits `customFields` on an opportunity with no custom values.

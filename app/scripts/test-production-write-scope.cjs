@@ -8,6 +8,7 @@
  * Every GHL request and every Blob call is intercepted and counted. No
  * network, no Netlify, no GHL, no Production access.
  */
+const receiptShim = require('./lib/receipt-recorder-shim.cjs'); // the repaired receipt helpers' recorded fetch (test-only)
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -35,7 +36,7 @@ const blobEtags = new Map();
 let blobEtagSeq = 0;
 const events = [];
 Module._load = function (name, ...rest) {
-  if (name === '@netlify/blobs') return {
+  if (name === '@netlify/blobs') return receiptShim.wrap({
     connectLambda: () => { blob.connections++; },
     getStore: (storeName) => {
       blob.stores++;
@@ -55,7 +56,7 @@ Module._load = function (name, ...rest) {
         async delete(key) { blob.writes++; events.push({ kind: 'blob.delete', key }); blobData.delete(k(key)); },
       };
     },
-  };
+  });
   return originalLoad.call(this, name, ...rest);
 };
 

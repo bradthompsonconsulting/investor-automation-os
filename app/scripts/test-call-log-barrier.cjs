@@ -12,6 +12,7 @@
  *
  * Case ids are the approved acceptance matrix (section 12).
  */
+const receiptShim = require('./lib/receipt-recorder-shim.cjs'); // the repaired receipt helpers' recorded fetch (test-only)
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -62,7 +63,7 @@ const memStore = {
   async delete(key) { receipts.delete(key); etags.delete(key); },
 };
 Module._load = function (name, ...rest) {
-  if (name === '@netlify/blobs') return { connectLambda: (event) => realBlobs.connectLambda(event), getStore: () => memStore };
+  if (name === '@netlify/blobs') return receiptShim.wrap({ connectLambda: (event) => realBlobs.connectLambda(event), getStore: () => memStore });
   return originalLoad.call(this, name, ...rest);
 };
 process.env.IAOS_ENV = 'test';

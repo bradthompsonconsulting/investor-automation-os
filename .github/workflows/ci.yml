@@ -257,9 +257,13 @@ jobs:
 
       - name: Durable Current Offer barrier — real ghl-write and barrier handlers, reloads, late handlers, storage failures (PR 126 stacked server PR) — 45 offline checks
         run: node app/scripts/test-current-offer-barrier.cjs
+      - name: Current Offer barrier suite — completion guard proof (normal / assertion failure / unsettled await / premature exit) — 6 checks
+        run: node app/scripts/test-current-offer-barrier-exit-guard.cjs
 
       - name: Durable call-log operations (lifecycle v3) — real ghl-write and call-log handlers, D1/D2 two-browser orderings, stale calls, storage failures, legacy records, review findings B1-B3 (PR 131) — 47 offline checks
         run: node app/scripts/test-call-log-barrier.cjs
+      - name: Shared receipt helpers — recorded outcomes, no SDK retries, release failures (pinned SDK) — 34 offline checks
+        run: node app/scripts/test-shared-receipts.cjs
 
       - name: Seller Call deal bar, incl. recorded Current Offer note (Pass 1 F31, PR 126 re-reviews) — 42 offline checks
         run: node app/scripts/test-seller-call-deal-bar.cjs
@@ -317,13 +321,15 @@ jobs:
       - name: Mailers This Week is the current Saturday-Friday week (INV-110, B15-12)
         run: node app/scripts/test-mailer-week.cjs
 
-      # B15 combined integration (accepted heads cec2dcd, 5280263, 88e5f70, f0f4269, c0f33bc, 6e3bbde,
-      # 744be99). Offline. property-answer model/handler, production-write-scope and contract-production-
-      # readiness already run inside the INV-95 runner below and are not repeated here.
+      # B15 bundle (accepted heads 5280263, 88e5f70, f0f4269, c0f33bc, 6e3bbde, 744be99, contact-isolation 3259aca + 23770f6)
+      # plus B15-04 (cec2dcd supplemental read budget). Offline. property-answer model/handler, production-write-scope and
+      # contract-production-readiness already run inside the INV-95 runner below and are not repeated here.
       - name: Supplemental GHL read budget, disabled in both environments (B15-04) — 42 isolated tests
         run: node app/scripts/test-supplemental-read-budget.cjs
       - name: System note summaries (INV-126, B15-17)
         run: node app/scripts/test-system-note-summary.cjs
+      - name: B15 display follow-ups, Disposition words + Notes header loading (Spock Addendum 2)
+        run: node app/scripts/test-b15-display-followups.cjs
       - name: Repair policy, known-only zero start (INV-100, B15-01/02)
         run: node app/scripts/test-b15-01-repair-policy.cjs
       - name: Wholesaler net proceeds (INV-134, B15-26)
@@ -334,6 +340,16 @@ jobs:
         run: node app/scripts/test-b15-20-contacts-columns.cjs
       - name: Contract Workspace display, combined invariants and checked-in slice provenance (B15-21)
         run: node app/scripts/test-b15-21-contract-display.cjs
+      # B1 Blob authority (B15-26 B1 r7 boundary r2/r3): isolated module, loopback fake service only, no real credential.
+      - name: B1 Blob authority -- single-attempt conditional writes, process-local handles, forbidden transitions (INV-134) — 80 checks
+        run: node app/scripts/test-blob-authority.cjs
+      - name: B1 repair-save completion -- owned transport, dispatch reservation/send gate, verifier, single-use CLOSE, abandonment, reader, omitted customFields read as zero entries (INV-134) — 140 checks
+        run: node app/scripts/test-repair-completion.cjs
+
+      - name: B1 repair approval integration (enabled for Test; switch-off path checked) -- committed switch, save/status handlers, server recompute, auth, duplicates, blocking, display, disabled path unchanged, Test-only scoping, omitted customFields display (INV-134) — 53 checks
+        run: node app/scripts/test-repair-approval-integration.cjs
+      - name: Repair save whole-save deadline (B15-26 B1, r4; pinned SDK) — 60 offline checks
+        run: node app/scripts/test-repair-save-deadline.cjs
 
       # The real-page suites (Seller Call, Contacts, Pipeline, Mailers, shell labels) need Chromium.
       # Not retried: a failure is reported as it happened. The Pipeline suite prints its startup
@@ -354,8 +370,19 @@ jobs:
         run: node app/scripts/test-b15-18-map-settings-redirect.cjs
       - name: Deal Calculator itemized repairs, both Clears and transfer-once, real page (INV-100, B15-01)
         run: node app/scripts/test-deal-calculator-interaction.cjs
-      # Both Production negotiation settings against the real write scope and barrier rules; floor 101.
-      - name: Contact isolation and Production write scope, real pages (B14-12, B14-13) — 101 checks
+      - name: Incomplete repairs read as provisional, never a green Meets; numbers unchanged, real page (INV-134 B15-26, INV-100 B15-01) — 55 checks
+        run: node app/scripts/test-b15-26-provisional-repairs.cjs
+      - name: Get Comps stays on one line and its reason wraps below at 640/480px; wide layout unchanged, real App (Pass 1 F44) — 26 checks
+        run: node app/scripts/test-b15-44-get-comps-layout.cjs
+      - name: Offer Readiness decision panel starting state, loading lockout and per-deal choice, real Seller Call page (Pass 1 F33) — 31 checks, floor 24
+        run: node app/scripts/test-b15-33-readiness-panel.cjs
+      - name: Keyboard focus never lands under the stuck deal rail (Tab/Shift+Tab, 5 widths, resize without reload, rail growth, away/back) and header chips wrap, real App (narrow-width F3/F1) — 692 checks
+        run: node app/scripts/test-b15-rail-focus.cjs
+      - name: B1 repair approval ENABLED path on the real page, offline (committed switch on for Test; legacy viewer served the switch-off capability) (INV-134) — 81 checks
+        run: node app/scripts/test-repair-approval-browser.cjs
+      # Both Production negotiation settings against the real write scope and barrier rules; floor 105
+      # (NB6-NB8: a live, unspent reservation for A's deal is refused on B, then writes A once; 23770f6).
+      - name: Contact isolation and Production write scope, real pages (B14-12, B14-13) — 105 checks
         run: node app/scripts/test-contact-isolation.cjs
 
       # B15-04 C1-C4 r4: draft recovery, stored operation authority, wording and fresh-load non-bypass (real handler, offline).

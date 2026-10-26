@@ -1,0 +1,203 @@
+{
+  "file": "app/src/pages/ContractWorkspace.tsx",
+  "base": "2c07d75ab27db8a45d6bba919e150bfbc9760411",
+  "note": "Board 15 contract-panel copy follow-up (proposed; no issue number). Applied IN THIS ORDER to the base file; each 'old' must occur exactly 'count' times at its step. Row 18 (Preserve success) is deliberately absent: held unchanged per Jess.",
+  "pairs": [
+    {
+      "row": "1",
+      "baseLines": "3691",
+      "old": "Verifies whether the three locked Under Contract facts actually hold: every signer completed (by provider recipient id, never GHL's generic role), the provider independently reports completion, and a manually-selected executed PDF is present and hashed. Fetching the live readback above is read-only against GHL, and selecting/hashing the PDF happens locally in this browser. But clicking Record signer mapping or Record attestation below DOES write a durable IAOS note in GHL -- only when that button is clicked, never automatically. Neither of those two steps uploads the PDF file itself; Preserve executed PDF, further below, is a separate action that DOES upload and durably store the actual PDF bytes.",
+      "new": "This checks the three facts required before Under Contract: every signer has completed (matched by GHL recipient ID, never by GHL's generic role), GHL itself reports the document complete, and an executed PDF you selected is present and fingerprinted (SHA-256). Reading this document from GHL is read-only, and the PDF is read in this browser only. Record signer mapping and Record attestation each save an IAOS record note in GHL, only when you click them, never automatically. Neither uploads the PDF. Preserve executed PDF, further down, is the separate step that uploads the PDF and stores it in IAOS's own file storage.",
+      "count": 1
+    },
+    {
+      "row": "2",
+      "baseLines": "3695",
+      "old": "Provider document being verified",
+      "new": "GHL document being verified",
+      "count": 1
+    },
+    {
+      "row": "3",
+      "baseLines": "3709",
+      "old": "Fetch live provider readback",
+      "new": "Read this document from GHL",
+      "count": 1
+    },
+    {
+      "row": "4",
+      "baseLines": "1319",
+      "old": "\"Could not fetch the live provider readback.\"",
+      "new": "\"Could not read this document from GHL.\"",
+      "count": 1
+    },
+    {
+      "row": "5",
+      "baseLines": "3747",
+      "old": "Fetch the live provider readback above before mapping signers to recipients.",
+      "new": "Read this document from GHL above before matching signers to GHL recipients.",
+      "count": 1
+    },
+    {
+      "row": "6",
+      "baseLines": "3753",
+      "old": "assign every required signer below to exactly one provider recipient id. Every recipient observed in this document must be assigned to exactly one signer -- nothing is auto-paired.",
+      "new": "assign each required signer below to exactly one GHL recipient ID. Every recipient on this document must be assigned to exactly one signer; nothing is matched automatically.",
+      "count": 1
+    },
+    {
+      "row": "7",
+      "baseLines": "3765",
+      "old": "-- select provider recipient id --",
+      "new": "-- choose GHL recipient ID --",
+      "count": 1
+    },
+    {
+      "row": "8",
+      "baseLines": "3795",
+      "old": "<span>currency not yet checked.</span>",
+      "new": "<span>not yet checked against the current evidence.</span>",
+      "count": 1
+    },
+    {
+      "row": "9",
+      "baseLines": "3808",
+      "old": "Fetch the live provider readback above to check signer completion.",
+      "new": "Read this document from GHL above to check whether every signer has completed.",
+      "count": 1
+    },
+    {
+      "row": "10",
+      "baseLines": "3820",
+      "old": "Waiting on readback evidence.",
+      "new": "Waiting for this document to be read from GHL.",
+      "count": 1
+    },
+    {
+      "row": "11",
+      "baseLines": "3833",
+      "old": "Fetch the live provider readback above to check this.",
+      "new": "Read this document from GHL above to check this.",
+      "count": 1
+    },
+    {
+      "row": "12",
+      "baseLines": "3849",
+      "old": ">4. Provider completion<",
+      "new": ">4. Completion reported by GHL<",
+      "count": 1
+    },
+    {
+      "row": "13",
+      "baseLines": "3851",
+      "old": "Fetch the live provider readback above to check provider completion.",
+      "new": "Read this document from GHL above to check whether GHL reports it complete.",
+      "count": 1
+    },
+    {
+      "row": "14",
+      "baseLines": "3863",
+      "old": "The live readback did not confirm this document's own record -- provider completion cannot be evaluated.",
+      "new": "The read from GHL did not confirm this exact document's record, so IAOS cannot evaluate whether GHL reports it complete.",
+      "count": 1
+    },
+    {
+      "row": "15",
+      "baseLines": "3873",
+      "old": "GHL's Documents &amp; Contracts API has no download endpoint -- download the completed document for this exact provider document id directly from GHL, then select that PDF file below. It is read and hashed in this browser only; the file itself is never uploaded, saved, or sent anywhere.",
+      "new": "IAOS cannot download the signed document from GHL. Download the completed document with this exact document ID from GHL yourself, then select that PDF below. IAOS reads it and computes its SHA-256 fingerprint in this browser only; this file is never uploaded, saved or sent anywhere.",
+      "count": 1
+    },
+    {
+      "row": "16",
+      "baseLines": "3884,4017",
+      "old": "Reading and hashing selected file...",
+      "new": "Reading the file and computing its SHA-256 fingerprint...",
+      "count": 2
+    },
+    {
+      "row": "17",
+      "baseLines": "3983",
+      "old": "currency not yet checked (fetch readback and select the PDF above).",
+      "new": "not yet checked against the current evidence (read this document from GHL and select the PDF above).",
+      "count": 1
+    },
+    {
+      "row": "20",
+      "baseLines": "4125",
+      "old": "Transitioned and confirmed by fresh readback -- pipeline and stage both verified exact.",
+      "new": "Moved to Under Contract. IAOS read the deal back from GHL and confirmed the exact pipeline and stage.",
+      "count": 1
+    },
+    {
+      "row": "21",
+      "baseLines": "4192",
+      "old": "Fetch the live readback, map signers to recipients, and select the executed PDF above to see exactly which stage this evidence reaches.",
+      "new": "Read this document from GHL, match signers to GHL recipients, and select the executed PDF above to see exactly which verification stage this evidence reaches.",
+      "count": 1
+    },
+    {
+      "row": "22",
+      "baseLines": "1804,2310",
+      "old": "The write may have succeeded, but the readback fetch itself failed: ${e?.message ?? \"unknown error\"} -- verify directly in GHL before retrying; this action does not retry automatically.",
+      "new": "The save may have gone through, but IAOS could not read it back from GHL to confirm: ${e?.message ?? \"unknown error\"} -- check in GHL before trying again; IAOS will not retry on its own.",
+      "count": 2
+    },
+    {
+      "row": "23",
+      "baseLines": "1819",
+      "old": "${readbackCheck.reason} A note carrying this exact evidence may or may not now exist in GHL -- verify directly before retrying; this action does not retry automatically.",
+      "new": "${readbackCheck.reason} GHL may or may not now hold a note with this exact evidence. Check in GHL before trying again; IAOS will not retry on its own.",
+      "count": 1
+    },
+    {
+      "row": "24",
+      "baseLines": "2336",
+      "old": "No note carrying this exact requested snapshot was found on fresh readback -- the write, the read, or the read's own parse failed. A note may or may not now exist in GHL -- verify directly before retrying; this action does not retry automatically.",
+      "new": "IAOS read GHL again and did not find a note matching this handoff (same deal, agreement, contract version and Under Contract record). The save, the read, or reading its result failed. GHL may or may not now hold the note. Check in GHL before trying again; IAOS will not retry on its own.",
+      "count": 1
+    },
+    {
+      "row": "25",
+      "baseLines": "4315",
+      "old": "Recorded and verified by fresh readback -- the written note round-trips exactly. Buyer disposition can now use handoff id ",
+      "new": "Recorded. GHL confirmed this exact note was saved, and IAOS's fresh read found the matching handoff. Buyer disposition can now use handoff ID ",
+      "count": 1
+    },
+    {
+      "row": "19",
+      "baseLines": "4104",
+      "old": "Recorded and verified by fresh readback -- the written note round-trips exactly.",
+      "new": "Recorded. GHL confirmed this exact note was saved, and IAOS's fresh read found the matching record.",
+      "count": 1
+    },
+    {
+      "row": "26",
+      "baseLines": "4357",
+      "old": "Authoritative data (reused verbatim, never recalculated)",
+      "new": "Recorded deal data (copied exactly, never recalculated)",
+      "count": 1
+    },
+    {
+      "row": "27",
+      "baseLines": "4361",
+      "old": "\"(no matching approval-ledger entry)\"",
+      "new": "\"(no matching ARV approval record)\"",
+      "count": 1
+    },
+    {
+      "row": "28",
+      "baseLines": "4364",
+      "old": "<li>Provider document: {pkg",
+      "new": "<li>GHL document: {pkg",
+      "count": 1
+    },
+    {
+      "row": "29",
+      "baseLines": "4372",
+      "old": "Missing optional data (disclosed honestly, never fabricated)",
+      "new": "Optional details IAOS does not have (listed here, never made up)",
+      "count": 1
+    }
+  ]
+}

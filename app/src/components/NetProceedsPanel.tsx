@@ -3,10 +3,11 @@ import type { ExpectedSpread } from "../lib/underwriting/board8-economics";
 import { formatWholeDollars } from "../lib/deal-calculator-bar";
 import { parseNonNegativeAmountInput } from "../lib/deal-calculator-inputs";
 import {
-  COST_LINES, EARNEST_MONEY_NOTE, NET_RESULT_LABEL, TRANSACTION_TYPE_LABEL,
-  computeNetProceeds, costEntryFromInput, hasAmountDigit, netProceedsText,
+  COST_LINES, EARNEST_MONEY_NOTE, TRANSACTION_TYPE_LABEL,
+  computeNetProceeds, costEntryFromInput, hasAmountDigit, netProceedsText, netResultLabel,
   type CostEntry, type CostLineInput, type TransactionType, type WholesalerCostKey,
 } from "../lib/wholesaler-net-proceeds";
+import type { RepairCompleteness } from "../lib/provisional-repairs";
 
 /* B15-26 (INV-134) first slice -- the Deal Calculator's wholesaler net
    proceeds panel. Scratchpad only: every value here is local state, nothing
@@ -29,7 +30,10 @@ const INPUT: React.CSSProperties = { background: "#0A1633", border: "1px solid r
 const BUTTON: React.CSSProperties = { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "6px", color: "#CBD5E1", fontSize: "11px", padding: "5px 10px", cursor: "pointer" };
 const SELECTED = "rgba(30,200,255,0.25)";
 
-export function NetProceedsPanel({ grossSpread }: { grossSpread: ExpectedSpread }) {
+/* `repairs` is the page's repair-estimate completeness (Jess ruling
+   2026-10-21): an estimated net on incomplete repairs is labelled
+   provisional; amounts are unchanged and nothing else here reads it. */
+export function NetProceedsPanel({ grossSpread, repairs = null }: { grossSpread: ExpectedSpread; repairs?: RepairCompleteness | null }) {
   const [type, setType] = useState<TransactionType | null>(null);
   const [lines, setLines] = useState<Partial<Record<WholesalerCostKey, LineInput>>>({});
   const [earnestRaw, setEarnestRaw] = useState("");
@@ -111,11 +115,12 @@ export function NetProceedsPanel({ grossSpread }: { grossSpread: ExpectedSpread 
       <div
         data-testid="deal-calc-net-result"
         data-net-status={result.kind}
+        data-net-provisional={result.kind === "estimated" && repairs?.incomplete ? "true" : "false"}
         role="status"
-        aria-label={NET_RESULT_LABEL}
-        style={{ fontSize: "12px", fontWeight: 600, color: result.kind === "estimated" ? (result.net < 0 ? "#EF4444" : "#E2E8F0") : "#F59E0B" }}
+        aria-label={netResultLabel(result, repairs)}
+        style={{ fontSize: "12px", fontWeight: 600, color: result.kind === "estimated" ? (result.net < 0 ? "#EF4444" : repairs?.incomplete ? "#F59E0B" : "#E2E8F0") : "#F59E0B" }}
       >
-        {netProceedsText(result, formatWholeDollars)}
+        {netProceedsText(result, formatWholeDollars, repairs)}
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "12px" }} data-testid="deal-calc-net-earnest">

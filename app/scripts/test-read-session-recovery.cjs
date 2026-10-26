@@ -517,6 +517,8 @@ async function main() {
     await page.getByTestId('call-log-save').click();
     await until(async () => writes('contact.callLogResult').length === 2, 'P1CL next attempt');
     check('P1CL only after reconciliation does another attempt become possible', writes('contact.callLogResult')[1].args.value === 'No Answer');
+    // That attempt still sends its note and last touch after its result: let it finish before freshApp empties the log.
+    await until(async () => (await page.getByTestId('call-log-done').innerText().catch(() => '')) === 'Saved: No Answer.', 'P1CL next attempt finished');
     // GHL's result changed meanwhile: the server's record of the confirmed write decides; the result is never re-sent.
     sessionMs = 3600_000;
     await freshApp(`/contacts/${A}`);

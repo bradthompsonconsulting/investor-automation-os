@@ -128,7 +128,7 @@ check('F55 no "Board #" or "INV-65" in rendered Contract text (outside evidenceS
   contractRendered.split('\n').filter((l) => /Board #|INV-65/.test(l) && !/evidenceSummary:/.test(l)), []);
 check('F55 plain-term replacements present',
   /The contract begins once the seller has accepted a price/.test(contract) && /Start Disposition -- hand off to buyer disposition/.test(contract)
-  && /Buyer disposition can now use handoff id/.test(contract) && /Every contract-execution requirement passes/.test(contract), true);
+  && /Buyer disposition can now use handoff ID/.test(contract) && /Every contract-execution requirement passes/.test(contract), true);
 check('F55 persisted disposition evidenceSummary deliberately unchanged',
   /evidenceSummary: "No-reentry disposition-start handoff to Board #10, assembled from already-canonical Board #9 upstream sources\.",/.test(contract), true);
 

@@ -32,7 +32,7 @@ import { buildOfferReadinessInputs } from "../lib/seller-call-readiness-inputs";
 import { latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
 import {
   subjectAddress, handoffToPropStream, copyAddressAgain, browserHandoffEnvironment,
-  PROPSTREAM_LOGIN_URL, type HandoffResult,
+  PROPSTREAM_LOGIN_URL, NO_SUBJECT_ADDRESS_REASON, type HandoffResult,
 } from "../lib/propstream";
 import {
   computeNegotiationPosition, attemptOverride, isOverrideCurrent, requiresOverrideDecision,
@@ -550,6 +550,14 @@ function offerSaveCoordinator(): OfferSaveCoordinator {
   return sharedOfferSaves;
 }
 
+/* Pass 1 F33 (Brad, 2026-10-24) -- the operator's open/closed choice for the
+   Offer Readiness decision panel, per contact and deal, for this browser
+   session (in memory only; a reload starts again from the default). Kept
+   outside the component so returning to a contact or deal visited earlier
+   finds the choice made there. Presentation only: nothing here is read by
+   readiness, gating or any write. */
+const decisionPanelOpenByDeal = new Map<string, boolean>();
+
 export default function SellerCallWorkspace() {
   const { id } = useParams<{ id: string }>();
   const contactId = id ?? "";
@@ -558,6 +566,11 @@ export default function SellerCallWorkspace() {
   const [opps, setOpps] = useState<import("../lib/ghl").OpportunityRow[] | null>(null);
   const [policyValues, setPolicyValues] = useState<{ id: string; value: string }[] | null>(null);
   const [notes, setNotes] = useState<{ id: string; body: string; dateAdded: string }[] | null>(null);
+  /* Pass 1 F33 (Brad, 2026-10-24): the contact whose four reads below were
+     ALL stored last. Set after them, so it never names a contact whose data
+     is still partly the previous contact's -- whether or not React batches
+     those updates into one render. */
+  const [loadCompleteFor, setLoadCompleteFor] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [chosenId, setChosenId] = useState<string | null>(null);
 
@@ -771,6 +784,7 @@ export default function SellerCallWorkspace() {
         setOpps(opportunitiesForContact(pipeline.opportunities, contactId));
         setPolicyValues(policy.values);
         setNotes(notesResult.notes ?? []);
+        setLoadCompleteFor(contactId);
         loadedFor.current = contactId;
         setRefreshReadError(null);
       })
@@ -1516,6 +1530,24 @@ export default function SellerCallWorkspace() {
   }, [readinessHumanActionRecord, readinessDecisionCurrency]);
 
   const observedStaleThisSession = readinessHumanActionRecord !== null && !!observedStaleForAt[readinessHumanActionRecord.at];
+
+  /* Pass 1 F33 (Brad, 2026-10-24) -- the decision panel's starting state.
+     Decided ONCE per contact and deal, and only when everything the stale
+     check reads belongs to the contact on screen: the route's contact is
+     displayed, its load completed (`loadCompleteFor`), notes are loaded and
+     the deal is resolved. Then: open for a current decision; closed for no
+     decision or a stale one. After that only the operator's own toggles
+     change it -- a save, a re-read or a decision going stale mid-call never
+     does. Presentation only: the staleness rule, gating and writes above are
+     untouched. */
+  const decisionPanelKey = screen.state === "resolved" || screen.state === "unresolved" ? `${contactId}|${screen.opportunity.id}` : null;
+  const decisionInputsReady = decisionPanelKey !== null && loadCompleteFor === contactId && contact?.id === contactId && notes !== null;
+  const decisionIsStale = readinessHumanActionRecord !== null && (readinessDecisionCurrency?.current === false || observedStaleThisSession);
+  const [, setDecisionPanelTick] = useState(0);
+  if (decisionInputsReady && decisionPanelKey !== null && !decisionPanelOpenByDeal.has(decisionPanelKey)) {
+    decisionPanelOpenByDeal.set(decisionPanelKey, readinessHumanActionRecord !== null && !decisionIsStale);
+  }
+  const decisionPanelOpen = decisionInputsReady && decisionPanelKey !== null && decisionPanelOpenByDeal.get(decisionPanelKey) === true;
   const readinessHumanAction: HumanAction = readinessHumanActionRecord === null
     || readinessDecisionCurrency?.current === false
     || observedStaleThisSession
@@ -2605,20 +2637,48 @@ export default function SellerCallWorkspace() {
               evidence: ... -- overridden"). */}
           {/* Pass 1 F33: "Override anyway" sat open near the top, before any
               question was asked. The decision panel is now collapsed until
-              opened (open by default only once a decision is on record), so
-              the call starts with the conversation. Same controls, same
-              gates; layout only. */}
-          {readiness ? (
+              opened, so the call starts with the conversation. It starts open
+              only for a CURRENT decision (Brad, 2026-10-24); a stale one starts
+              closed and says so in its summary. The starting state and the
+              operator's toggles are kept per contact and deal
+              (`decisionPanelOpen` above). Same controls, same gates; layout
+              only. */}
+          {readiness && !decisionInputsReady ? (
+            /* Pass 1 F33 follow-up (Jess, 2026-10-24): until this contact's and
+               deal's inputs are ready, the panel is a plain line, not a
+               control -- there is nothing to click or key whose choice would
+               then be discarded. The panel itself appears once they are. */
+            <div
+              data-testid="readiness-human-action-panel-loading"
+              aria-busy="true"
+              style={{
+                marginBottom: "16px", padding: "14px 16px", borderRadius: "10px",
+                background: "#0F172A", border: "1px solid #1E293B",
+                fontSize: "12px", fontWeight: 700, color: "#64748B",
+              }}
+            >
+              Offer Readiness decision — loading this deal…
+            </div>
+          ) : readiness ? (
             <details
               data-testid="readiness-human-action-panel"
-              open={readinessHumanActionRecord ? true : undefined}
+              open={decisionPanelOpen}
+              onToggle={(e) => {
+                if (!decisionInputsReady || decisionPanelKey === null) return;
+                const open = e.currentTarget.open;
+                if (decisionPanelOpenByDeal.get(decisionPanelKey) === open) return;
+                decisionPanelOpenByDeal.set(decisionPanelKey, open);
+                setDecisionPanelTick((n) => n + 1);
+              }}
               style={{
                 marginBottom: "16px", padding: "14px 16px", borderRadius: "10px",
                 background: "#0F172A", border: "1px solid #1E293B",
               }}
             >
               <summary style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "8px", cursor: "pointer" }}>
-                Offer Readiness decision — approve or override (optional)
+                {decisionIsStale
+                  ? "Offer Readiness decision — last decision is stale; a fresh one is needed to authorize (optional)"
+                  : "Offer Readiness decision — approve or override (optional)"}
               </summary>
               {readinessHumanActionRecord ? (
                 <div data-testid="readiness-human-action-current" style={{ fontSize: "12px", color: "#94A3B8", marginBottom: "10px" }}>
@@ -3339,9 +3399,10 @@ export default function SellerCallWorkspace() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginTop: "16px" }}>
             <div style={{ padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" }}>
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>Known facts</div>
+              {/* Pass 1 F32 (Jess, 2026-10-23): ARV and Repairs are stated once,
+                  in the sticky deal bar above (same values); this card keeps
+                  Seller Ask, which the bar does not show. */}
               <div style={{ fontSize: "13px", color: "#E2E8F0", lineHeight: 1.8 }}>
-                <div>ARV: {screen.known.arv !== null ? screen.known.arv.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }) : "Not yet established"}</div>
-                <div>Repairs: {screen.known.repairs !== null ? screen.known.repairs.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }) : "Not yet established"}</div>
                 <div>Seller Ask: {screen.known.askingPrice !== null ? screen.known.askingPrice.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }) : "Not yet established"}</div>
               </div>
             </div>
@@ -3567,7 +3628,7 @@ export default function SellerCallWorkspace() {
               <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", marginBottom: "10px" }}>ARV &amp; Comps</div>
               <div style={{ fontSize: "13px", color: "#E2E8F0", marginBottom: "12px" }} data-testid="arv-provenance">
                 {screen.known.arv === null
-                  ? "Not yet established."
+                  ? "No ARV yet — start with Get Comps."
                   : matchedArvApproval
                   ? `Approved: ${money(screen.known.arv)} (evidence: ${matchedArvApproval.evidenceState})`
                   : latestArvLedgerEntry
@@ -3581,11 +3642,21 @@ export default function SellerCallWorkspace() {
                   data-testid="seller-call-get-comps"
                   title={compsAddress
                     ? `Copies ${compsAddress} and opens PropStream, where you paste it into the property search`
-                    : "No complete subject-property address on this record (street, city and state are all required)"}
+                    : NO_SUBJECT_ADDRESS_REASON}
+                  aria-describedby={contact && !compsAddress ? "seller-call-get-comps-reason" : undefined}
                   style={{ ...COMPACT_BUTTON_STYLE, opacity: compsAddress ? 1 : 0.45, cursor: compsBusy || !compsAddress ? "not-allowed" : "pointer" }}
                 >
                   <Copy size={12} /> Get Comps
                 </button>
+                {/* Pass 1 F44 (Jess, 2026-10-23): the disabled reason is also
+                    visible text beside the button once the contact has
+                    loaded; the tooltip and the disabled rule are unchanged. */}
+                {contact && !compsAddress ? (
+                  <span id="seller-call-get-comps-reason" data-testid="seller-call-get-comps-reason"
+                    style={{ flex: "1 1 220px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.4, alignSelf: "center" }}>
+                    {NO_SUBJECT_ADDRESS_REASON}
+                  </span>
+                ) : null}
                 <Link to={`/contacts/${contactId}/underwriting`} data-testid="seller-call-view-import-comps" style={COMPACT_LINK_STYLE}>
                   <ExternalLink size={12} /> View / Import Comps
                 </Link>

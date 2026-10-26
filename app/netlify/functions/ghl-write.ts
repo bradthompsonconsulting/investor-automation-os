@@ -3,6 +3,7 @@ import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { validateLedgerNote } from "./lib/write-note-guard";
 import { verifyUnderContractStageTransitionReady } from "./lib/write-derived-note";
 import { getConfig } from "../../shared/ghl-config";
+import { repairApprovalActiveFor } from "../../shared/repair-approval-config";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { exact, identifier, planWrite, dispositions, routings } from "./lib/write-contracts";
 import { configuredBoundary, fieldValue, WriteUncertain, type DispatchHooks } from "./lib/ghl-write-boundary";
@@ -97,6 +98,11 @@ export const handler = async (event: any) => {
     identifier(request.targetId); identifier(request.requestId);
     plan = planWrite(request.operation, request.args, config);
   } catch { return json(400, { error: "Invalid named write request" }); }
+  // B15-26 B1 repair-save completion: while that path is active in THIS environment (the shared switch
+  // on and IAOS_ENV Test) it is the ONLY way a repair total reaches GHL (repair-approval-save.ts), so the
+  // legacy named write is refused before anything is sent. Anywhere else (the default, or Production
+  // with the switch on): unchanged.
+  if (repairApprovalActiveFor(process.env.IAOS_ENV) && request.operation === "opportunity.repairs") return json(409, { outcome: "not_sent", error: "Repair totals are saved through repair approval; nothing was sent" });
   // INV-98 Board #9 Production proof write scope -- before connectLambda,
   // any Blob store, the contact lock, the write claim, or any GHL call.
   // Test deployments are unaffected (always ok). The refusal is definitive and

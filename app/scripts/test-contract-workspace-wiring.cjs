@@ -1376,17 +1376,17 @@ const viewTsNoComments = viewTs.replace(/\/\*[\s\S]*?\*\//g, '');
   );
   check(
     'the corrected disclosure discloses the live readback fetch is read-only against GHL',
-    contractTsx.includes('Fetching the live readback above is read-only against GHL'),
+    contractTsx.includes('Reading this document from GHL is read-only'),
     true,
   );
   check(
     'the corrected disclosure discloses that Record signer mapping / Record attestation DO write a durable IAOS note in GHL, only on click',
-    contractTsx.includes('DOES write a durable IAOS note in GHL -- only when that button is clicked, never automatically'),
+    contractTsx.includes('Record signer mapping and Record attestation each save an IAOS record note in GHL, only when you click them, never automatically'),
     true,
   );
   check(
     'the corrected disclosure does not claim the PDF is uploaded by the two attestation steps, and does not imply Preserve executed PDF is local-only',
-    contractTsx.includes('Preserve executed PDF, further below, is a separate action that DOES upload and durably store the actual PDF bytes'),
+    contractTsx.includes("Neither uploads the PDF. Preserve executed PDF, further down, is the separate step that uploads the PDF and stores it in IAOS's own file storage"),
     true,
   );
 

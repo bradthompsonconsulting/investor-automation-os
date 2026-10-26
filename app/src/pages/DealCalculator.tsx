@@ -18,6 +18,7 @@ import {
   type DealCalculatorAssignment,
 } from "../lib/deal-calculator-inputs";
 import { buildDealCalculatorBarCells, buildSpreadStatus, type DealCalcBarCell, type SpreadStatus } from "../lib/deal-calculator-bar";
+import type { RepairCompleteness } from "../lib/provisional-repairs";
 import { parseAcquisitionPriceInput } from "../lib/seller-call-negotiation";
 import {
   OPERATOR_ROWS, EMPTY_ANSWER, applyCondition, applyAmount, applyQuantity,
@@ -162,6 +163,7 @@ const SPREAD_STATUS_COLOR: Record<SpreadStatus["kind"], string> = {
   short: "#F59E0B",
   meets: "#22C55E",
   neutral: "#64748B",
+  provisional: "#F59E0B",
 };
 
 function BarCellView({ cell, valueColor }: { cell: DealCalcBarCell; valueColor?: string }) {
@@ -228,6 +230,15 @@ export default function DealCalculator() {
     repairsMode === "quick"
       ? (repairsQuickParsed.kind === "value" ? repairsQuickParsed.value : null)
       : detailedEstimate.total;
+
+  /* Jess ruling 2026-10-21 (B15-26 with B15-01): while the itemized estimate
+     is incomplete, the spread, bar and net are presented as provisional.
+     Completeness is the estimate's own flag -- never inferred from a $0
+     total (explicit $0/Good answers are complete). A Quick total is an
+     operator-entered whole figure, so it is not "incomplete"; a missing or
+     invalid Quick total already leaves Repairs missing (neutral status). */
+  const repairCompleteness: RepairCompleteness | null =
+    repairsMode === "detailed" ? { incomplete: detailedEstimate.incomplete, knownRepairs: detailedEstimate.total } : null;
 
   function bumpRepairRevision() {
     setRepairRevision((r) => r + 1);
@@ -342,8 +353,8 @@ export default function DealCalculator() {
   const parsedPolicy = useMemo(() => parsePolicy(policyValues ?? [], CV_IDS).policy, [policyValues]);
 
   const barCells = useMemo(
-    () => buildDealCalculatorBarCells({ arv, repairs, testPrice, board8, expectedSpread }),
-    [arv, repairs, testPrice, board8, expectedSpread],
+    () => buildDealCalculatorBarCells({ arv, repairs, testPrice, board8, expectedSpread, repairsIncomplete: repairCompleteness?.incomplete ?? false }),
+    [arv, repairs, testPrice, board8, expectedSpread, repairCompleteness?.incomplete],
   );
   /* B15-26: the active mode's required spread is the engine's own resolved
      figures.assignmentSpread -- read, never recomputed. */
@@ -355,8 +366,9 @@ export default function DealCalculator() {
         ? { mode: assignmentMode, requiredSpread: underwritingResult.figures.assignmentSpread }
         : null,
       assignmentMode,
+      repairCompleteness,
     ),
-    [board8, expectedSpread, underwritingResult, assignmentMode],
+    [board8, expectedSpread, underwritingResult, assignmentMode, repairCompleteness?.incomplete, repairCompleteness?.knownRepairs],
   );
 
   /* Optional linking. Contact-level only -- see module header for why no
@@ -604,7 +616,7 @@ export default function DealCalculator() {
 
       {/* B15-26 (INV-134): wholesaler costs and estimated net. Reads only the
           existing Expected Spread above; gates nothing; saves nothing. */}
-      <NetProceedsPanel key={netPanelRevision} grossSpread={expectedSpread} />
+      <NetProceedsPanel key={netPanelRevision} grossSpread={expectedSpread} repairs={repairCompleteness} />
 
       {/* Optional linking. INV-70 / B9-07A Phase 2 correction round 3 --
           no save-back of any kind happens from this panel anymore (Repairs'
