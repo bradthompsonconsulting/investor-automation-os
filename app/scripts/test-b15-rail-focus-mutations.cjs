@@ -1,18 +1,26 @@
 /**
  * Controls for scripts/test-b15-rail-focus.cjs: each mutation breaks the
- * rail scroll-padding fix IN THE DEV SERVER ONLY (no file is touched) and the
+ * rail clearance fix IN THE DEV SERVER ONLY (no file is touched) and the
  * suite must FAIL, on the checks named below. A mutation that passes, or fails
  * only elsewhere, fails this runner.
  *
  *   off          -- hook not called: focus lands under the rail (the original defect)
- *   static       -- padding set once, never tracked: wrong after resize / rail growth
+ *   static       -- nothing tracked: wrong after resize / rail growth / enabling
  *   nocleanup    -- previous value not restored on exit: padding leaks to other pages
- *   nodisconnect -- observer not disconnected on exit: it rewrites main's padding later
+ *   nodisconnect -- ResizeObserver not disconnected on exit: it rewrites main's padding later
+ *   nomodisconnect -- MutationObserver not disconnected on exit: same, on DOM changes
  *   nofallback   -- the a0fd10a implementation (always sticky, no reveal): fails the
  *                   clearance rule and the full-visibility check where the rail leaves no room
  *   noreturn     -- once released the rail never sticks again: fails 'rail mode is sticky'
- *   noreveal     -- keyboard focus not brought fully into view: fails full visibility
+ *   noreveal     -- no focus handling: fails full visibility and the stuck-rail entry
  *   nolistenercleanup -- focus listener left on <main> after exit
+ *   pointerreveal -- reveal ignores modality: a pointer click scrolls (Bones 1)
+ *   intoview     -- the 5b57be0 reveal (scrollIntoView): scroll calls beyond main.scrollTop (Bones 4)
+ *   railjump     -- Tab into the stuck rail moves the page (Spock 1)
+ *   nobound      -- the reveal adjusts a control taller than the band (Bones 2)
+ *   nomutations  -- enabling / showing a taller control without resize is missed (Bones 3)
+ *   nokeep       -- focus left under the rail when sticky returns (Spock 2)
+ *   nomodalitycleanup -- keydown listener left on the document after exit
  *
  *   node scripts/test-b15-rail-focus-mutations.cjs
  */
@@ -25,10 +33,18 @@ const EXPECT = {
   static: [/^(resize|grow) .*scroll-padding-top == padding-top/, /^(resize|grow) .*leaves no focused control under the rail/],
   nocleanup: [/^away \(Deal Calculator\): .*previous value/, /^away again: main's previous scroll padding \(7px\) restored/],
   nodisconnect: [/^away.*(previous value|still no scroll padding|still 7px)/],
+  nomodisconnect: [/^away.*(previous value|still no scroll padding|still 7px|restored)/],
   nofallback: [/rail mode follows the clearance rule/, /^height 480x600.*every focused control fully visible/],
   noreturn: [/^(height 480x600 -> 900|ungrown down 480px|fallback -> sticky after return).*rail mode is sticky/],
-  noreveal: [/every focused control fully visible/],
+  noreveal: [/every focused control fully visible/, /^rail entry .*page did not move/],
   nolistenercleanup: [/no focus listener left on <main>/],
+  pointerreveal: [/^pointer 480px: the click scrolls nothing/],
+  intoview: [/every scroll call moved only <main>, vertically/],
+  railjump: [/^rail entry .*page did not move/],
+  nobound: [/^oversized .*no custom adjustment for a control that cannot be shown whole/],
+  nomutations: [/^no-resize 1440px: (enabled|made visible) with no size change/],
+  nokeep: [/^keep high: the focused control is fully visible and clear of the stuck rail/],
+  nomodalitycleanup: [/^away: no keydown\/pointerdown modality listener left on the document/],
 };
 
 let failures = 0;
