@@ -373,7 +373,7 @@ jobs:
         run: node app/scripts/test-b15-44-get-comps-layout.cjs
       - name: Offer Readiness decision panel starting state, loading lockout and per-deal choice, real Seller Call page (Pass 1 F33) — 31 checks, floor 24
         run: node app/scripts/test-b15-33-readiness-panel.cjs
-      - name: Keyboard focus never lands under the stuck deal rail (Tab/Shift+Tab, 5 widths, resize without reload, rail growth, away/back) and header chips wrap, real App (narrow-width F3/F1) — 150 checks
+      - name: Keyboard focus never lands under the stuck deal rail (Tab/Shift+Tab, 5 widths, resize without reload, rail growth, away/back) and header chips wrap, real App (narrow-width F3/F1) — 379 checks
         run: node app/scripts/test-b15-rail-focus.cjs
       - name: B1 repair approval ENABLED path on the real page, offline (committed switch on for Test; legacy viewer served the switch-off capability) (INV-134) — 81 checks
         run: node app/scripts/test-repair-approval-browser.cjs
