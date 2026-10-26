@@ -112,6 +112,14 @@ test('config: the committed (deactivated) Test config is the platform fetch -- z
   const r = await lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/contacts/', {});
   assert.equal(r.status, 200); assert.equal(outbound.length, 1); assert.equal(blobOps, 0); assert.equal(record('b15-04-eval-reads-1'), null);
 });
+test('config (explicit ENABLED variant, as evaluated): b15-04-eval-reads-1 / 100 meters 100 dispatches, then STOPs unsent with no reset', async () => {
+  reset(); testCfg.supplementalReadBudget = { enabled: cfgMod.SUPPLEMENTAL_READ_BUDGET_ENABLED, budgetId: 'b15-04-eval-reads-1', ceiling: 100 };
+  for (let i = 0; i < 100; i++) await lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/contacts/', {});
+  assert.equal(outbound.length, 100); assert.equal(record('b15-04-eval-reads-1').reserved, 100); assert.equal(record('b15-04-eval-reads-1').ceiling, 100);
+  await assert.rejects(lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/contacts/', {}), (e) => e.code === 'exhausted');
+  await assert.rejects(lib.ghlReadFetch(ev(), 'ghl-opportunities')(GHL + '/opportunities/search', {}), (e) => e.code === 'exhausted');
+  assert.equal(outbound.length, 100, 'the 101st and later requests were never sent'); assert.equal(record('b15-04-eval-reads-1').reserved, 100);
+});
 test('config: property-answer\'s separate budget is unchanged (b15-04-eval-1 / 40)', () => {
   assert.deepEqual({ ...testCfg.propertyAnswerEvaluation.requestBudget }, { budgetId: 'b15-04-eval-1', ceiling: 40 });
   assert.notEqual(lib.readBudgetKey(SCOPE, 'b15-04-eval-1').split('/').slice(0, 2).join('/'), 'pa/eval-budget');
@@ -453,7 +461,7 @@ test('inventory: per metered function, GHL requests dispatched = reservations pe
 test('coverage: every netlify function that calls GHL is metered here or is a listed write endpoint', () => {
   const METERED = HANDLERS.map(([n]) => n + '.ts');
   const EXCLUDED = ['property-answer.ts', 'ghl-write.ts', 'ghl-disposition.ts', 'generate-contract-pdf.ts', 'ghl-contract-send-readback.ts',
-    'ghl-executed-artifact-upload.ts', 'call-log-barrier.ts', 'current-offer-barrier.ts'];
+    'ghl-executed-artifact-upload.ts', 'call-log-barrier.ts', 'current-offer-barrier.ts', 'repair-approval-save.ts'];
   const uses = fs.readdirSync(FUNCTIONS).filter((f) => f.endsWith('.ts')).filter((f) => {
     const s = fs.readFileSync(path.join(FUNCTIONS, f), 'utf8');
     return /leadconnectorhq|GHL_BASE|configuredBoundary|mailer-shared/.test(s);
@@ -468,6 +476,108 @@ test('coverage: every netlify function that calls GHL is metered here or is a li
   const shared = fs.readFileSync(path.join(FUNCTIONS, 'lib', 'mailer-shared.ts'), 'utf8').split('\n').filter((l) => /\bfetch\(/.test(l));
   assert.ok(shared.every((l) => /=> fetch\(i, n\)/.test(l)), 'mailer-shared only falls back to the platform fetch when no meter is passed');
   for (const f of EXCLUDED) assert.doesNotMatch(fs.readFileSync(path.join(FUNCTIONS, f), 'utf8'), /supplemental-read-budget/, f + ' is not metered here');
+});
+
+// ---------------- coverage (shared libraries; Bones step-044 + R3): indirect GHL transports, unclassified endpoints, retired voice
+// A function is a GHL user when it references GHL itself OR imports (transitively, through lib/) a library that does. Every GHL
+// user must be classified exactly once, and every classification must still be a GHL user (no stale entries).
+//   metered          -- the supplemental-read handlers (HANDLERS, unchanged)
+//   indirectMetered  -- a reader whose target GETs go through a library transport, metered via that transport's readFetch
+//   excluded         -- write-governed endpoints (own governance; never this meter)
+//   retiredGated     -- the GHL call exists but sits behind the unconditional voice retirement gate (INV-93): unreachable
+//   noGhlCall        -- imports a GHL library for non-GHL helpers only and never calls its GHL export
+const COVERAGE = {
+  metered: HANDLERS.map(([n]) => n + '.ts'),
+  indirectMetered: ['repair-approval-status.ts'],
+  excluded: ['property-answer.ts', 'ghl-write.ts', 'ghl-disposition.ts', 'generate-contract-pdf.ts', 'ghl-contract-send-readback.ts',
+    'ghl-executed-artifact-upload.ts', 'call-log-barrier.ts', 'current-offer-barrier.ts', 'repair-approval-save.ts'],
+  retiredGated: ['voice-authorize.ts', 'voice-twiml.ts'],
+  noGhlCall: ['voice-capability.ts', 'voice-session.ts', 'voice-status.ts'],
+};
+const GHL_PAT = /leadconnectorhq|GHL_BASE|GHL_ORIGIN|configuredBoundary|mailer-shared/;
+function scanCoverage(fnDir, cls = COVERAGE) {
+  const libDir = path.join(fnDir, 'lib'); const rd = (p) => fs.readFileSync(p, 'utf8');
+  const imports = (src) => [...src.matchAll(/from "\.\/(?:lib\/)?([\w.-]+)"/g)].map((m) => m[1].replace(/\.ts$/, '') + '.ts');
+  const libs = fs.readdirSync(libDir).filter((x) => x.endsWith('.ts'));
+  const ghlLib = new Set(libs.filter((x) => GHL_PAT.test(rd(path.join(libDir, x)))));
+  for (let changed = true; changed;) { changed = false; for (const x of libs) if (!ghlLib.has(x) && imports(rd(path.join(libDir, x))).some((y) => ghlLib.has(y))) { ghlLib.add(x); changed = true; } }
+  const fns = fs.readdirSync(fnDir).filter((x) => x.endsWith('.ts'));
+  const uses = fns.filter((x) => { const src = rd(path.join(fnDir, x)); return GHL_PAT.test(src) || [...src.matchAll(/from "\.\/lib\/([\w.-]+)"/g)].some((m) => ghlLib.has(m[1].replace(/\.ts$/, '') + '.ts')); });
+  const all = [...cls.metered, ...cls.indirectMetered, ...cls.excluded, ...cls.retiredGated, ...cls.noGhlCall];
+  const problems = [];
+  for (const x of uses) { const n = all.filter((y) => y === x).length; if (n === 0) problems.push('unclassified GHL user: ' + x); if (n > 1) problems.push('classified more than once: ' + x); }
+  for (const x of all) if (!uses.includes(x)) problems.push('stale classification (not a GHL user): ' + x);
+  // voice-provider: the exported functions that call GHL (body uses GHL_BASE); the retirement gate
+  const vp = rd(path.join(libDir, 'voice-provider.ts'));
+  const calling = [...vp.matchAll(/export (?:async )?function (\w+)\([^)]*\)[^{]*\{([\s\S]*?)\n\}/g)].filter((m) => /GHL_BASE/.test(m[2])).map((m) => m[1]);
+  if (JSON.stringify(calling) !== JSON.stringify(['readEligibleGhlContact'])) problems.push('voice-provider GHL-calling exports changed: ' + calling.join(','));
+  const vc = vp.match(/export function voiceCapability\([^)]*\)[^{]*\{([\s\S]*?)\n\}/);
+  const rets = vc ? [...vc[1].matchAll(/return ([^;]+);/g)].map((m) => m[1].trim()) : [];
+  if (!vc || rets.length !== 1 || rets[0] !== '{ enabled: false, reasons }') problems.push('voiceCapability is not unconditionally disabled');
+  for (const x of cls.retiredGated) {
+    const src = rd(path.join(fnDir, x)); const call = Math.min(...calling.map((e) => { const i = src.indexOf(e + '('); return i < 0 ? Infinity : i; }));
+    const cap = src.indexOf('const capability = voiceCapability();'); const gate = src.search(/if \(!capability\.enabled\) return /);
+    if (!(call < Infinity && cap >= 0 && gate > cap && gate < call)) problems.push('retirement gate does not precede the GHL call: ' + x);
+  }
+  for (const x of cls.noGhlCall) { const src = rd(path.join(fnDir, x)); if (calling.some((e) => src.includes(e + '('))) problems.push('calls a GHL-calling export: ' + x); if (GHL_PAT.test(src)) problems.push('references GHL directly: ' + x); }
+  for (const x of cls.indirectMetered) {
+    const src = rd(path.join(fnDir, x));
+    if (!/import \{[^}]*\bghlReadFetch\b[^}]*\} from "\.\/lib\/supplemental-read-budget"/.test(src)) problems.push('not metered through ghlReadFetch: ' + x);
+    if (!/createProductionTargetTransport\(\{[^;]*\breadFetch\b/.test(src)) problems.push('readFetch not passed to the target transport: ' + x);
+    if (src.split(/\r?\n/).some((l) => /\bfetch\(/.test(l))) problems.push('calls fetch directly: ' + x);
+  }
+  const ba = rd(path.join(libDir, 'blob-authority.ts'));
+  if (!/const send = method === "GET" && t\.readFetch \? t\.readFetch : t\.fetchImpl;/.test(ba) || (ba.match(/await send\(/g) || []).length !== 1 || /t\.fetchImpl\(/.test(ba)) problems.push('blob-authority: target GETs are not routed through readFetch at the single dispatch site');
+  for (const x of cls.excluded) if (/\breadFetch\b|supplemental-read-budget/.test(rd(path.join(fnDir, x)))) problems.push('a write-governed endpoint uses the reader meter: ' + x);
+  return { uses, ghlLib: [...ghlLib], calling, problems };
+}
+test('coverage (shared libraries): every GHL user, direct or through lib/, is classified exactly once; no stale entries; the gates hold', () => {
+  const r = scanCoverage(FUNCTIONS);
+  assert.deepEqual(r.problems, []);
+  for (const x of ['repair-approval-status.ts', 'voice-authorize.ts', 'voice-twiml.ts', 'voice-capability.ts', 'voice-session.ts', 'voice-status.ts']) assert.ok(r.uses.includes(x), x + ' is detected');
+  for (const x of ['blob-authority.ts', 'voice-provider.ts', 'supplemental-read-budget.ts']) assert.ok(r.ghlLib.includes(x), x + ' is a GHL library');
+});
+// negative controls: a mutated COPY of the functions tree must make the scan report a problem
+const os = require('node:os');
+function mutated(edits) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cov-')); fs.cpSync(FUNCTIONS, dir, { recursive: true });
+  for (const [rel, from, to] of edits) { const p = path.join(dir, rel); if (from === null) { fs.writeFileSync(p, to); continue; } const t = fs.readFileSync(p, 'utf8'); const a = from.split('\n').join(t.includes('\r\n') ? '\r\n' : '\n'); assert.equal(t.split(a).length, 2, 'mutation applies once: ' + rel); fs.writeFileSync(p, t.replace(a, () => to)); }
+  return dir;
+}
+const expectProblem = (dir, re, cls) => { const r = scanCoverage(dir, cls); assert.ok(r.problems.some((p) => re.test(p)), 'expected a problem matching ' + re + ', got ' + JSON.stringify(r.problems)); };
+test('coverage control: removing the retirement gate in voice-authorize is a coverage failure', () => expectProblem(mutated([['voice-authorize.ts', '    if (!capability.enabled) return json(503, { error: "IAOS voice is unavailable", reasons: capability.reasons });\n', '']]), /retirement gate does not precede.*voice-authorize/));
+test('coverage control: removing the retirement gate in voice-twiml is a coverage failure', () => expectProblem(mutated([['voice-twiml.ts', '  if (!capability.enabled) return hangup(503);\n', '']]), /retirement gate does not precede.*voice-twiml/));
+test('coverage control: voiceCapability able to return enabled:true is a coverage failure', () => expectProblem(mutated([['lib/voice-provider.ts', '  return { enabled: false, reasons };', '  return { enabled: reasons.length === 1, reasons };']]), /not unconditionally disabled/));
+test('coverage control: a no-GHL voice endpoint that starts calling the GHL export is a coverage failure', () => expectProblem(mutated([['voice-status.ts', 'import { verifyTwilioSignature, voiceCapability } from "./lib/voice-provider";', 'import { readEligibleGhlContact, verifyTwilioSignature, voiceCapability } from "./lib/voice-provider";\nvoid readEligibleGhlContact("x");']]), /calls a GHL-calling export: voice-status/));
+test('coverage control: a new function reaching GHL only through lib/blob-authority is unclassified (the old file-level scan missed it)', () => {
+  const dir = mutated([['zz-new-reader.ts', null, 'import { readRepairApproval } from "./lib/blob-authority";\nexport const handler = async () => readRepairApproval;\n']]);
+  expectProblem(dir, /unclassified GHL user: zz-new-reader\.ts/);
+  assert.ok(!/leadconnectorhq|GHL_BASE|configuredBoundary|mailer-shared/.test(fs.readFileSync(path.join(dir, 'zz-new-reader.ts'), 'utf8')), 'the pre-044 regex would not have flagged it');
+});
+test('coverage control: a two-level indirect transport (lib -> lib/blob-authority) is detected', () => expectProblem(mutated([['lib/zz-wrap.ts', null, 'export { readRepairApproval } from "./blob-authority";\nimport "./blob-authority";\n'], ['zz-two-level.ts', null, 'import { readRepairApproval } from "./lib/zz-wrap";\nexport const handler = async () => readRepairApproval;\n']]), /unclassified GHL user: zz-two-level\.ts/));
+test('coverage control: repair-approval-status no longer passing readFetch is a coverage failure', () => expectProblem(mutated([['repair-approval-status.ts', ', readFetch });', ' });']]), /readFetch not passed.*repair-approval-status/));
+test('coverage control: blob-authority sending target GETs through fetchImpl is a coverage failure', () => expectProblem(mutated([['lib/blob-authority.ts', '    const send = method === "GET" && t.readFetch ? t.readFetch : t.fetchImpl;', '    const send = t.fetchImpl;']]), /not routed through readFetch/));
+test('coverage control: dropping repair-approval-save from the write-governed list leaves it unclassified', () => expectProblem(FUNCTIONS, /unclassified GHL user: repair-approval-save\.ts/, { ...COVERAGE, excluded: COVERAGE.excluded.filter((x) => x !== 'repair-approval-save.ts') }));
+test('coverage control: a stale classification (a non-GHL function listed) is a coverage failure', () => expectProblem(FUNCTIONS, /stale classification.*iaos-runtime-config/, { ...COVERAGE, noGhlCall: [...COVERAGE.noGhlCall, 'iaos-runtime-config.ts'] }));
+// dynamic retirement proof: with every other gate satisfied, the retired voice endpoints answer 503 and dispatch NO GHL request
+const VOICE_ENV = { IAOS_VOICE_ENABLED: 'true', GOOGLE_OAUTH_CLIENT_ID: 'offline-voice-client', IAOS_VOICE_BRAD_EMAILS: 'brad@example.invalid', IAOS_VOICE_SESSION_SECRET: 'offline-voice-secret-not-real-0123456789',
+  TWILIO_ACCOUNT_SID: 'ACoffline', TWILIO_API_KEY_SID: 'SKoffline', TWILIO_API_KEY_SECRET: 'offline', TWILIO_AUTH_TOKEN: 'offline-twilio-auth-token', TWILIO_TWIML_APP_SID: 'APoffline', TWILIO_OUTBOUND_CALLER_ID: '+15555550100', IAOS_VOICE_PUBLIC_BASE_URL: 'https://voice.example.invalid' };
+test('retired voice-authorize: valid operator session and body, all voice config present -> 503 and NO GHL request', async () => {
+  Object.assign(process.env, VOICE_ENV); reset();
+  const op = require(path.join(FUNCTIONS, 'lib', 'operator-auth.ts')); const session = op.issueOperatorSession('brad@example.invalid');
+  const h = require(path.join(FUNCTIONS, 'voice-authorize.ts')).handler;
+  const r = await h({ httpMethod: 'POST', headers: { authorization: 'Bearer ' + session.token }, body: JSON.stringify({ action: require(path.join(APP, 'shared', 'voice-call-contract.ts')).VOICE_ACTION, contactId: 'fxContact0001', attemptId: 'fxAttempt0001' }) });
+  assert.equal(r.statusCode, 503, r.body); assert.equal(outbound.length, 0, 'no GHL request'); assert.equal(nonGhl.length, 0);
+});
+test('retired voice-twiml: valid Twilio signature and bound params -> hangup 503 and NO GHL request', async () => {
+  Object.assign(process.env, VOICE_ENV); reset();
+  const twilio = require(path.join(APP, 'node_modules', 'twilio')); const url = 'https://voice.example.invalid/.netlify/functions/voice-twiml';
+  const params = { action: 'authorize-outbound-call', contactId: 'fxContact0001', attemptId: 'fxAttempt0001', CallSid: 'CAoffline' };
+  const sig = twilio.getExpectedTwilioSignature(VOICE_ENV.TWILIO_AUTH_TOKEN, url, params);
+  assert.ok(twilio.validateRequest(VOICE_ENV.TWILIO_AUTH_TOKEN, sig, url, params), 'fixture signature is valid');
+  const h = require(path.join(FUNCTIONS, 'voice-twiml.ts')).handler;
+  const r = await h({ httpMethod: 'POST', rawUrl: url, headers: { 'x-twilio-signature': sig }, body: new URLSearchParams(params).toString() });
+  assert.equal(r.statusCode, 503, r.body); assert.match(r.body, /<Hangup\/>/); assert.equal(outbound.length, 0, 'no GHL request'); assert.equal(nonGhl.length, 0);
 });
 
 // Each test runs in its OWN child process with a hard kill (Jess/Brad 2026-10-19): a defect such as an unmetered
