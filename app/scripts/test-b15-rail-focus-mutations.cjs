@@ -29,7 +29,9 @@ const path = require('node:path');
 
 const SUITE = path.join(__dirname, 'test-b15-rail-focus.cjs');
 const EXPECT = {
-  off: [/leaves no focused control under the rail/, /scroll-padding-top == padding-top/],
+  /* No hook: the rail carries no data-rail-mode, so the mode check fails and the
+     suite takes the fallback branch (it never reaches the sticky padding check). */
+  off: [/leaves no focused control under the rail/, /rail mode follows the clearance rule/],
   static: [/^(resize|grow) .*scroll-padding-top == padding-top/, /^(resize|grow) .*leaves no focused control under the rail/],
   nocleanup: [/^away \(Deal Calculator\): .*previous value/, /^away again: main's previous scroll padding \(7px\) restored/],
   nodisconnect: [/^away.*(previous value|still no scroll padding|still 7px)/],
