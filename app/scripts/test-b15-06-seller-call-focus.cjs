@@ -26,6 +26,12 @@
  *      than by keyboard (Playwright's pointer path, as assistive technology
  *      would) moves nothing: the compact Call hid itself when it did. The
  *      sticky side column is measured and printed as NOTE, not asserted.
+ *   2b. Direct real-keyboard entry into the stuck bar (Bones HOLD of
+ *      railjump, 2026-10-26), at 1440x900, 1366x768 and 1280x800: the bar is
+ *      genuinely stuck, the named bar control visible, focus on its tab-order
+ *      neighbour; one real Tab / Shift+Tab reaches that control, the page does
+ *      not move, the control stays fully visible. EVIDENCE lines record the
+ *      geometry, scroll positions, scroll events and page-script scroll calls.
  *   3. The bar's figures, every answer value and the selected deal are the
  *      same after the walks.
  *   4. Fallback: a test-only growth of the bar past the room releases it;
@@ -403,6 +409,86 @@ async function main() {
     await barChecks(page, `${c.w}x${c.h}${c.script ? ' +script' : ''}${c.notes ? ' +notes' : ''}${c.badge ? ' +details' : ''}`, c.expect);
     await context.close();
     fx.state.notes.push(...held);
+  }
+
+  /* ═══ 3b: direct real-keyboard entry into the stuck bar (Bones HOLD of railjump at bff7861, 2026-10-26) ═══
+     The walks above reach the stuck bar by keyboard only where the page happens to put it (Windows: one place;
+     Linux: none). Here, at 1440x900 and the laptop widths: the bar is shown to be genuinely stuck, the named bar
+     control visible, and focus placed on its tab-order neighbour (preventScroll: placing it moves nothing); then
+     ONE real Tab / Shift+Tab. Nothing scrolls between the baseline and the reading. Two safeguards keep this still,
+     and the evidence line tells them apart: the bar's negative scroll margin (SellerCallWorkspace.css) stops the
+     browser's focus scroll, so no page-script scroll call appears; without it, the hook's put-back undoes the move,
+     which shows as one <main>.scrollTop call in the log (control nomargin). Without both (railjump), the page moves. */
+  for (const [w, h] of [[1440, 900], [1366, 768], [1280, 800]]) {
+    const { context, page } = await open(w, h);
+    await ready(page);
+    for (const dir of ['Tab', 'Shift+Tab']) {
+      const tag = `direct keyboard ${w}x${h} ${dir}`;
+      /* Setup, before any baseline: half-way down, where the bar is stuck and the compact Call is shown (an
+         observer reveals it, hence the wait). */
+      await page.evaluate(() => { const m = document.querySelector('main'); m.scrollTop = Math.round((m.scrollHeight - m.clientHeight) / 2); });
+      await page.waitForTimeout(400);
+      const pre = await page.evaluate(([d, sel]) => {
+        const main = document.querySelector('main');
+        const bar = document.querySelector('[data-testid="seller-call-sticky-bar"]');
+        document.querySelectorAll('[data-direct-target]').forEach((e) => e.removeAttribute('data-direct-target'));
+        const label = (e) => (e ? e.getAttribute('data-testid') || e.getAttribute('aria-label') || `${e.tagName.toLowerCase()} "${(e.textContent || '').trim().slice(0, 24)}"` : null);
+        const rect = (e) => { const r = e.getBoundingClientRect(); return [Math.round(r.top * 10) / 10, Math.round(r.bottom * 10) / 10]; };
+        const m = main.getBoundingClientRect();
+        const padTop = parseFloat(getComputedStyle(main).paddingTop) || 0;
+        const b = bar.getBoundingClientRect();
+        const parentTop = bar.parentElement.getBoundingClientRect().top;
+        /* Genuinely stuck: sticky, at main's top, and its container has scrolled up past it. */
+        const stuck = getComputedStyle(bar).position === 'sticky' && bar.getAttribute('data-rail-mode') === 'sticky'
+          && Math.abs(b.top - (m.top + padTop)) < 1.5 && parentTop < b.top - 10 && main.scrollTop > 0;
+        const all = [...document.querySelectorAll(sel)].filter((e) => !e.disabled && e.tabIndex >= 0 && e.checkVisibility({ visibilityProperty: true }));
+        const positive = all.filter((e) => e.tabIndex > 0).length;
+        const inBar = all.filter((e) => bar.contains(e));
+        const target = d === 'Tab' ? inBar[0] : inBar[inBar.length - 1];
+        const i = target ? all.indexOf(target) : -1;
+        const neighbour = i < 0 ? null : all[d === 'Tab' ? i - 1 : i + 1];
+        const t = target ? target.getBoundingClientRect() : null;
+        const hit = t ? document.elementFromPoint(t.left + t.width / 2, t.top + t.height / 2) : null;
+        const targetVisible = !!t && t.top >= m.top - 0.5 && t.bottom <= m.bottom + 0.5 && !!hit && target.contains(hit);
+        const before = main.scrollTop;
+        if (neighbour) neighbour.focus({ preventScroll: true });
+        const placed = !!neighbour && document.activeElement === neighbour && main.scrollTop === before;
+        if (target) target.setAttribute('data-direct-target', '');
+        window.__scrollEvents = [];
+        if (!window.__scrollEventsOn) { window.__scrollEventsOn = true; main.addEventListener('scroll', () => window.__scrollEvents.push(main.scrollTop), { passive: true }); }
+        window.__scrollLog = [];
+        return { ok: stuck && targetVisible && placed && positive === 0 && !!neighbour && !bar.contains(neighbour),
+          stuck, targetVisible, placed, positive, target: label(target), neighbour: label(neighbour), neighbourInBar: !!neighbour && bar.contains(neighbour),
+          scrollTop: main.scrollTop, winY: window.scrollY, main: [Math.round(m.top), Math.round(m.bottom)], padTop, bar: rect(bar), parentTop: Math.round(parentTop * 10) / 10,
+          targetRect: target ? rect(target) : null, neighbourRect: neighbour ? rect(neighbour) : null,
+          scrollPaddingTop: main.style.scrollPaddingTop, railClearance: main.style.getPropertyValue('--rail-clearance'),
+          targetScrollMarginTop: target ? getComputedStyle(target).scrollMarginTop : null };
+      }, [dir, RULE_FOCUSABLE]);
+      check(`${tag}: precondition -- bar genuinely stuck, ${pre.target || 'bar control'} visible, focus on its tab-order neighbour ${pre.neighbour || '(none)'}`, pre.ok, JSON.stringify(pre));
+      if (!pre.ok) continue;
+      await page.keyboard.press(dir);
+      await page.waitForTimeout(250);
+      const post = await page.evaluate(() => {
+        const main = document.querySelector('main');
+        const target = document.querySelector('[data-direct-target]');
+        const a = document.activeElement;
+        const m = main.getBoundingClientRect();
+        const t = target.getBoundingClientRect();
+        const hit = document.elementFromPoint(t.left + t.width / 2, t.top + t.height / 2);
+        return { reached: a === target, active: a ? a.getAttribute('data-testid') || a.tagName.toLowerCase() : null,
+          scrollTop: main.scrollTop, winY: window.scrollY, targetRect: [Math.round(t.top * 10) / 10, Math.round(t.bottom * 10) / 10],
+          visible: t.top >= m.top - 0.5 && t.bottom <= m.bottom + 0.5 && !!hit && target.contains(hit),
+          scrollEvents: window.__scrollEvents.slice(0, 12), scrollCalls: window.__scrollLog.slice(0, 12) };
+      });
+      console.log(`EVIDENCE ${tag}: ${JSON.stringify({ pre, post })}`);
+      check(`${tag}: focus reaches the bar's ${pre.target}`, post.reached, `active ${post.active}`);
+      /* Position only: when the page does move at 1440 Tab, the full Call scrolls back into view, the compact Call
+         hides itself and focus falls to <body> -- a consequence, reported by the check above, not part of this one. */
+      check(`${tag}: entering the stuck bar moves nothing (direct)`, post.scrollTop === pre.scrollTop && post.winY === pre.winY,
+        `scrollTop ${pre.scrollTop} -> ${post.scrollTop}; scroll events ${JSON.stringify(post.scrollEvents)}; scroll calls ${JSON.stringify(post.scrollCalls)}`);
+      check(`${tag}: the focused bar control stays fully visible and uncovered`, post.reached && post.visible, JSON.stringify(post.targetRect));
+    }
+    await context.close();
   }
 
   /* ═══ 4: measured fallback at 1440x900, and sticky's return ═══ */
