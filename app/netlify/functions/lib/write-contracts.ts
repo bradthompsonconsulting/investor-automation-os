@@ -61,6 +61,8 @@ export function planWrite(operation: string, args: any, config: ReturnType<typeo
     case "opportunity.underContractStage": {
       exact(args, ["agreementAt", "version"]);
       iso(args.agreementAt);
+      // B15-13 (Jess): the version identity carries exactly its declared keys; nothing rides along.
+      exact(args.version, ["agreementAt", "versionSeq", "supersedesVersionSeq", "replacesAgreementAt"]);
       if (typeof args.version !== "object" || args.version === null || typeof args.version.agreementAt !== "string" || typeof args.version.versionSeq !== "number") throw new Error("Invalid contract version");
       return { kind: "opportunity_stage", fields: [], agreementAt: args.agreementAt, version: args.version };
     }
