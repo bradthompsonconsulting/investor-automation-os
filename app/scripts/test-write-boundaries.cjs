@@ -84,6 +84,8 @@ const boundaryLib = {...require('../netlify/functions/lib/ghl-write-boundary.ts'
 const contact = { id: 'fixture-contact', locationId: config.locationId, customFields: [], tags: [], phone: '+15555550101' };
 const opportunity = { id: 'fixture-opportunity', contactId: contact.id, locationId: config.locationId, customFields: [] };
 let notes = [], calls = [], writes = 0, omitReadback = false;
+// B15-13: field ids the fixture accepts in a PUT but does not apply, so a readback can be mixed.
+const dropReadback = new Set();
 const task = { id: 'fixture-task', contactId: contact.id, completed: false };
 const reply = data => ({ ok: true, status: 200, json: async () => structuredClone(data), text: async () => JSON.stringify(data) });
 global.fetch = async (url, init = {}) => {
@@ -103,6 +105,7 @@ global.fetch = async (url, init = {}) => {
     const putBody = JSON.parse(init.body);
     if ('dndSettings' in putBody || 'dnd' in putBody) throw new Error('IAOS must never write DND (B14-12): ' + JSON.stringify(Object.keys(putBody)));
     if (!omitReadback) for (const field of putBody.customFields) {
+      if (dropReadback.has(field.id)) continue;
       object.customFields = object.customFields.filter(f => f.id !== field.id);
       if (field.field_value !== '' && field.field_value !== null) object.customFields.push({ id: field.id, [object === contact ? 'value' : 'fieldValue']: field.field_value });
     }
@@ -780,6 +783,252 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
       assert.equal(serialized.toLowerCase().includes('bearer'), false, 'no token/credential is ever logged');
     });
   }
+
+  // ============================================================
+  // B15-13 -- proxy and named-write rejection contract. Six categories: pipeline
+  // stage, status, tags, unauthorized fields, encoded paths/parameters, partial
+  // payloads. Every refusal is paired with an accepted control of the same
+  // request without the offending element, so the refusal is attributable to
+  // that element. No application guard is weakened; controls are fixtures.
+  // ============================================================
+  let b1513 = 0;
+  const b1513Check = (name, fn) => check('B15-13 ' + name, fn).then(() => { b1513++; });
+  const sideEffects = () => ({calls: calls.length, writes, blobCalls, blobConnections});
+  async function proxyRefused(label, input) {
+    await b1513Check('proxy refuses ' + label, async () => {
+      const before = sideEffects();
+      const result = await proxy(input);
+      assert.equal(result.statusCode, 403, result.body);
+      assert.equal(JSON.parse(result.body).by, 'iaos-proxy-allowlist');
+      assert.deepEqual(sideEffects(), before);
+    });
+  }
+  async function proxyReadsOnly(label, input, pathname) {
+    await b1513Check('proxy control ' + label, async () => {
+      const before = sideEffects();
+      const result = await proxy(input);
+      assert.equal(result.statusCode, 200, result.body);
+      assert.deepEqual(calls.slice(before.calls), [{pathname, method: 'GET'}]);
+      assert.equal(writes, before.writes);
+      assert.equal(blobCalls, before.blobCalls);
+    });
+  }
+  // A named-write request refused at the payload gate: 400, nothing read,
+  // nothing written, no Blob access.
+  async function writeRefused(label, mutate) {
+    await b1513Check('named write refuses ' + label, async () => {
+      const e = event('contact.propertyNotes', contact.id, {value: 'b15-13'});
+      mutate(e);
+      const before = sideEffects();
+      const result = await handler(e);
+      assert.equal(result.statusCode, 400, result.body);
+      assert.deepEqual(JSON.parse(result.body), {error: 'Invalid named write request'});
+      assert.deepEqual(sideEffects(), before);
+    });
+  }
+  const setBody = (e, body) => { e.body = typeof body === 'string' ? body : JSON.stringify(body); };
+  const envelope = (operation, targetId, args, extra = {}) => ({operation, targetId, requestId: `b1513-${++sequence}`, args, ...extra});
+  const oppPath = '/opportunities/' + opportunity.id;
+  const contactPath = '/contacts/' + contact.id;
+  // The full ContractVersionIdentity the browser sends (initialVersionIdentity), so an extra key is the only defect.
+  const ucVersion = {agreementAt: '2026-09-06T15:00:00.000Z', versionSeq: 1, supersedesVersionSeq: null, replacesAgreementAt: null};
+
+  // Controls: the clean reads the refusals below are measured against.
+  await proxyReadsOnly('GET ' + oppPath, {httpMethod: 'GET', queryStringParameters: {path: oppPath}}, oppPath);
+  await proxyReadsOnly('GET ' + contactPath, {httpMethod: 'GET', queryStringParameters: {path: contactPath}}, contactPath);
+  await b1513Check('named write control: clean contact.propertyNotes is accepted', async () => {
+    const before = writes;
+    const result = await handler(event('contact.propertyNotes', contact.id, {value: 'b15-13 control'}));
+    assert.equal(result.statusCode, 200, result.body);
+    assert.equal(writes, before + 1);
+  });
+
+  // 1. Pipeline stage.
+  for (const method of ['PUT', 'PATCH', 'POST']) {
+    await proxyRefused(method + ' ' + oppPath + ' with pipelineStageId',
+      {httpMethod: method, queryStringParameters: {path: oppPath}, body: JSON.stringify({pipelineStageId: 'injected'})});
+  }
+  await proxyRefused('GET ' + oppPath + ' carrying a pipelineStageId body',
+    {httpMethod: 'GET', queryStringParameters: {path: oppPath}, body: JSON.stringify({pipelineStageId: 'injected'})});
+  await proxyRefused('pipelineStageId as an extra query key',
+    {httpMethod: 'GET', queryStringParameters: {path: oppPath, pipelineStageId: 'injected'}});
+  for (const operation of ['opportunity.stage', 'opportunity.updateStage', 'opportunity.pipelineStage', 'opportunity.move']) {
+    await writeRefused('unknown stage operation ' + operation, e => setBody(e, envelope(operation, opportunity.id, {value: 'injected'})));
+  }
+  await writeRefused('pipelineStageId in the envelope', e => setBody(e, envelope('opportunity.arv', opportunity.id, {value: 1}, {pipelineStageId: 'injected'})));
+  for (const key of ['pipelineStageId', 'pipelineId']) {
+    await writeRefused(key + ' in opportunity.arv args', e => setBody(e, envelope('opportunity.arv', opportunity.id, {value: 250000, [key]: 'injected'})));
+  }
+  await writeRefused('pipelineStageId beside underContractStage args',
+    e => setBody(e, envelope('opportunity.underContractStage', opportunity.id, {agreementAt: ucVersion.agreementAt, version: ucVersion, pipelineStageId: 'injected'})));
+
+  // 2. Status.
+  for (const method of ['GET', 'PUT', 'PATCH', 'POST']) {
+    await proxyRefused(method + ' ' + oppPath + '/status',
+      {httpMethod: method, queryStringParameters: {path: oppPath + '/status'}, ...(method === 'GET' ? {} : {body: JSON.stringify({status: 'won'})})});
+  }
+  await proxyRefused('status as an extra query key', {httpMethod: 'GET', queryStringParameters: {path: oppPath, status: 'won'}});
+  for (const operation of ['opportunity.status', 'opportunity.markWon', 'opportunity.markLost']) {
+    await writeRefused('unknown status operation ' + operation, e => setBody(e, envelope(operation, opportunity.id, {value: 'won'})));
+  }
+  await writeRefused('status in the envelope', e => setBody(e, envelope('opportunity.arv', opportunity.id, {value: 1}, {status: 'won'})));
+  await writeRefused('status in opportunity.arv args', e => setBody(e, envelope('opportunity.arv', opportunity.id, {value: 250000, status: 'won'})));
+  await writeRefused('status in opportunity.underwriting args',
+    e => setBody(e, envelope('opportunity.underwriting', opportunity.id, {endBuyerMaxPrice: 1, sellerMAO: 1, assignmentMode: mode, status: 'won'})));
+
+  // 3. Contact tags.
+  for (const method of ['GET', 'POST', 'PUT', 'DELETE']) {
+    await proxyRefused(method + ' ' + contactPath + '/tags',
+      {httpMethod: method, queryStringParameters: {path: contactPath + '/tags'}, ...(method === 'GET' ? {} : {body: JSON.stringify({tags: ['hot']})})});
+  }
+  await proxyRefused('PUT ' + contactPath + ' with a tags body',
+    {httpMethod: 'PUT', queryStringParameters: {path: contactPath}, body: JSON.stringify({tags: ['hot']})});
+  for (const operation of ['contact.tags', 'contact.addTag', 'contact.removeTag', 'tag.create']) {
+    await writeRefused('unknown tag operation ' + operation, e => setBody(e, envelope(operation, contact.id, {value: 'hot'})));
+  }
+  await writeRefused('tags in the envelope', e => setBody(e, envelope('contact.propertyNotes', contact.id, {value: 'x'}, {tags: ['hot']})));
+  await writeRefused('tags in contact.propertyNotes args', e => setBody(e, envelope('contact.propertyNotes', contact.id, {value: 'x', tags: ['hot']})));
+  await writeRefused('tags in note.create args', e => setBody(e, envelope('note.create', contact.id, {body: 'x', tags: ['hot']})));
+
+  // 4. Unknown or unauthorized fields: null/array args and envelopes, prototype keys.
+  for (const [label, args] of [['null args', null], ['array args', ['x']], ['empty array args', []], ['string args', 'x'], ['number args', 1]]) {
+    await writeRefused(label, e => setBody(e, envelope('contact.propertyNotes', contact.id, args)));
+    await writeRefused(label + ' on note.create', e => setBody(e, envelope('note.create', contact.id, args)));
+  }
+  for (const [label, body] of [['null envelope', 'null'], ['array envelope', '[]'], ['string envelope', '"x"'], ['empty body', '']]) {
+    await writeRefused(label, e => setBody(e, body));
+  }
+  // JSON.parse makes "__proto__" an own key, so each of these is an undeclared key.
+  for (const [label, raw] of [
+    ['__proto__ in args beside value', '{"value":"x","__proto__":{"pipelineStageId":"injected"}}'],
+    ['__proto__ in args in place of value', '{"__proto__":{"value":"x"}}'],
+    ['constructor in args', '{"value":"x","constructor":{"prototype":{"tags":["hot"]}}}'],
+    ['prototype in args', '{"value":"x","prototype":{}}'],
+  ]) {
+    await writeRefused(label, e => { e.body = `{"operation":"contact.propertyNotes","targetId":"${contact.id}","requestId":"b1513-proto-${++sequence}","args":${raw}}`; });
+  }
+  await writeRefused('__proto__ in the envelope', e => { e.body = `{"operation":"contact.propertyNotes","targetId":"${contact.id}","requestId":"b1513-proto-${++sequence}","args":{"value":"x"},"__proto__":{"method":"PUT"}}`; });
+  await writeRefused('constructor in the envelope', e => setBody(e, envelope('contact.propertyNotes', contact.id, {value: 'x'}, {constructor: 'x'})));
+  await writeRefused('customFields in args', e => setBody(e, envelope('contact.propertyNotes', contact.id, {value: 'x', customFields: [{id: 'any', field_value: 'x'}]})));
+  await writeRefused('a field id in the envelope', e => setBody(e, envelope('contact.propertyNotes', contact.id, {value: 'x'}, {fieldId: 'any'})));
+  await b1513Check('prototype keys never pollute Object.prototype', () => {
+    assert.equal(Object.prototype.pipelineStageId, undefined);
+    assert.equal(Object.prototype.tags, undefined);
+    assert.equal(Object.prototype.method, undefined);
+  });
+  // 5. Encoded paths and parameters. The path param arrives decoded once, so
+  // each "%.." below is a second encoding layer on the wire.
+  for (const raw of [
+    contactPath + '%2Fnotes', '/contacts/%2E%2E/opportunities/' + opportunity.id, '/contacts/..%2Fopportunities%2F' + opportunity.id,
+    '/contacts/%252E%252E', '/contacts/' + contact.id + '%00', '//contacts/' + contact.id, '/contacts//' + contact.id,
+    contactPath + '/', '/contacts\\' + contact.id, contactPath + '#/notes', contactPath + '/../tags', '/contacts/./' + contact.id,
+    ' ' + contactPath, '/Contacts/' + contact.id, 'contacts/' + contact.id, 'https://evil.example.invalid' + contactPath,
+    '/contacts/' + contact.id + '@evil.example.invalid', '/contacts/' + contact.id + ',/contacts/other', '/contacts/' + 'a'.repeat(65),
+  ]) {
+    await proxyRefused('encoded/malformed path ' + JSON.stringify(raw), {httpMethod: 'GET', queryStringParameters: {path: raw}});
+  }
+  for (const query of ['location%49d=foreign', 'locationId=%66oreign', 'locationId=' + config.locationId + '&locationId=' + config.locationId, 'locationId=foreign&locationId=' + config.locationId]) {
+    await proxyRefused('encoded/duplicated location query ' + query, {httpMethod: 'GET', queryStringParameters: {path: '/contacts?' + query}});
+  }
+  // Duplicate path inputs: Netlify joins a repeated query key with a comma.
+  await proxyRefused('a comma-joined duplicate path', {httpMethod: 'GET', queryStringParameters: {path: contactPath + ',' + oppPath}});
+  await proxyRefused('a duplicate path beside an extra key', {httpMethod: 'GET', queryStringParameters: {path: contactPath, Path: oppPath}});
+  // Query parameters (in the path or as headers) never change the outbound method.
+  await proxyReadsOnly('method-override query keys stay GET',
+    {httpMethod: 'GET', queryStringParameters: {path: contactPath + '?method=PUT&_method=PATCH&X-HTTP-Method-Override=DELETE'}}, contactPath);
+  await proxyReadsOnly('method-override headers stay GET',
+    {httpMethod: 'GET', headers: {'x-http-method-override': 'PUT', 'x-method-override': 'DELETE'}, queryStringParameters: {path: contactPath}}, contactPath);
+  await proxyReadsOnly('a multi-value duplicate path forwards only the single path value',
+    {httpMethod: 'GET', multiValueQueryStringParameters: {path: [contactPath, oppPath]}, queryStringParameters: {path: contactPath}}, contactPath);
+  // Named writes: encoding flag, query parameters, encoded identifiers.
+  await writeRefused('isBase64Encoded true', e => { e.isBase64Encoded = true; });
+  await writeRefused('isBase64Encoded true with a base64 body', e => { e.isBase64Encoded = true; e.body = Buffer.from(e.body).toString('base64'); });
+  for (const query of [{x: '1'}, {path: contactPath}, {method: 'PUT'}, {operation: 'note.create'}]) {
+    await writeRefused('query parameters ' + JSON.stringify(query), e => { e.queryStringParameters = query; });
+  }
+  for (const id of [contact.id + '%2F..', '%2E%2E', contact.id + '/notes', contact.id + '.x', '', ' ' + contact.id, 'a'.repeat(65), contact.id + '?x=1', contact.id + '#x']) {
+    await writeRefused('targetId ' + JSON.stringify(id), e => setBody(e, {...JSON.parse(e.body), targetId: id}));
+    await writeRefused('requestId ' + JSON.stringify(id), e => setBody(e, {...JSON.parse(e.body), requestId: id}));
+  }
+  for (const taskId of ['%2E%2E', task.id + '/completed', task.id + '%2Fcompleted', '../' + task.id]) {
+    await writeRefused('task.complete taskId ' + JSON.stringify(taskId), e => setBody(e, envelope('task.complete', contact.id, {taskId})));
+  }
+
+  // 6. Partial payloads and mixed readback.
+  for (const key of ['operation', 'targetId', 'requestId', 'args']) {
+    await writeRefused('envelope missing ' + key, e => { const r = JSON.parse(e.body); delete r[key]; setBody(e, r); });
+  }
+  await writeRefused('empty args for contact.arv', e => setBody(e, envelope('contact.arv', contact.id, {})));
+  await writeRefused('empty args for task.complete', e => setBody(e, envelope('task.complete', contact.id, {})));
+  for (const missing of ['endBuyerMaxPrice', 'sellerMAO', 'assignmentMode']) {
+    await writeRefused('opportunity.underwriting missing ' + missing, e => {
+      const args = {endBuyerMaxPrice: 150000, sellerMAO: 130000, assignmentMode: mode}; delete args[missing];
+      setBody(e, envelope('opportunity.underwriting', opportunity.id, args));
+    });
+  }
+  await writeRefused('opportunity.underwriting with a null amount',
+    e => setBody(e, envelope('opportunity.underwriting', opportunity.id, {endBuyerMaxPrice: null, sellerMAO: 130000, assignmentMode: mode})));
+  await writeRefused('underContractStage missing version', e => setBody(e, envelope('opportunity.underContractStage', opportunity.id, {agreementAt: ucVersion.agreementAt})));
+  await writeRefused('underContractStage version missing versionSeq',
+    e => setBody(e, envelope('opportunity.underContractStage', opportunity.id, {agreementAt: ucVersion.agreementAt, version: {agreementAt: ucVersion.agreementAt}})));
+  // Mixed readback through the real handler: one of three underwriting carriers does not land.
+  const uw = config.opportunityFields;
+  for (const [label, dropped] of [['sellerMAO', [uw.sellerMAO]], ['endBuyerMaxPrice and assignmentMode', [uw.endBuyerMaxPrice, uw.assignmentMode]]]) {
+    await b1513Check('mixed readback (' + label + ' not landed) is confirmed:false with exact per-field results', async () => {
+      const args = {endBuyerMaxPrice: 151500 + sequence, sellerMAO: 131300 + sequence, assignmentMode: require('../src/lib/underwriting/resolver-types.ts').ASSIGNMENT_MODE_OPTIONS.find(([l]) => l !== fieldOf(uw.assignmentMode))[0]};
+      dropped.forEach(id => dropReadback.add(id));
+      let result;
+      try { result = await handler(event('opportunity.underwriting', opportunity.id, args)); }
+      finally { dropReadback.clear(); }
+      assert.equal(result.statusCode, 200, result.body);
+      const body = JSON.parse(result.body);
+      assert.equal(body.confirmed, false);
+      assert.deepEqual(body.results, [uw.endBuyerMaxPrice, uw.sellerMAO, uw.assignmentMode].map(id => ({id, landed: !dropped.includes(id)})));
+    });
+  }
+  function fieldOf(id) { return opportunity.customFields.find(f => f.id === id)?.fieldValue; }
+  await b1513Check('full readback control: the same underwriting write lands every carrier and is confirmed', async () => {
+    const result = await handler(event('opportunity.underwriting', opportunity.id, {endBuyerMaxPrice: 152000, sellerMAO: 132000, assignmentMode: mode}));
+    assert.equal(result.statusCode, 200, result.body);
+    const body = JSON.parse(result.body);
+    assert.equal(body.confirmed, true);
+    assert.deepEqual(body.results, [uw.endBuyerMaxPrice, uw.sellerMAO, uw.assignmentMode].map(id => ({id, landed: true})));
+  });
+  // Mixed readback in an isolated boundary fixture: the paired contact date fields.
+  for (const [label, landOnly] of [['precise companion not landed', 0], ['date field not landed', 1]]) {
+    await b1513Check('isolated boundary: lastCallAttempt pair with ' + label + ' is confirmed:false, per field', async () => {
+      const isolated = {id: 'b1513-contact', locationId: config.locationId, customFields: []};
+      const plan = contracts.planWrite('contact.lastCallAttempt', {value: '2026-10-29T15:00:00.000Z'}, config);
+      const b = new boundaryLib.GhlBoundary('offline-token', config.locationId, async (url, init = {}) => {
+        assert.equal(new URL(url).pathname, '/contacts/' + isolated.id);
+        if (init.method === 'PUT') {
+          const field = JSON.parse(init.body).customFields[landOnly];
+          isolated.customFields.push({id: field.id, value: field.field_value});
+        }
+        return reply({contact: isolated});
+      });
+      const result = await b.fields('contact', isolated.id, plan.fields);
+      assert.equal(result.confirmed, false);
+      assert.deepEqual(result.results, plan.fields.map((f, i) => ({id: f.id, landed: i === landOnly})));
+    });
+  }
+  // Decision 1 (Jess): extra keys inside underContractStage.version must be refused.
+  await b1513Check('planWrite control: underContractStage accepts the clean four-key version', () => {
+    assert.deepEqual(contracts.planWrite('opportunity.underContractStage', {agreementAt: ucVersion.agreementAt, version: ucVersion}, config), {kind: 'opportunity_stage', fields: [], agreementAt: ucVersion.agreementAt, version: ucVersion});
+  });
+  for (const [label, version] of [
+    ['an extra key', {...ucVersion, pipelineStageId: 'injected'}],
+    ['a status key', {...ucVersion, status: 'won'}],
+    ['a tags key', {...ucVersion, tags: ['hot']}],
+  ]) {
+    await b1513Check('planWrite refuses underContractStage.version with ' + label, () => {
+      assert.throws(() => contracts.planWrite('opportunity.underContractStage', {agreementAt: ucVersion.agreementAt, version}, config));
+    });
+    await writeRefused('underContractStage.version with ' + label,
+      e => setBody(e, envelope('opportunity.underContractStage', opportunity.id, {agreementAt: ucVersion.agreementAt, version})));
+  }
+
+  console.log(`B15-13: ${b1513} new checks (reported separately from the existing floor)`);
 
   console.log(`${count} offline boundary checks passed`);
 })().catch(error=>{console.error(error);process.exitCode=1;});
