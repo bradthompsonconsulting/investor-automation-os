@@ -16,15 +16,22 @@
  *
  * The search box prompt names the property address ("Search name, phone,
  * email, property address…") and must fit, uncut, at a wide desktop
- * (2560), the usual desktops (1440, 1280) and narrow windows (1024, 768),
- * with no horizontal page overflow (Bones, review of 354edac). Fonts: the
- * offline harness cannot fetch Google Fonts, so text is measured in the
+ * (2560), the usual desktops (1440, 1280) and narrow windows (1024, 768,
+ * 640), with no horizontal page overflow (Bones, review of 354edac). Fonts:
+ * the offline harness cannot fetch Google Fonts, so text is measured in the
  * browser's fallback for the app's font stack; the box keeps ample slack.
+ *
+ * At 480 (Jess, 2026-10-30) the fixed 240px sidebar leaves a 192px column, so
+ * the full prompt cannot fit and its fit is NOT asserted; the box must still
+ * stay inside the column below the title, nothing may overflow sideways, and
+ * an address search must still find the contact.
  *
  * NEGATIVE CONTROL: `node scripts/test-contacts-address-search.cjs --before=<rev>`
  * renders <rev>'s Contacts page (via `git show`) and must FAIL (exit 1) for a
  * revision without address search -- e.g. --before=3de480e -- and for the
- * clipped-prompt layout at --before=354edac.
+ * clipped-prompt layout at --before=354edac. `--mutate=no-maxwidth` renders
+ * the current Contacts page with the box's `maxWidth: "100%"` removed and must
+ * FAIL (exit 1) at 640 and 480, where a 360px box is wider than the column.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -36,13 +43,16 @@ const HARNESS = '/scripts/harness/contacts-search/index.html';
 const BEFORE_FILE = path.join(HARNESS_DIR, 'ContactsBefore.tsx');
 const beforeArg = process.argv.find((a) => a.startsWith('--before='));
 const BEFORE_REV = beforeArg ? beforeArg.slice('--before='.length) : null;
+const mutateArg = process.argv.find((a) => a.startsWith('--mutate='));
+const MUTATE = mutateArg ? mutateArg.slice('--mutate='.length) : null;
+const CONTROL = BEFORE_REV ?? (MUTATE && `--mutate=${MUTATE}`);
 
 /**
- * Taken from the finished file, never back-filled from a passing run: 9 single
- * check() call sites + 1 inside the width loop x 5 widths + 10 expectRows()
- * call sites (one check each) = 24.
+ * Taken from the finished file, never back-filled from a passing run: 10 single
+ * check() call sites + 1 inside the width loop x 6 widths + 11 expectRows()
+ * call sites (one check each) = 27.
  */
-const FLOOR = 24;
+const FLOOR = 27;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -56,6 +66,14 @@ if (BEFORE_REV) {
   const src = execFileSync('git', ['show', `${BEFORE_REV}:app/src/pages/Contacts.tsx`], { cwd: APP, encoding: 'utf8' });
   fs.writeFileSync(BEFORE_FILE, src.replace(/from "\.\.\//g, 'from "../../../src/'));
   console.log(`NEGATIVE CONTROL: rendering the Contacts page from ${BEFORE_REV}; this run must fail.`);
+}
+if (BEFORE_REV && MUTATE) { console.error('FAILED: --before and --mutate cannot be combined.'); process.exit(2); }
+if (MUTATE) {
+  if (MUTATE !== 'no-maxwidth') { console.error(`FAILED: unknown --mutate=${MUTATE}.`); process.exit(2); }
+  const parts = fs.readFileSync(path.join(APP, 'src/pages/Contacts.tsx'), 'utf8').split('maxWidth: "100%", ');
+  if (parts.length !== 2) { console.error(`FAILED: --mutate=no-maxwidth matched ${parts.length - 1} times, expected exactly 1; nothing rendered.`); process.exit(2); }
+  fs.writeFileSync(BEFORE_FILE, parts.join('').replace(/from "\.\.\//g, 'from "../../../src/'));
+  console.log('NEGATIVE CONTROL: rendering the current Contacts page without the box\'s maxWidth; this run must fail.');
 }
 
 // ── Fixture (ghl-contacts returns ContactRow[]; names arrive lowercased) ─────
@@ -73,7 +91,7 @@ const MAX = 'max third';
 const ANN = 'ann oakley';
 const ALL = [KAY, LEE, MAX, ANN];
 const PLACEHOLDER = 'Search name, phone, email, property address…';
-const WIDTHS = [2560, 1440, 1280, 1024, 768];
+const WIDTHS = [2560, 1440, 1280, 1024, 768, 640];
 
 let log = [];
 const foreign = [];
@@ -121,7 +139,7 @@ async function main() {
     await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
     await page.evaluate(() => window.__iaosNavigate('/contacts'));
     await page.getByRole('link', { name: KAY }).waitFor({ timeout: 30000 });
-    check('harness renders the expected Contacts source', (await page.evaluate(() => window.__iaosContactsSource)) === (BEFORE_REV ? 'before' : 'current'));
+    check('harness renders the expected Contacts source', (await page.evaluate(() => window.__iaosContactsSource)) === (CONTROL ? 'before' : 'current'));
 
     const box = page.locator('main input[type="text"]');
     const styled = await page.evaluate(() => ({
@@ -144,10 +162,12 @@ async function main() {
         ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
         const b = el.getBoundingClientRect();
         const m = main.getBoundingClientRect();
+        const t = main.querySelector('h1').getBoundingClientRect();
         return {
           textWidth: Math.ceil(ctx.measureText(el.placeholder).width),
           room: el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
           boxInsideMain: b.left >= m.left + parseFloat(ms.paddingLeft) - 0.5 && b.right <= m.right - parseFloat(ms.paddingRight) + 0.5,
+          boxBelowTitle: b.top >= t.bottom,
           pageOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
           mainOverflow: main.scrollWidth > main.clientWidth,
         };
@@ -155,9 +175,14 @@ async function main() {
     };
     for (const width of WIDTHS) {
       const l = await layoutAt(width);
+      console.log(`INFO  layout at ${width}px ${JSON.stringify(l)}`);
       check(`at ${width}px the full prompt fits in the box, the box stays inside the page, and nothing overflows sideways`,
         l.textWidth <= l.room && l.boxInsideMain && !l.pageOverflow && !l.mainOverflow, l);
     }
+    const narrow = await layoutAt(480);
+    console.log(`INFO  layout at 480px ${JSON.stringify(narrow)}`);
+    check('at 480px the box stays inside the page, below the title, and nothing overflows sideways (prompt fit not asserted)',
+      narrow.boxInsideMain && narrow.boxBelowTitle && !narrow.pageOverflow && !narrow.mainOverflow, narrow);
     await page.setViewportSize({ width: 1440, height: 900 });
 
     const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -199,6 +224,11 @@ async function main() {
     await expectRows('a query matching nothing shows no rows', 'zzzz', []);
     await expectRows('clearing the search restores every row in Date Added order', '', ALL);
 
+    await page.setViewportSize({ width: 480, height: 900 });
+    await expectRows('at 480px an address search still finds the contact', 'greenway', [KAY]);
+    await search('', ALL);
+    await page.setViewportSize({ width: 1440, height: 900 });
+
     /* B15-20: plus exactly one Seller Leads pipeline read for the Stage column
        (unanswered here, so the column shows its unavailable state). */
     check('the page made one contacts read and one pipeline read, nothing else: no writes, no other request',
@@ -210,7 +240,7 @@ async function main() {
   }
 
   console.log('');
-  console.log(`checksRun=${checks} failures=${failures} floor=${FLOOR}${BEFORE_REV ? ` (negative control vs ${BEFORE_REV})` : ''}`);
+  console.log(`checksRun=${checks} failures=${failures} floor=${FLOOR}${CONTROL ? ` (negative control vs ${CONTROL})` : ''}`);
   if (checks !== FLOOR) { console.error(`FAILED: expected exactly ${FLOOR} checks, ran ${checks}.`); return exit(2); }
   if (failures > 0) { console.error('FAILED'); return exit(1); }
   console.log('OK');
