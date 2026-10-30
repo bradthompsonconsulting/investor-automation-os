@@ -26,6 +26,8 @@ import { computeBoard8Economics, computeExpectedSpread, type Board8Economics, ty
 import { computeOfferReadiness, CATEGORY_LABEL, type ReadinessResult, type MaterialCategory, type HumanAction } from "../lib/underwriting/offer-readiness";
 import { computeNextBestQuestion, computeQuestionQueue, computeOperatorChecklist, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { FullScriptDrawer } from "../components/FullScriptDrawer";
+import { SellerCallNotesPanel } from "../components/SellerCallNotesPanel";
+import { useRailClearance } from "../lib/rail-clearance";
 import { SellerCallVoiceControls } from "../components/SellerCallVoiceControls";
 import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
 import { buildOfferReadinessInputs } from "../lib/seller-call-readiness-inputs";
@@ -75,6 +77,7 @@ import { runConfirmAcceptWrites, confirmAcceptOffered, recoverLastCallAttempt } 
 import { createOfferSaveCoordinator, classifyOfferWriteError, OfferSaveBlocked, UNRESOLVED_ACCEPT_MESSAGE, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
 import { beginReservation, reconcileReservation, readReservationStatus, newRequestIds, RESERVATION_FAILED_MESSAGE } from "../lib/current-offer-barrier-client";
 import { AppWriteSignInRequired } from "../lib/app-write-session";
+import "./SellerCallWorkspace.css";
 
 /**
  * Seller Call Workspace -- B8-05 / INV-48, extended by B8-06 / INV-49,
@@ -801,6 +804,12 @@ export default function SellerCallWorkspace() {
 
   // B14-13 (live test, f32a17e): the sticky deal bar's slot for the compact Call button (SellerCallVoiceControls renders into it).
   const [compactCallSlot, setCompactCallSlot] = useState<HTMLDivElement | null>(null);
+
+  // B15-06: keyboard focus must never land under the stuck deal bar. The bar element (callback ref) gets the
+  // accepted PR #147 clearance (scroll padding, clearance rule with the scrolling fallback, keyboard reveal);
+  // the side column (Full Script, Notes) is pinned while it is sticky. See lib/rail-clearance.ts.
+  const [stickyBarEl, setStickyBarEl] = useState<HTMLDivElement | null>(null);
+  useRailClearance(stickyBarEl, ".seller-call-side");
 
   /* B14-12 (Bones, PR #115): THIS contact's callback status, the one value
      the Pass warning, the Confirm Pass button and handleRecordOutcome all
@@ -1794,6 +1803,10 @@ export default function SellerCallWorkspace() {
   }, [readiness, board8, screen]);
 
   const [fullScriptOpen, setFullScriptOpen] = useState(false);
+  // B15-06: the read-only Notes history panel, beside the workspace with the script. Starts closed.
+  const [notesOpen, setNotesOpen] = useState(false);
+  const notesToggleRef = useRef<HTMLButtonElement | null>(null);
+  const notesReady = loadCompleteFor === contactId && contact?.id === contactId && notes !== null;
 
   /* B8-10 / INV-53 — the most recent bounded call outcome for THIS
      opportunity, read back through seller-call-outcome.ts's strict
@@ -2452,7 +2465,19 @@ export default function SellerCallWorkspace() {
   return (
     <Shell
       contactId={contactId}
-      side={fullScriptOpen ? <FullScriptDrawer open={fullScriptOpen} onClose={() => setFullScriptOpen(false)} /> : null}
+      side={fullScriptOpen || notesOpen ? (
+        // B15-06: one side column for the script and the Notes history, so both can be open and neither covers
+        // the other or the workspace. Its layout is in FullScriptDrawer.css.
+        <div className="seller-call-side" data-testid="seller-call-side">
+          {fullScriptOpen ? <FullScriptDrawer open={fullScriptOpen} onClose={() => setFullScriptOpen(false)} /> : null}
+          {notesOpen ? (
+            <SellerCallNotesPanel
+              notes={notesReady ? notes : null}
+              onClose={() => { setNotesOpen(false); notesToggleRef.current?.focus(); }}
+            />
+          ) : null}
+        </div>
+      ) : null}
     >
       <RefreshReadError message={refreshReadError} />
       <div style={{ marginBottom: "6px" }}>
@@ -2593,6 +2618,8 @@ export default function SellerCallWorkspace() {
               this wraps them, it does not alter what either renders. */}
           <div
             data-testid="seller-call-sticky-bar"
+            className="seller-call-sticky-bar"
+            ref={setStickyBarEl}
             style={{
               position: "sticky", top: 0, zIndex: 10,
               background: "#0A0E1A", paddingTop: "6px", paddingBottom: "2px",
@@ -2615,6 +2642,12 @@ export default function SellerCallWorkspace() {
               </div>
               <div style={{ flex: "0 0 auto", paddingTop: "10px", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" }}>
                 <div ref={setCompactCallSlot} data-testid="seller-call-compact-call-slot" />
+                {/* B15-06: Notes history (read-only), reachable from the bar while talking. */}
+                <button type="button" ref={notesToggleRef} data-testid="seller-call-notes-toggle"
+                  aria-expanded={notesOpen} aria-controls={notesOpen ? "seller-call-notes-panel" : undefined}
+                  onClick={() => setNotesOpen((open) => !open)} style={COMPACT_BUTTON_STYLE}>
+                  {notesOpen ? "Hide notes" : "Notes"}
+                </button>
                 {/* Board 14-13 autosave: the one manual fallback for the whole page. Shown only while something is unsaved
                     or a save failed; it saves (or retries) every such section of the deal on screen. */}
                 {pageHasUnsaved || pageSaving ? (

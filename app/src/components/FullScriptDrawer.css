@@ -10,11 +10,29 @@
   min-width: 0;
 }
 
-.full-script-panel {
+/* B15-06: the side column holds the Full Script and the read-only Notes history. The column is what sits
+   beside the workspace and sticks; each panel scrolls inside it. With both open they share the column's height
+   equally, so neither covers the other. Its height leaves out <main>'s 24px bottom padding as well, so at the very
+   end of the page, where the sticky column is pushed up to its container's end, its top stays in view. */
+.seller-call-side {
   flex: 0 0 400px;
   position: sticky;
   top: 0;
-  max-height: calc(100vh - 96px);
+  max-height: calc(100vh - 120px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.seller-call-side:has(> .full-script-panel):has(> .seller-call-notes-panel) {
+  height: calc(100vh - 120px);
+}
+
+.full-script-panel,
+.seller-call-notes-panel {
+  flex: 0 1 auto;
+  min-height: 0;
   overflow-y: auto;
   box-sizing: border-box;
   background: #0B1220;
@@ -23,19 +41,33 @@
   padding: 20px 22px;
 }
 
-/* Too narrow to sit beside: the panel sits above the workspace in normal flow and scrolls away with the page
-   (its own content scrolls inside it). It is never sticky here, so it can never cover a workspace control. */
+.seller-call-side:has(> .full-script-panel):has(> .seller-call-notes-panel) > * {
+  flex: 1 1 0;
+}
+
+/* Too narrow to sit beside: the column sits above the workspace in normal flow and scrolls away with the page
+   (each panel's content scrolls inside it). It is never sticky here, so it can never cover a workspace control. */
 @media (max-width: 1200px) {
   .seller-call-shell--with-script {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .full-script-panel {
+  .seller-call-side {
     order: -1;
     position: static;
     flex: 0 0 auto;
     width: 100%;
+    max-height: none;
+  }
+
+  .seller-call-side:has(> .full-script-panel):has(> .seller-call-notes-panel) {
+    height: auto;
+  }
+
+  .full-script-panel,
+  .seller-call-notes-panel {
+    flex: 0 0 auto;
     max-height: 40vh;
   }
 }
