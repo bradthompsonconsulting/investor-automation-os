@@ -13,6 +13,7 @@ import Pipeline      from "./pages/Pipeline";
 import Mailers       from "./pages/Mailers";
 import Segmentation  from "./pages/Segmentation";
 import Import        from "./pages/Import";
+import EvaluationClose from "./pages/EvaluationClose";
 
 export default function App() {
   return (
@@ -38,6 +39,8 @@ export default function App() {
           <Route path="map"           element={<Navigate to="/dashboard" replace />} />
           <Route path="import"        element={<Import />} />
           <Route path="settings"      element={<Navigate to="/dashboard" replace />} />
+          {/* B15-04 close (design r3): reached by URL only, no sidebar link. Test-only on the server. */}
+          <Route path="evaluation-close" element={<EvaluationClose />} />
         </Route>
       </Routes>
     </BrowserRouter>

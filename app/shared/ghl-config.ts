@@ -325,6 +325,62 @@ export interface GhlConfig {
     contactId: string;
     opportunityId: string;
   };
+  /**
+   * B15-04 Rev 6 property answers (design r3, proposal r4; Brad's Test
+   * authorization 2026-10-17). The six deal-scoped Opportunity fields of the
+   * first slice: Seller Reason (LARGE_TEXT, created for P1) and the five
+   * property-address TEXT fields. Written ONLY by
+   * netlify/functions/property-answer.ts, never by ghl-write directly.
+   * Production carries `PROPERTY_ANSWER_FIELD_NOT_PROVISIONED` for every
+   * key, and `PRODUCTION_OPERATION_SCOPE` refuses both operations.
+   * Server-only: not projected to the browser.
+   */
+  propertyAnswerFields: {
+    sellerReason: string;
+    propertyStreet: string;
+    propertyUnit: string;
+    propertyCity: string;
+    propertyState: string;
+    propertyZip: string;
+  };
+  /**
+   * B15-04 controlled Test evaluation (Option B for Test only, proposal r2
+   * section 3 / r4). Property-answer saves run only when `enabled` is
+   * exactly `PROPERTY_ANSWER_EVALUATION_ENABLED` AND the contact and the
+   * deal are both listed here. Production carries
+   * `PROPERTY_ANSWER_EVALUATION_DISABLED` and empty lists. Changing either
+   * is a separate, reviewed config-only commit -- never toggled at runtime.
+   */
+  propertyAnswerEvaluation: {
+    enabled: string;
+    fixtureContactIds: readonly string[];
+    fixtureOpportunityIds: readonly string[];
+    /**
+     * The ENFORCED request budget (lib/evaluation-budget.ts): every GHL request
+     * the endpoint makes is reserved and receipted against `budgetId` up to
+     * `ceiling`; any unexpected result stops it for good. A new budget needs a
+     * reviewed config commit with a new id.
+     */
+    requestBudget: { budgetId: string; ceiling: number };
+    /** Candidate deals one discovery may read; more is unexpected work and stops the evaluation. */
+    maxCandidates: number;
+    /**
+     * B15-04 close (design r3 C3; Bones clearance 2026-10-20): the EXACT reviewed contact/deal pairs
+     * of the evaluation plan (Y1/E, Y2/F). `close` accepts only one of these tuples, and the
+     * dedicated close page offers recovery only for them. Each member is also in the fixture lists
+     * above. These are plan identities, not proof of current GHL ownership: recovery still needs its
+     * server-side association and operator binding. Production carries none.
+     */
+    recoveryPairs: readonly { readonly contactId: string; readonly opportunityId: string }[];
+  };
+  /**
+   * B15-04 SUPPLEMENTAL GHL READ budget (Brad 2026-10-19; netlify/functions/lib/supplemental-read-budget.ts).
+   * When `enabled` is exactly `SUPPLEMENTAL_READ_BUDGET_ENABLED` (Test only), every GHL request made by a
+   * non-write function reserves one unit of `ceiling` under `budgetId` before it is sent, and is refused unsent
+   * at the ceiling or whenever the accounting cannot be confirmed. Production carries
+   * `SUPPLEMENTAL_READ_BUDGET_DISABLED`. Enabling, the ceiling and a new id are reviewed config-only commits.
+   */
+  supplementalReadBudget: { enabled: string; budgetId: string; ceiling: number };
 }
 
 /** GATE 2 / B9-08 -- the literal placeholder value for an unconfigured `senderUserId`. Exported so ghl-proxy.ts can refuse a send while it is in effect, without hardcoding the sentinel a second time. */
@@ -360,6 +416,16 @@ export const CURRENT_OFFER_NOT_PROVISIONED = "CURRENT_OFFER_FIELD_NOT_YET_PROVIS
  * Test pin. No Production field is provisioned; that pin stays unprovisioned.
  */
 export const REPAIR_APPROVAL_TEST_FIELD_ID = "BqncWEZQ6Uim67qBC7xr" as const;
+/** B15-04 -- placeholder for a property-answer field not provisioned in an environment (see `propertyAnswerFields`). Fail-closed, like `CURRENT_OFFER_NOT_PROVISIONED`. */
+export const PROPERTY_ANSWER_FIELD_NOT_PROVISIONED = "PROPERTY_ANSWER_FIELD_NOT_YET_PROVISIONED" as const;
+/** B15-04 -- the ONE value that opens the controlled Test property-answer evaluation (see `propertyAnswerEvaluation`). */
+export const PROPERTY_ANSWER_EVALUATION_ENABLED = "PROPERTY_ANSWER_EVALUATION_ENABLED" as const;
+/** B15-04 -- the value PRODUCTION carries: the evaluation never applies there. */
+export const PROPERTY_ANSWER_EVALUATION_DISABLED = "PROPERTY_ANSWER_EVALUATION_DISABLED" as const;
+/** B15-04 -- the ONE value that meters non-write GHL reads against the supplemental read budget (see `supplementalReadBudget`). */
+export const SUPPLEMENTAL_READ_BUDGET_ENABLED = "SUPPLEMENTAL_READ_BUDGET_ENABLED" as const;
+/** B15-04 -- the value PRODUCTION carries (and TEST until a reviewed config commit): reads are not metered. */
+export const SUPPLEMENTAL_READ_BUDGET_DISABLED = "SUPPLEMENTAL_READ_BUDGET_DISABLED" as const;
 
 /** B14-12 — the ONE value that opens the Production call-log permission class. */
 export const PRODUCTION_CALL_LOG_ENABLED = "PRODUCTION_CALL_LOG_ENABLED" as const;
@@ -766,6 +832,24 @@ const PRODUCTION: GhlConfig = {
     contactId: "T3t5AZ3Z5lak0BmZawvP",
     opportunityId: "44hLQ4PD4a4HBVLPr4nl",
   },
+  // B15-04: never provisioned or enabled in Production by this work.
+  propertyAnswerFields: {
+    sellerReason:   PROPERTY_ANSWER_FIELD_NOT_PROVISIONED,
+    propertyStreet: PROPERTY_ANSWER_FIELD_NOT_PROVISIONED,
+    propertyUnit:   PROPERTY_ANSWER_FIELD_NOT_PROVISIONED,
+    propertyCity:   PROPERTY_ANSWER_FIELD_NOT_PROVISIONED,
+    propertyState:  PROPERTY_ANSWER_FIELD_NOT_PROVISIONED,
+    propertyZip:    PROPERTY_ANSWER_FIELD_NOT_PROVISIONED,
+  },
+  propertyAnswerEvaluation: {
+    enabled: PROPERTY_ANSWER_EVALUATION_DISABLED,
+    fixtureContactIds: [],
+    fixtureOpportunityIds: [],
+    requestBudget: { budgetId: "not-applicable-in-production", ceiling: 0 },
+    maxCandidates: 0,
+    recoveryPairs: [],
+  },
+  supplementalReadBudget: { enabled: SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: "not-applicable-in-production", ceiling: 0 },
 };
 
 // TEST identifiers are captured from the GHL Test Environment, never hand-typed.
@@ -1144,6 +1228,54 @@ const TEST: GhlConfig = {
     contactId: PRODUCTION_PROOF_SCOPE_NOT_APPLICABLE_IN_TEST,
     opportunityId: PRODUCTION_PROOF_SCOPE_NOT_APPLICABLE_IN_TEST,
   },
+  // B15-04: Seller Reason was created for P1 (request 0 receipt, 2026-10-17;
+  // LARGE_TEXT, Opportunity Details sGP3pbDQFN7fXS62MAgA). The five address
+  // fields were created live in Test 2026-10-18T02:03Z by
+  // scripts/b15-04-create-property-address-fields.cjs --apply (12 requests,
+  // each read back: name, fieldKey opportunity.property_*, TEXT, model
+  // opportunity, parentId sGP3pbDQFN7fXS62MAgA; independent list join).
+  propertyAnswerFields: {
+    sellerReason:   "zqGxQc7nAspWmYglR2Qk",
+    propertyStreet: "vMejpjFmgI9ZWvfloaPW",
+    propertyUnit:   "Ok4EFrJqtDqIn90FFiT9",
+    propertyCity:   "lrHSGsOIBtH4f1s9YbVj",
+    propertyState:  "WOaJHfbMz20YTPhD2lI5",
+    propertyZip:    "qztxh0XDmiZrDBMauoJq",
+  },
+  // B15-04: the synthetic evaluation fixtures, created in Test 2026-10-18T02:07Z
+  // by scripts/b15-04-create-evaluation-fixtures.cjs (journal
+  // b15-04-fixtures-apply.jsonl). Y1 "IAOS PROBE Answers Y1" + Deal E;
+  // Y2 "IAOS PROBE Answers Y2" + Deal F. Deal G (a second Y2 deal) was
+  // refused by GHL: "Can not create duplicate opportunity for the contact."
+  // Every other contact or deal is refused before any Blob or GHL access.
+  // DEACTIVATED before Test deployment (separate reviewed commit; Jess 2026-10-29): every property-answer action,
+  // close included, is refused before any Blob or GHL access and the close page projects disabled. The fixtures,
+  // budget and recovery pairs below are kept unchanged; the b15-04-eval-1 record is never read, reset or reused.
+  // Re-enabling is its own reviewed config-only commit.
+  propertyAnswerEvaluation: {
+    enabled: PROPERTY_ANSWER_EVALUATION_DISABLED,
+    fixtureContactIds: ["pYE98meKVyRrbzEt6MMR", "LR98QNOE0oksHIPF4JIf"],
+    fixtureOpportunityIds: ["a75hWpPILA7Y7Ginp4n8", "HCTa65siD41bA9XGpQWM"],
+    // The controlled plan E1-E4 on Deal E with one candidate: 3 + 3 + (11+3+3) + (11+3+3) = 40.
+    requestBudget: { budgetId: "b15-04-eval-1", ceiling: 40 },
+    maxCandidates: 1,
+    // Close/recovery pairs (Bones clearance 2026-10-20, confirmed against the reviewed evaluation sequence):
+    // Y1 + Deal E, Y2 + Deal F. Exact tuples; a cross pair is refused.
+    recoveryPairs: [
+      { contactId: "pYE98meKVyRrbzEt6MMR", opportunityId: "a75hWpPILA7Y7Ginp4n8" },
+      { contactId: "LR98QNOE0oksHIPF4JIf", opportunityId: "HCTa65siD41bA9XGpQWM" },
+    ],
+  },
+  // B15-04 evaluation config (Brad 2026-10-19; Bones r3 recommendation): 100 supplemental covered GHL dispatches,
+  // option R -- the three automatic Contacts retries are budgeted inside the 100, not added to it. ONE limited
+  // E1-E5 attempt by a single operator; Spock's walkthrough and all other Test use stay outside the window.
+  // Exhaustion is a STOP: nothing resets, refills or enlarges it, and continuing needs a new reviewed commit, never
+  // a reset or a new id. Deactivation is its own reviewed config commit. property-answer's separate 40 is unchanged.
+  // Committing this activates nothing: it applies only once a reviewed build is deployed to Test.
+  // DEACTIVATED (separate reviewed commit): reads are no longer metered. The b15-04-eval-reads-1 record is left
+  // as it is, never reset or reused; the placeholder id below is not an evaluation budget. Deactivation does not
+  // prove quiescence: work already in flight may still finish.
+  supplementalReadBudget: { enabled: SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: "b15-04-eval-reads-closed", ceiling: 0 },
 };
 
 export function getConfig(selector: string | undefined): GhlConfig {
@@ -1201,6 +1333,11 @@ export function getConfig(selector: string | undefined): GhlConfig {
     ...Object.entries(config.productionProofScope).map(
       ([k, v]): [string, string] => [`productionProofScope.${k}`, v],
     ),
+    ...Object.entries(config.propertyAnswerFields).map(
+      ([k, v]): [string, string] => [`propertyAnswerFields.${k}`, v],
+    ),
+    ["propertyAnswerEvaluation.enabled", config.propertyAnswerEvaluation.enabled],
+    ["supplementalReadBudget.enabled", config.supplementalReadBudget.enabled],
   ];
 
   const missing = firstIncompleteKey(entries);
@@ -1370,14 +1507,61 @@ export interface RuntimeConfig {
   >;
   pipelines: Pick<GhlConfig["pipelines"], "sellerLeads">;
   documentsContracts: Pick<GhlConfig["documentsContracts"], "populationVerification" | "templateId" | "expectedTemplateName">;
+  /**
+   * B15-04 close (design r3 C3): ONLY whether the dedicated close page applies here and the exact
+   * reviewed recovery pairs. Nothing else from `propertyAnswerEvaluation` (no budget id, ceiling or
+   * candidate cap) reaches the browser. `enabled` is true only on a Test deployment whose evaluation
+   * sentinel is exactly ENABLED; otherwise it is false with no pairs. The server decides every close
+   * and recovery on its own config; this projection only tells the page what to offer.
+   */
+  propertyAnswerRecovery: RecoveryProjection;
 }
 
-/** Server side: project a full config down to what the browser consumes. */
-export function projectRuntimeConfig(config: GhlConfig): RuntimeConfig {
+export type RecoveryPair = { contactId: string; opportunityId: string };
+export type RecoveryProjection = { enabled: boolean; pairs: RecoveryPair[] };
+const RECOVERY_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The close/recovery projection for one deployment. `environment` is the server's IAOS_ENV; anything but "test" projects disabled. */
+export function projectRecovery(config: GhlConfig, environment: string | undefined): RecoveryProjection {
+  const ev = config.propertyAnswerEvaluation;
+  if (environment !== "test" || ev.enabled !== PROPERTY_ANSWER_EVALUATION_ENABLED) return { enabled: false, pairs: [] };
+  return { enabled: true, pairs: ev.recoveryPairs.map((p) => ({ contactId: p.contactId, opportunityId: p.opportunityId })) };
+}
+
+/**
+ * The deliberate positive-allowlist check for the one non-string runtime group: an exact
+ * { enabled, pairs } shape, a real boolean (never a truthy sentinel), each pair exactly
+ * { contactId, opportunityId } of valid identifiers, no duplicate contact, deal or pair, at most
+ * two pairs, and pairs only when enabled. Anything else is refused, so App never boots on it.
+ */
+function invalidRecovery(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "propertyAnswerRecovery";
+  const v = value as Record<string, unknown>;
+  if (Object.keys(v).sort().join(",") !== "enabled,pairs") return "propertyAnswerRecovery";
+  if (typeof v.enabled !== "boolean") return "propertyAnswerRecovery.enabled";
+  if (!Array.isArray(v.pairs) || v.pairs.length > 2 || (!v.enabled && v.pairs.length !== 0) || (v.enabled && v.pairs.length === 0)) return "propertyAnswerRecovery.pairs";
+  const contacts = new Set<string>(), deals = new Set<string>();
+  for (const p of v.pairs as unknown[]) {
+    if (!p || typeof p !== "object" || Array.isArray(p)) return "propertyAnswerRecovery.pairs";
+    const q = p as Record<string, unknown>;
+    if (Object.keys(q).sort().join(",") !== "contactId,opportunityId") return "propertyAnswerRecovery.pairs";
+    if (typeof q.contactId !== "string" || !RECOVERY_ID.test(q.contactId) || typeof q.opportunityId !== "string" || !RECOVERY_ID.test(q.opportunityId)) return "propertyAnswerRecovery.pairs";
+    if (contacts.has(q.contactId) || deals.has(q.opportunityId)) return "propertyAnswerRecovery.pairs";
+    contacts.add(q.contactId); deals.add(q.opportunityId);
+  }
+  return null;
+}
+
+/**
+ * Server side: project a full config down to what the browser consumes.
+ * `environment` (the server's IAOS_ENV) is used ONLY for `propertyAnswerRecovery`; omitted, it projects disabled.
+ */
+export function projectRuntimeConfig(config: GhlConfig, environment?: string): RuntimeConfig {
   const out: Record<string, unknown> = {
     locationId: config.locationId,
     contractDraftRequest: config.contractDraftRequest,
     contractSellerCountField: config.contractSellerCountField,
+    propertyAnswerRecovery: projectRecovery(config, environment),
   };
   for (const [group, keys] of Object.entries(RUNTIME_GROUPS)) {
     const source = config[group as keyof GhlConfig] as Record<string, string>;
@@ -1415,7 +1599,7 @@ let RUNTIME: RuntimeConfig | null = null;
  * incomplete, which is what keeps main.tsx from importing App.
  */
 export function setRuntimeConfig(payload: unknown): RuntimeConfig {
-  const missing = firstIncompleteKey(runtimeEntries(payload));
+  const missing = firstIncompleteKey(runtimeEntries(payload)) ?? invalidRecovery((payload as Record<string, unknown> | null)?.propertyAnswerRecovery);
   if (missing !== null) {
     throw new Error(
       `[ghl-config] runtime configuration is incomplete: ${missing} is ` +

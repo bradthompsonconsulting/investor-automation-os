@@ -54,6 +54,9 @@ const readAuth = require('../netlify/functions/lib/app-read-auth.ts');
 const writeAuth = require('../netlify/functions/lib/app-write-auth.ts');
 const operatorAuth = require('../netlify/functions/lib/operator-auth.ts');
 const { getConfig, projectRuntimeConfig, setRuntimeConfig } = require('../shared/ghl-config.ts');
+// B15-04: committed Test now carries the evaluation read budget (ENABLED, 100). This suite's subject is not the
+// budget (test-supplemental-read-budget.cjs covers it), so its Test config pins the counter OFF explicitly.
+{ const cfg = require('../shared/ghl-config.ts'); cfg.getConfig('test').supplementalReadBudget = { enabled: cfg.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'offline-disabled', ceiling: 0 }; }
 
 let passed = 0, failed = 0;
 async function check(name, fn) {

@@ -2,6 +2,7 @@
  * Documents reads remain Test-only. IAOS_ENV and GHL_PRIVATE_API_KEY are required. */
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
@@ -145,7 +146,9 @@ export const handler = async (event: any) => {
   // allowlisted path keeps the existing 2021-07-28 contract unchanged.
   const versionHeader = PROPOSALS_PATH.test(pathname) ? "v3" : "2021-07-28";
 
-  const res = await fetch(url, {
+  let res: Response;
+  try {
+  res = await ghlReadFetch(event, "ghl-proxy")(url, {
     method,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -154,6 +157,11 @@ export const handler = async (event: any) => {
     },
 
   });
+  } catch (err) {
+    const refusedRead = supplementalReadRefusal(err, RESPONSE_HEADERS);
+    if (refusedRead) return refusedRead;
+    throw err;
+  }
 
   const body = await res.text();
   return {

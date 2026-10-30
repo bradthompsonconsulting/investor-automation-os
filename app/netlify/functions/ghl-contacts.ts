@@ -9,6 +9,7 @@
 import { parseContact } from "./lib/contact-parse";
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
@@ -24,7 +25,7 @@ function headers(token: string) {
 
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-async function fetchAllContacts(token: string): Promise<any[]> {
+async function fetchAllContacts(token: string, ghlFetch: typeof fetch): Promise<any[]> {
   const all: any[] = [];
   let startAfterId: string | undefined;
   let startAfter: number | undefined;
@@ -34,7 +35,7 @@ async function fetchAllContacts(token: string): Promise<any[]> {
     if (startAfterId) params.set("startAfterId", startAfterId);
     if (startAfter)   params.set("startAfter",   String(startAfter));
 
-    const res  = await fetch(`${GHL_BASE}/contacts?${params}`, { headers: headers(token) });
+    const res  = await ghlFetch(`${GHL_BASE}/contacts?${params}`, { headers: headers(token) });
     const body = await res.json();
 
     if (!res.ok) throw new Error(`GET /contacts → ${res.status}: ${JSON.stringify(body)}`);
@@ -67,7 +68,7 @@ export const handler = async (event: any) => {
   }
 
   try {
-    const raw = await fetchAllContacts(token);
+    const raw = await fetchAllContacts(token, ghlReadFetch(event, "ghl-contacts"));
 
     const contacts = raw.map(parseContact);
 
@@ -77,6 +78,8 @@ export const handler = async (event: any) => {
       body: JSON.stringify(contacts),
     };
   } catch (err: any) {
+    const refusedRead = supplementalReadRefusal(err, RESPONSE_HEADERS);
+    if (refusedRead) return refusedRead;
     console.error("[ghl-contacts]", err);
     return {
       statusCode: 500,

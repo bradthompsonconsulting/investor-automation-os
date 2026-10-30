@@ -498,7 +498,8 @@ export const READER_TEXT = Object.freeze({
 
 type FieldIds = { repairEstimate: string; repairApprovalId: string };
 /** timeoutMs caps a target WRITE (note POST, fields PUT); readTimeoutMs caps a target GET. */
-type TransportConfig = { mode: "ghl" | "fake"; origin: string; token: string; fetchImpl: typeof fetch; fieldIds: FieldIds; timeoutMs: number; readTimeoutMs: number };
+/** readFetch (B15-04 step-044 ruling): when set, used for target GETs ONLY (a reader's metered transport); every POST/PUT keeps fetchImpl. */
+type TransportConfig = { mode: "ghl" | "fake"; origin: string; token: string; fetchImpl: typeof fetch; readFetch: typeof fetch | null; fieldIds: FieldIds; timeoutMs: number; readTimeoutMs: number };
 function transportTimeouts(options: { timeoutMs?: unknown; readTimeoutMs?: unknown }, label: string): { timeoutMs: number; readTimeoutMs: number } {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const readTimeoutMs = options.readTimeoutMs ?? timeoutMs;
@@ -523,29 +524,31 @@ function validFieldIds(v: unknown): FieldIds | null {
  * come from server configuration; repair_approval_id does not exist yet (P5,
  * Brad), so production use is impossible until it is configured.
  */
-export function createProductionTargetTransport(options: { fieldIds: FieldIds; timeoutMs?: number; readTimeoutMs?: number }): TargetTransport {
-  if (!isPlainObject(options) || !("fieldIds" in options) || Object.keys(options).some((k) => !["fieldIds", "timeoutMs", "readTimeoutMs"].includes(k))) throw new Error("target transport: options must be { fieldIds, timeoutMs?, readTimeoutMs? }");
+export function createProductionTargetTransport(options: { fieldIds: FieldIds; timeoutMs?: number; readTimeoutMs?: number; readFetch?: typeof fetch }): TargetTransport {
+  if (!isPlainObject(options) || !("fieldIds" in options) || Object.keys(options).some((k) => !["fieldIds", "timeoutMs", "readTimeoutMs", "readFetch"].includes(k))) throw new Error("target transport: options must be { fieldIds, timeoutMs?, readTimeoutMs? }");
   const fieldIds = validFieldIds(options.fieldIds);
   if (!fieldIds) throw new Error("target transport: both binding field ids are required (repair_approval_id is not configured)");
   const caps = transportTimeouts(options, "target transport");
+  if ("readFetch" in options && typeof options.readFetch !== "function") throw new Error("target transport: readFetch must be a function");
   const token = process.env.GHL_PRIVATE_API_KEY;
   if (!nonEmpty(token)) throw new Error("target transport: server GHL credential unavailable");
   const t = Object.freeze({ __targetTransport: true as const });
-  transports.set(t, { mode: "ghl", origin: GHL_ORIGIN, token, fetchImpl: globalThis.fetch, fieldIds, ...caps });
+  transports.set(t, { mode: "ghl", origin: GHL_ORIGIN, token, fetchImpl: globalThis.fetch, readFetch: options.readFetch ?? null, fieldIds, ...caps });
   return t;
 }
 
 /** Offline tests only: loopback origin (http://127.0.0.1:port) and a synthetic token. */
-export function createFakeTargetTransport(options: { fetch: typeof fetch; origin: string; fieldIds: FieldIds; timeoutMs?: number; readTimeoutMs?: number }): TargetTransport {
+export function createFakeTargetTransport(options: { fetch: typeof fetch; origin: string; fieldIds: FieldIds; timeoutMs?: number; readTimeoutMs?: number; readFetch?: typeof fetch }): TargetTransport {
   if (!isPlainObject(options)) throw new Error("fake transport: options required");
-  if (Object.keys(options).some((k) => !["fetch", "origin", "fieldIds", "timeoutMs", "readTimeoutMs"].includes(k))) throw new Error("fake transport: unsupported option");
+  if (Object.keys(options).some((k) => !["fetch", "origin", "fieldIds", "timeoutMs", "readTimeoutMs", "readFetch"].includes(k))) throw new Error("fake transport: unsupported option");
+  if ("readFetch" in options && typeof options.readFetch !== "function") throw new Error("fake transport: readFetch must be a function");
   if (typeof options.origin !== "string" || !/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(options.origin)) throw new Error("fake transport: loopback origin only");
   if (typeof options.fetch !== "function") throw new Error("fake transport: fetch required");
   const fieldIds = validFieldIds(options.fieldIds);
   if (!fieldIds) throw new Error("fake transport: field ids invalid");
   const caps = transportTimeouts(options, "fake transport");
   const t = Object.freeze({ __targetTransport: true as const });
-  transports.set(t, { mode: "fake", origin: options.origin, token: "synthetic-fake-transport", fetchImpl: options.fetch, fieldIds, ...caps });
+  transports.set(t, { mode: "fake", origin: options.origin, token: "synthetic-fake-transport", fetchImpl: options.fetch, readFetch: options.readFetch ?? null, fieldIds, ...caps });
   return t;
 }
 
@@ -573,7 +576,8 @@ async function ghlCall(t: TransportConfig, method: "GET" | "POST" | "PUT", path:
   try {
     const headers: Record<string, string> = { Authorization: `Bearer ${t.token}`, Version: GHL_VERSION, Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    const res = await t.fetchImpl(t.origin + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: "manual", signal: ac.signal });
+    const send = method === "GET" && t.readFetch ? t.readFetch : t.fetchImpl;   // B15-04 step-044: a reader's GETs only
+    const res = await send(t.origin + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: "manual", signal: ac.signal });
     status = res.type === "opaqueredirect" ? 0 : res.status;
     let json: unknown = null;
     try { json = JSON.parse(await res.text()); } catch { json = null; }

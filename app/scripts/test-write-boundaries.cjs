@@ -80,6 +80,9 @@ const auth = require('../netlify/functions/lib/app-write-auth.ts');
 const contracts = require('../netlify/functions/lib/write-contracts.ts');
 const { getConfig } = require('../shared/ghl-config.ts');
 const config = getConfig('test');
+// B15-04: committed Test now carries the evaluation read budget (ENABLED, 100). This suite's subject is not the
+// budget (test-supplemental-read-budget.cjs covers it), so its Test config pins the counter OFF explicitly.
+{ const cfg = require('../shared/ghl-config.ts'); config.supplementalReadBudget = { enabled: cfg.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'offline-disabled', ceiling: 0 }; }
 const boundaryLib = {...require('../netlify/functions/lib/ghl-write-boundary.ts'),...require('../netlify/functions/lib/write-receipts.ts')};
 const contact = { id: 'fixture-contact', locationId: config.locationId, customFields: [], tags: [], phone: '+15555550101' };
 const opportunity = { id: 'fixture-opportunity', contactId: contact.id, locationId: config.locationId, customFields: [] };

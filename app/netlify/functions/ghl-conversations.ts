@@ -12,6 +12,7 @@
 
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
@@ -27,7 +28,7 @@ function headers(token: string) {
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-async function fetchAllConversations(token: string): Promise<any[]> {
+async function fetchAllConversations(token: string, ghlFetch: typeof fetch): Promise<any[]> {
   const all: any[] = [];
   let startAfterDate: number | undefined;
   let startAfterId: string | undefined;
@@ -37,7 +38,7 @@ async function fetchAllConversations(token: string): Promise<any[]> {
     if (startAfterDate) params.set("startAfterDate", String(startAfterDate));
     if (startAfterId)   params.set("startAfterId",   startAfterId);
 
-    const res  = await fetch(`${GHL_BASE}/conversations/search?${params}`, { headers: headers(token) });
+    const res  = await ghlFetch(`${GHL_BASE}/conversations/search?${params}`, { headers: headers(token) });
     const body = await res.json();
     if (!res.ok) throw new Error(`GET /conversations/search → ${res.status}: ${JSON.stringify(body)}`);
 
@@ -94,7 +95,7 @@ export const handler = async (event: any) => {
   }
 
   try {
-    const all = await fetchAllConversations(token);
+    const all = await fetchAllConversations(token, ghlReadFetch(event, "ghl-conversations"));
 
     // ?scope=all — full thread list (every conversation, newest first), the
     // Conversations inbox source. Opt-in only; the DEFAULT (no param) stays the
@@ -145,6 +146,8 @@ export const handler = async (event: any) => {
       body: JSON.stringify(rows),
     };
   } catch (err: any) {
+    const refusedRead = supplementalReadRefusal(err, RESPONSE_HEADERS);
+    if (refusedRead) return refusedRead;
     console.error("[ghl-conversations]", err);
     return {
       statusCode: 500,

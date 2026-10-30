@@ -40,7 +40,9 @@ import { repairApprovalActiveFor } from "../../shared/repair-approval-config";
  * IAOS_ENV; the browser never supplies or infers an environment.
  */
 export function runtimePayload(env: string | undefined, active: (env: unknown) => boolean = repairApprovalActiveFor) {
-  return { ...projectRuntimeConfig(getConfig(env)), repairApproval: { active: active(env) } };
+  // B15-04: the same env also selects the close/recovery projection (only "test" can project it enabled). B1's
+  // repairApproval is added LAST and stays decided solely by repairApprovalActiveFor(env); the two are independent.
+  return { ...projectRuntimeConfig(getConfig(env), env), repairApproval: { active: active(env) } };
 }
 
 // Module scope, deliberately — see the header.

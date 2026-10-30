@@ -164,7 +164,7 @@ interface MinimalContact {
   companyName: string | null;
 }
 
-async function fetchAllContactsMinimal(token: string): Promise<MinimalContact[]> {
+async function fetchAllContactsMinimal(token: string, ghlFetch: typeof fetch): Promise<MinimalContact[]> {
   const all: any[] = [];
   let startAfterId: string | undefined;
   let startAfter: number | undefined;
@@ -174,7 +174,7 @@ async function fetchAllContactsMinimal(token: string): Promise<MinimalContact[]>
     if (startAfterId) params.set("startAfterId", startAfterId);
     if (startAfter)   params.set("startAfter",   String(startAfter));
 
-    const res  = await fetch(`${GHL_BASE}/contacts?${params}`, { headers: headers(token) });
+    const res  = await ghlFetch(`${GHL_BASE}/contacts?${params}`, { headers: headers(token) });
     const body = await res.json();
     if (!res.ok) throw new Error(`GET /contacts → ${res.status}: ${JSON.stringify(body)}`);
 
@@ -208,18 +208,19 @@ function formatAddress(c: MinimalContact): string {
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
 
-async function fetchContactTasks(token: string, contactId: string): Promise<any[]> {
-  const res  = await fetch(`${GHL_BASE}/contacts/${contactId}/tasks`, { headers: headers(token) });
+async function fetchContactTasks(token: string, contactId: string, ghlFetch: typeof fetch): Promise<any[]> {
+  const res  = await ghlFetch(`${GHL_BASE}/contacts/${contactId}/tasks`, { headers: headers(token) });
   const body = await res.json();
   if (!res.ok) throw new Error(`GET /contacts/${contactId}/tasks → ${res.status}: ${JSON.stringify(body)}`);
   return body.tasks ?? [];
 }
 
-export async function fetchAllMailerTaskRows(token: string): Promise<MailerTaskRow[]> {
-  const contacts = await fetchAllContactsMinimal(token);
+// B15-04: `ghlFetch` is the caller's ghlReadFetch (supplemental-read-budget.ts); omitted, the platform fetch, unchanged.
+export async function fetchAllMailerTaskRows(token: string, ghlFetch: typeof fetch = (i: any, n?: any) => fetch(i, n)): Promise<MailerTaskRow[]> {
+  const contacts = await fetchAllContactsMinimal(token, ghlFetch);
 
   const perContact = await mapLimit(contacts, 5, async (c) => {
-    const tasks = await fetchContactTasks(token, c.id);
+    const tasks = await fetchContactTasks(token, c.id, ghlFetch);
     const rows: MailerTaskRow[] = [];
 
     for (const t of tasks) {
@@ -279,8 +280,8 @@ function groupBy(rows: MailerTaskRow[]): MailerGroup[] {
   });
 }
 
-export async function buildMailerDigest(token: string, now: Date = new Date()): Promise<MailerDigest> {
-  const allRows = await fetchAllMailerTaskRows(token);
+export async function buildMailerDigest(token: string, now: Date = new Date(), ghlFetch: typeof fetch = (i: any, n?: any) => fetch(i, n)): Promise<MailerDigest> {
+  const allRows = await fetchAllMailerTaskRows(token, ghlFetch);
   const { weekStartCT, weekEndCT } = computeWeekWindow(now);
 
   const incomplete = allRows.filter((r) => !r.completed);

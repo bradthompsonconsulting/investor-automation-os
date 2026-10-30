@@ -8,6 +8,7 @@
 
 import { buildMailerDigest } from "./lib/mailer-shared";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 // Same-origin only: no CORS grant. Reads are authorized by the SameSite=Strict
 // read-session cookie, and personal data is never cached.
@@ -28,13 +29,15 @@ export const handler = async (event: any) => {
   }
 
   try {
-    const digest = await buildMailerDigest(token);
+    const digest = await buildMailerDigest(token, new Date(), ghlReadFetch(event, "ghl-mailers"));
     return {
       statusCode: 200,
       headers: { ...RESPONSE_HEADERS, "Content-Type": "application/json" },
       body: JSON.stringify(digest),
     };
   } catch (err: any) {
+    const refusedRead = supplementalReadRefusal(err, RESPONSE_HEADERS);
+    if (refusedRead) return refusedRead;
     console.error("[ghl-mailers]", err);
     return {
       statusCode: 500,

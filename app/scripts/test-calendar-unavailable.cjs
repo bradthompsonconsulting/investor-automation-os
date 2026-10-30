@@ -47,6 +47,9 @@ function check(label, actual, expected) {
 process.env.GHL_PRIVATE_API_KEY = 'dummy-offline-token';
 process.env.IAOS_ENV = 'test';
 const mod = require(path.join(TMP, 'netlify/functions/ghl-calendar-events.js'));
+// B15-04: committed Test now carries the evaluation read budget (ENABLED, 100). This suite's subject is not the
+// budget (test-supplemental-read-budget.cjs covers it), so its Test config pins the counter OFF explicitly.
+{ const cfg = require(path.join(TMP, 'shared/ghl-config.js')); cfg.getConfig('test').supplementalReadBudget = { enabled: cfg.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'offline-disabled', ceiling: 0 }; }
 
 function mockGhl({ calendarsStatus = 200, eventsStatus = 200 }) {
   global.fetch = async (url) => {

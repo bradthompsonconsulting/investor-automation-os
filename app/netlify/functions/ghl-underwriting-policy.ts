@@ -29,6 +29,7 @@
 
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 // PB-D51 — resolved once at module scope from the shared config.
@@ -65,7 +66,7 @@ export const handler = async (event: any) => {
   }
 
   try {
-    const res = await fetch(
+    const res = await ghlReadFetch(event, "ghl-underwriting-policy")(
       `${GHL_BASE}/locations/${LOCATION_ID}/customValues`,
       { headers: headers(token) },
     );
@@ -89,6 +90,8 @@ export const handler = async (event: any) => {
       body: JSON.stringify({ values }),
     };
   } catch (err: any) {
+    const refusedRead = supplementalReadRefusal(err, RESPONSE_HEADERS);
+    if (refusedRead) return refusedRead;
     console.error("[ghl-underwriting-policy]", err);
     return {
       statusCode: 500,

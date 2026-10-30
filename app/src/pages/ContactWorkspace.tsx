@@ -26,6 +26,7 @@ import { opportunitiesForContact } from "../lib/underwriting/selectOpportunity";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { CallLogControl } from "../components/CallLogControl";
 import { DncControl } from "../components/DncControl";
+import { PropertyAnswersPanel } from "../components/PropertyAnswersPanel";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
 /* B7-02 — the PropStream browser handoff lives in ../lib/propstream, which holds
@@ -2426,6 +2427,10 @@ export default function ContactWorkspace() {
           /* Only this contact's detail: a late read for another contact never decides DNC here. */
           detail={detail && detail.id === id ? detail : null}
         />
+      )}
+      {/* B15-04 Rev 6 property answers (controlled Test evaluation only; the server hides it everywhere else). */}
+      {contact && opps && opps.length > 0 && (
+        <PropertyAnswersPanel contactId={id!} deals={opps.map((o) => ({ id: o.id, name: o.opportunityName }))} />
       )}
 
       {/* Two-column: left = work, right = context */}

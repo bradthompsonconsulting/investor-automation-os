@@ -196,6 +196,9 @@ const VALID_ARGS = {
   'opportunity.assignmentMode': { value: 'Manual' },
   'opportunity.underContractStage': { agreementAt: fixture.version.agreementAt, version: fixture.version },
   'opportunity.underwriting': { endBuyerMaxPrice: 250000, sellerMAO: 190000, assignmentMode: 'Manual' },
+  // B15-04 property answers: Test-only controlled evaluation, classified refused in Production.
+  'opportunity.sellerReason': { value: 'synthetic' },
+  'opportunity.propertyAddress': { street: '1 Synthetic Way', unit: '', city: 'Nowhere', state: 'TX', zip: '00000' },
 };
 const ALLOWED_OPERATIONS = ['contact.lastCallAttempt', 'note.create', 'opportunity.arv', 'opportunity.currentOffer', 'opportunity.repairs', 'opportunity.underContractStage'];
 const pinnedTarget = (op) => (op.startsWith('opportunity.') ? PIN_OPP : PIN_CONTACT);
@@ -404,6 +407,19 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   const writeEvent = (operation, targetId, args) => ({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ operation, targetId, args, requestId: `scope-${++seq}` }) });
   const uploadEvent = (phase, opportunityId) => ({ httpMethod: 'POST', headers: { origin: process.env.IAOS_APP_WRITE_ALLOWED_ORIGIN, authorization: `Bearer ${auth.issueAppSession('brad@example.invalid').token}` }, body: JSON.stringify({ phase, opportunityId, agreementAt: fixture.version.agreementAt, version: fixture.version, uploadId: 'u1', chunkIndex: 0, chunkCount: 1, totalByteCount: 4, originalFileName: 'x.pdf', expectedFullSha256: 'a'.repeat(64), chunkBase64: 'AAAA' }) });
   const snapshot = () => ({ ...blob, ghl: ghlCalls.length });
+  // B15-04: both property-answer operations carry PROPERTY_ANSWER_FIELD_NOT_PROVISIONED in Production,
+  // so planWrite refuses them even before the scope layer (400, still zero Blob/GHL). The scope table
+  // also classifies them "refused" (checked above).
+  const PLAN_REFUSED_IN_PRODUCTION = new Set(['opportunity.sellerReason', 'opportunity.propertyAddress']);
+  async function assertPlanRefusedClean(label, run) {
+    await check(label, async () => {
+      const before = snapshot();
+      const res = await run();
+      assert.equal(res.statusCode, 400, res.body);
+      assert.equal(JSON.parse(res.body).error, 'Invalid named write request');
+      assert.deepEqual(snapshot(), before, 'no Blob access and no GHL call on refusal');
+    });
+  }
   async function assertRefusedClean(label, run, code) {
     await check(label, async () => {
       const before = snapshot();
@@ -418,6 +434,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   for (const state of Object.keys(EXPECTED_PRE)) {
     applyLive(state);
     for (const op of Object.keys(VALID_ARGS)) {
+      if (PLAN_REFUSED_IN_PRODUCTION.has(op)) { await assertPlanRefusedClean(`handler ghl-write ${op}: Production ${state} refused at planning (sentinel), zero Blob/GHL`, () => writeHandler(writeEvent(op, pinnedTarget(op), VALID_ARGS[op]))); continue; }
       await assertRefusedClean(`handler ghl-write ${op}: Production ${state} refused, zero Blob/GHL`, () => writeHandler(writeEvent(op, pinnedTarget(op), VALID_ARGS[op])), EXPECTED_PRE[state]);
     }
     for (const phase of ['chunk', 'finalize']) {
@@ -427,6 +444,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
   applyLive('ready');
   for (const op of Object.keys(VALID_ARGS)) {
     const allowed = ALLOWED_OPERATIONS.includes(op);
+    if (PLAN_REFUSED_IN_PRODUCTION.has(op)) { await assertPlanRefusedClean(`handler ghl-write ${op}: ready, refused at planning (sentinel), zero Blob/GHL`, () => writeHandler(writeEvent(op, pinnedTarget(op), VALID_ARGS[op]))); continue; }
     if (!allowed) await assertRefusedClean(`handler ghl-write ${op}: ready but not permitted, zero Blob/GHL`, () => writeHandler(writeEvent(op, pinnedTarget(op), VALID_ARGS[op])), 'OPERATION_NOT_PERMITTED');
     else await assertRefusedClean(`handler ghl-write ${op}: ready, unpinned target refused, zero Blob/GHL`, () => writeHandler(writeEvent(op, otherTarget(op), VALID_ARGS[op])), 'TARGET_NOT_PINNED');
   }
@@ -1240,6 +1258,7 @@ const otherTarget = (op) => (op.startsWith('opportunity.') ? OTHER_OPP : OTHER_C
       assert.deepEqual(scopeLib.evaluateProductionGhlWriteScope(PRODUCTION, { operation: op, targetId: committedOther(op), args: committedArgs(op) }), { ok: false, code: allowed ? 'TARGET_NOT_PINNED' : 'OPERATION_NOT_PERMITTED' });
     });
     if (allowed) await assertRefusedClean(`handler committed config: ghl-write ${op} on another target refused, zero Blob/GHL`, () => writeHandler(writeEvent(op, committedOther(op), committedArgs(op))), 'TARGET_NOT_PINNED');
+    else if (PLAN_REFUSED_IN_PRODUCTION.has(op)) await assertPlanRefusedClean(`handler committed config: ghl-write ${op} on the REAL pinned fixture refused at planning (sentinel), zero Blob/GHL`, () => writeHandler(writeEvent(op, committedTarget(op), committedArgs(op))));
     else await assertRefusedClean(`handler committed config: ghl-write ${op} on the REAL pinned fixture refused, zero Blob/GHL`, () => writeHandler(writeEvent(op, committedTarget(op), committedArgs(op))), 'OPERATION_NOT_PERMITTED');
   }
   await check('committed config: every minimal-set note naming the REAL pinned opportunity is permitted on the REAL pinned contact', () => {

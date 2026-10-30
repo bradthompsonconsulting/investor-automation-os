@@ -321,8 +321,13 @@ jobs:
       - name: Mailers This Week is the current Saturday-Friday week (INV-110, B15-12)
         run: node app/scripts/test-mailer-week.cjs
 
-      # B15 bundle excluding B15-04 (accepted heads 5280263, 88e5f70, f0f4269, c0f33bc, 6e3bbde, 744be99,
-      # contact-isolation 3259aca + 23770f6). Offline. No B15-04 / supplemental-read-budget step: that code is not here.
+      # B15 bundle (accepted heads 5280263, 88e5f70, f0f4269, c0f33bc, 6e3bbde, 744be99, contact-isolation 3259aca + 23770f6)
+      # plus B15-04 (cec2dcd supplemental read budget). Offline. property-answer model/handler, production-write-scope and
+      # contract-production-readiness already run inside the INV-95 runner below and are not repeated here.
+      - name: Supplemental GHL read budget, disabled in both environments (committed Test = accepted deactivation) + shared-library GHL coverage and retired-voice controls (B15-04) — 57 isolated tests
+        run: node app/scripts/test-supplemental-read-budget.cjs
+      - name: Repair approval status as a supplemental-read consumer (B15-04 step-044) — reserve before dispatch, refuse unsent, spent units stay spent, no redirect, disabled path unchanged — 24 checks
+        run: node app/scripts/test-repair-status-read-meter.cjs
       - name: System note summaries (INV-126, B15-17)
         run: node app/scripts/test-system-note-summary.cjs
       - name: B15 display follow-ups, Disposition words + Notes header loading (Spock Addendum 2)
@@ -383,6 +388,33 @@ jobs:
       # (NB6-NB8: a live, unspent reservation for A's deal is refused on B, then writes A once; 23770f6).
       - name: Contact isolation and Production write scope, real pages (B14-12, B14-13) — 105 checks
         run: node app/scripts/test-contact-isolation.cjs
+
+      # B15-04 C1-C4 r4: draft recovery, stored operation authority, wording and fresh-load non-bypass (real handler, offline).
+      - name: Property answers recovery and authority, server (B15-04 C1-C4) - 21 cases
+        run: node app/scripts/test-property-answer-recovery.cjs
+
+      # B15-04 step 070 (Bones): main's receipt-recorder-shim in the property-answer harnesses; with the adapter removed the
+      # recovery suite must reproduce the original lock refusal (code locked, 8 scenarios).
+      - name: Property answers receipt-shim negative control (B15-04 step 070) - 5 checks
+        run: node app/scripts/test-property-answer-receipt-shim-control.cjs
+
+      # B15-04 close (design r3, Jess D0-D4, Bones clearance 2026-10-20): the server close action, exact recovery pairs
+      # and their runtime projection (real handler, offline).
+      - name: Property answers close, server (B15-04 close) - 17 cases
+        run: node app/scripts/test-property-answer-close.cjs
+
+      # B15-04 C1-C4 r4: the real panel against the real handler -- authority, identity/target generations, late replies; floor 30.
+      - name: Property answers authority and late replies, real page (B15-04 C1-C4) - 30 checks
+        run: node app/scripts/test-property-answers-authority.cjs
+
+      # B15-04 C1-C4 (Bones F2): all 37 original preservation behaviours, real page; v2 storage adapter only.
+      # The unchanged original reproducer is kept outside CI (its legacy-v1-key probes are retired by design).
+      - name: Property answers preservation, maintained v2 runner, real page (B15-04 C1-C4) - 37 checks
+        run: node app/scripts/test-property-answers-preservation-v2.cjs
+
+      # B15-04 close: the PRODUCTION build (real boot, Layout, /evaluation-close), every request intercepted; floor 44.
+      - name: Evaluation close route traffic and recovery, production build (B15-04 close) - 44 checks
+        run: node app/scripts/test-evaluation-close-route.cjs
 
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.

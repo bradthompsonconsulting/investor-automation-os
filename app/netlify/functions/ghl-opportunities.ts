@@ -8,6 +8,7 @@
 
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 // PB-D51 — location, pipeline and stage ids all resolve once at module scope
@@ -53,7 +54,7 @@ function headers(token: string) {
 
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-async function fetchAllOpportunities(token: string): Promise<any[]> {
+async function fetchAllOpportunities(token: string, ghlFetch: typeof fetch): Promise<any[]> {
   const all: any[] = [];
   let startAfterId: string | undefined;
   let startAfter: number | undefined;
@@ -63,7 +64,7 @@ async function fetchAllOpportunities(token: string): Promise<any[]> {
     if (startAfterId) params.set("startAfterId", startAfterId);
     if (startAfter)   params.set("startAfter",   String(startAfter));
 
-    const res  = await fetch(`${GHL_BASE}/opportunities/search?${params}`, { headers: headers(token) });
+    const res  = await ghlFetch(`${GHL_BASE}/opportunities/search?${params}`, { headers: headers(token) });
     const body = await res.json();
 
     if (!res.ok) throw new Error(`GET /opportunities/search → ${res.status}: ${JSON.stringify(body)}`);
@@ -96,7 +97,7 @@ export const handler = async (event: any) => {
   }
 
   try {
-    const raw = await fetchAllOpportunities(token);
+    const raw = await fetchAllOpportunities(token, ghlReadFetch(event, "ghl-opportunities"));
 
     const opportunities = raw.map((o: any) => ({
       id:              o.id,
@@ -106,6 +107,9 @@ export const handler = async (event: any) => {
       phone:           o.contact?.phone ?? "",
       email:           o.contact?.email ?? "",
       stageId:         o.pipelineStageId ?? "",
+      // B15-04 (design r3 §2 required read change): display only; eligibility is decided server-side from a fresh single read.
+      status:          typeof o.status === "string" ? o.status : "",
+      pipelineId:      typeof o.pipelineId === "string" ? o.pipelineId : "",
       customFields:    o.customFields ?? [],
     }));
 
@@ -115,6 +119,8 @@ export const handler = async (event: any) => {
       body: JSON.stringify({ pipelineId: PIPELINE_ID, stages: STAGES, opportunities }),
     };
   } catch (err: any) {
+    const refusedRead = supplementalReadRefusal(err, RESPONSE_HEADERS);
+    if (refusedRead) return refusedRead;
     console.error("[ghl-opportunities]", err);
     return {
       statusCode: 500,

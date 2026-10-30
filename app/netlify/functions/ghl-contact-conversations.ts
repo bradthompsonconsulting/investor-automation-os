@@ -23,6 +23,7 @@
 
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
@@ -62,13 +63,13 @@ export interface ContactConversationsResult {
   messages:          ConvMessageRow[];
 }
 
-async function messagesFor(token: string, conversationId: string): Promise<any[]> {
+async function messagesFor(token: string, conversationId: string, ghlFetch: typeof fetch): Promise<any[]> {
   const out: any[] = [];
   let lastMessageId: string | undefined;
   while (out.length < MESSAGE_CAP) {
     const params = new URLSearchParams({ limit: "100" });
     if (lastMessageId) params.set("lastMessageId", lastMessageId);
-    const res  = await fetch(`${GHL_BASE}/conversations/${conversationId}/messages?${params}`, { headers: headers(token) });
+    const res  = await ghlFetch(`${GHL_BASE}/conversations/${conversationId}/messages?${params}`, { headers: headers(token) });
     const body = await res.json();
     if (!res.ok) throw new Error(`GET /conversations/${conversationId}/messages → ${res.status}: ${JSON.stringify(body)}`);
     // GHL nests as { messages: { messages: [...], nextPage, lastMessageId } };
@@ -99,9 +100,10 @@ export const handler = async (event: any) => {
   if (!token) return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "GHL_PRIVATE_API_KEY not configured" }) };
 
   try {
+    const ghlFetch = ghlReadFetch(event, "ghl-contact-conversations");
     // 1) Conversation(s) for THIS contact — scoped by explicit contactId.
     const sParams = new URLSearchParams({ locationId: LOCATION_ID, contactId: id });
-    const sRes  = await fetch(`${GHL_BASE}/conversations/search?${sParams}`, { headers: headers(token) });
+    const sRes  = await ghlFetch(`${GHL_BASE}/conversations/search?${sParams}`, { headers: headers(token) });
     const sBody = await sRes.json();
     if (!sRes.ok) throw new Error(`GET /conversations/search?contactId → ${sRes.status}: ${JSON.stringify(sBody)}`);
 
@@ -125,7 +127,7 @@ export const handler = async (event: any) => {
     // 2) Messages per conversation, merged.
     const rows: ConvMessageRow[] = [];
     for (const c of conversations) {
-      const msgs = await messagesFor(token, c.id);
+      const msgs = await messagesFor(token, c.id, ghlFetch);
       for (const m of msgs) {
         rows.push({
           id:             m.id ?? "",
@@ -151,6 +153,8 @@ export const handler = async (event: any) => {
     };
     return { statusCode: 200, headers: { ...RESPONSE_HEADERS, "Content-Type": "application/json" }, body: JSON.stringify(result) };
   } catch (err: any) {
+    const refusedRead = supplementalReadRefusal(err, RESPONSE_HEADERS);
+    if (refusedRead) return refusedRead;
     console.error("[ghl-contact-conversations]", err);
     return { statusCode: 500, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: err.message ?? "Internal error" }) };
   }
