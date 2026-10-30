@@ -29,9 +29,11 @@
  * NEGATIVE CONTROL: `node scripts/test-contacts-address-search.cjs --before=<rev>`
  * renders <rev>'s Contacts page (via `git show`) and must FAIL (exit 1) for a
  * revision without address search -- e.g. --before=3de480e -- and for the
- * clipped-prompt layout at --before=354edac. `--mutate=no-maxwidth` renders
- * the current Contacts page with the box's `maxWidth: "100%"` removed and must
- * FAIL (exit 1) at 640 and 480, where a 360px box is wider than the column.
+ * clipped-prompt layout at --before=354edac. `--mutate=no-width-cap` renders
+ * the current Contacts page with both of the box's width caps removed -- its
+ * `maxWidth: "100%"` and its flex shrinking (`flexShrink: 0`); either cap
+ * alone keeps it in the column -- and must FAIL (exit 1) at 640 and 480,
+ * where a 360px box is wider than the column.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -69,11 +71,11 @@ if (BEFORE_REV) {
 }
 if (BEFORE_REV && MUTATE) { console.error('FAILED: --before and --mutate cannot be combined.'); process.exit(2); }
 if (MUTATE) {
-  if (MUTATE !== 'no-maxwidth') { console.error(`FAILED: unknown --mutate=${MUTATE}.`); process.exit(2); }
+  if (MUTATE !== 'no-width-cap') { console.error(`FAILED: unknown --mutate=${MUTATE}.`); process.exit(2); }
   const parts = fs.readFileSync(path.join(APP, 'src/pages/Contacts.tsx'), 'utf8').split('maxWidth: "100%", ');
-  if (parts.length !== 2) { console.error(`FAILED: --mutate=no-maxwidth matched ${parts.length - 1} times, expected exactly 1; nothing rendered.`); process.exit(2); }
-  fs.writeFileSync(BEFORE_FILE, parts.join('').replace(/from "\.\.\//g, 'from "../../../src/'));
-  console.log('NEGATIVE CONTROL: rendering the current Contacts page without the box\'s maxWidth; this run must fail.');
+  if (parts.length !== 2) { console.error(`FAILED: --mutate=no-width-cap matched ${parts.length - 1} times, expected exactly 1; nothing rendered.`); process.exit(2); }
+  fs.writeFileSync(BEFORE_FILE, parts.join('flexShrink: 0, ').replace(/from "\.\.\//g, 'from "../../../src/'));
+  console.log('NEGATIVE CONTROL: rendering the current Contacts page without the box\'s maxWidth or flex shrinking; this run must fail.');
 }
 
 // ── Fixture (ghl-contacts returns ContactRow[]; names arrive lowercased) ─────
