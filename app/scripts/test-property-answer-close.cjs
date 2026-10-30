@@ -62,6 +62,11 @@ const budgetLib = require('../netlify/functions/lib/evaluation-budget.ts');
 const handlerMod = require('../netlify/functions/property-answer.ts');
 const handler = handlerMod.handler;
 const config = cfgMod.getConfig('test');
+// Committed Test is DEACTIVATED; this offline suite enables ONLY its own in-memory copy (the handler's getConfig returns this object).
+assert.equal(config.propertyAnswerEvaluation.enabled, cfgMod.PROPERTY_ANSWER_EVALUATION_DISABLED, 'committed Test evaluation is DISABLED');
+assert.deepEqual(cfgMod.projectRuntimeConfig(config, 'test').propertyAnswerRecovery, { enabled: false, pairs: [] }, 'committed Test projects the close page disabled');
+config.propertyAnswerEvaluation.enabled = cfgMod.PROPERTY_ANSWER_EVALUATION_ENABLED;
+assert.equal(cfgMod.getConfig('test').propertyAnswerEvaluation.enabled, cfgMod.PROPERTY_ANSWER_EVALUATION_ENABLED, 'the handler sees the suite-enabled copy');
 const P = config.propertyAnswerFields;
 assert.deepEqual({ ...config.propertyAnswerEvaluation.requestBudget }, { budgetId: 'b15-04-eval-1', ceiling: 40 });
 const X1 = 'fxContactX1', X2 = 'fxContactX2', DA = 'fxDealA00001', DB = 'fxDealB00001';

@@ -1248,8 +1248,12 @@ const TEST: GhlConfig = {
   // Y2 "IAOS PROBE Answers Y2" + Deal F. Deal G (a second Y2 deal) was
   // refused by GHL: "Can not create duplicate opportunity for the contact."
   // Every other contact or deal is refused before any Blob or GHL access.
+  // DEACTIVATED before Test deployment (separate reviewed commit; Jess 2026-10-29): every property-answer action,
+  // close included, is refused before any Blob or GHL access and the close page projects disabled. The fixtures,
+  // budget and recovery pairs below are kept unchanged; the b15-04-eval-1 record is never read, reset or reused.
+  // Re-enabling is its own reviewed config-only commit.
   propertyAnswerEvaluation: {
-    enabled: PROPERTY_ANSWER_EVALUATION_ENABLED,
+    enabled: PROPERTY_ANSWER_EVALUATION_DISABLED,
     fixtureContactIds: ["pYE98meKVyRrbzEt6MMR", "LR98QNOE0oksHIPF4JIf"],
     fixtureOpportunityIds: ["a75hWpPILA7Y7Ginp4n8", "HCTa65siD41bA9XGpQWM"],
     // The controlled plan E1-E4 on Deal E with one candidate: 3 + 3 + (11+3+3) + (11+3+3) = 40.

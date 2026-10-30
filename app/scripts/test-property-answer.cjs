@@ -69,7 +69,11 @@ const DA = 'fxDealA00001', DB = 'fxDealB00001', DC = 'fxDealC00001', DD = 'fxDea
 // The committed Test pins are exactly the two synthetic fixtures; this suite then pins its own offline fixtures.
 assert.deepEqual([...config.propertyAnswerEvaluation.fixtureContactIds], ['pYE98meKVyRrbzEt6MMR', 'LR98QNOE0oksHIPF4JIf']);
 assert.deepEqual([...config.propertyAnswerEvaluation.fixtureOpportunityIds], ['a75hWpPILA7Y7Ginp4n8', 'HCTa65siD41bA9XGpQWM']);
-assert.equal(config.propertyAnswerEvaluation.enabled, cfgMod.PROPERTY_ANSWER_EVALUATION_ENABLED);
+// Committed Test is DEACTIVATED; this offline suite enables ONLY its own in-memory copy so every accepted case still
+// exercises the enabled path. getConfig('test') hands the handler this same object, which the second assert proves.
+assert.equal(config.propertyAnswerEvaluation.enabled, cfgMod.PROPERTY_ANSWER_EVALUATION_DISABLED, 'committed Test evaluation is DISABLED');
+config.propertyAnswerEvaluation.enabled = cfgMod.PROPERTY_ANSWER_EVALUATION_ENABLED;
+assert.equal(cfgMod.getConfig('test').propertyAnswerEvaluation.enabled, cfgMod.PROPERTY_ANSWER_EVALUATION_ENABLED, 'the handler sees the suite-enabled copy');
 assert.deepEqual({ ...config.propertyAnswerEvaluation.requestBudget }, { budgetId: 'b15-04-eval-1', ceiling: 40 }, 'committed evaluation budget');
 assert.equal(config.propertyAnswerEvaluation.maxCandidates, 1, 'committed candidate cap');
 // General cases are not about the budget: a large budget, reset before every call (keepBudget=false).
@@ -201,7 +205,8 @@ async function t(name, fn) {
   await t('gate: evaluation disabled (Production value) refuses every action with zero Blob and zero GHL', async () => {
     fresh(); const saved = config.propertyAnswerEvaluation.enabled; config.propertyAnswerEvaluation.enabled = cfgMod.PROPERTY_ANSWER_EVALUATION_DISABLED;
     try {
-      for (const action of ['context', 'check']) { const r = await post({ action, contactId: X1, opportunityId: DA }); assert.equal(r.status, 403); assert.equal(r.body.code, 'evaluation_disabled'); }
+      // close included: in Test it passes the Production-only close refusal and must stop at the evaluation gate.
+      for (const action of ['context', 'check', 'close']) { const r = await post({ action, contactId: X1, opportunityId: DA }); assert.equal(r.status, 403); assert.equal(r.body.code, 'evaluation_disabled'); }
       const r = await post({ action: 'save', contactId: X1, opportunityId: DA, field: 'seller_reason', operationId: crypto.randomUUID(), value: 'x', expectedAddressDigest: 'a'.repeat(64), expectedDealSetDigest: 'b'.repeat(64) });
       assert.equal(r.body.code, 'evaluation_disabled');
       assert.equal(blobOps, 0); assert.equal(ghlCount(), 0);
@@ -1040,6 +1045,9 @@ async function t(name, fn) {
     assert.ok(spy.origins.length > 0); assert.deepEqual([...new Set(spy.origins)], ['https://services.leadconnectorhq.com']);
   });
 
+  // Count floor: the accepted run on 1b7fedaa passed 75; a silently skipped case can no longer exit 0.
+  const FLOOR = 75;
+  if (count < FLOOR) { failures++; console.error(`FAIL floor: only ${count} cases passed (floor ${FLOOR})`); }
   finished = true;
   console.log(`property-answer: ${count} passed, ${failures} failed`);
   process.exitCode = failures ? 1 : 0;

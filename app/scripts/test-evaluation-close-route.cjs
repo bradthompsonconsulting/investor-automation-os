@@ -29,7 +29,15 @@ Module._resolveFilename = function (name, parent, ...rest) {
 };
 Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
 const cfg = require('../shared/ghl-config.ts');
-const RUNTIME = cfg.projectRuntimeConfig(cfg.getConfig('test'), 'test');
+// Committed Test is DEACTIVATED, so its projection is disabled; this suite projects from an in-memory enabled copy
+// so the accepted route/recovery checks still run against the two reviewed pairs. Fatal (not counted) if either fails.
+const TEST_CFG = cfg.getConfig('test');
+const COMMITTED_TEST_RECOVERY = cfg.projectRuntimeConfig(TEST_CFG, 'test').propertyAnswerRecovery;
+if (TEST_CFG.propertyAnswerEvaluation.enabled !== cfg.PROPERTY_ANSWER_EVALUATION_DISABLED || JSON.stringify(COMMITTED_TEST_RECOVERY) !== JSON.stringify({ enabled: false, pairs: [] })) {
+  console.error('FAIL  committed Test evaluation must be DISABLED and project the close page disabled', JSON.stringify(COMMITTED_TEST_RECOVERY)); process.exit(1);
+}
+TEST_CFG.propertyAnswerEvaluation.enabled = cfg.PROPERTY_ANSWER_EVALUATION_ENABLED;
+const RUNTIME = cfg.projectRuntimeConfig(TEST_CFG, 'test');
 const PAIRS = RUNTIME.propertyAnswerRecovery.pairs;
 const PROD_RUNTIME = cfg.projectRuntimeConfig(cfg.getConfig('production'), 'production');
 
