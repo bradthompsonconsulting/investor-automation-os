@@ -22,8 +22,8 @@ const PAGE = '/scripts/harness/deal-calculator/index.html';
 const mutateArg = process.argv.find((a) => a.startsWith('--mutate='));
 const MUTATE = mutateArg ? mutateArg.slice('--mutate='.length) : null;
 
-/** Taken from the finished file: 21 check() call sites. */
-const FLOOR = 21;
+/** Taken from the finished file: 26 check() call sites. */
+const FLOOR = 26;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -43,13 +43,16 @@ const ENV = 'SoTgVoaFGHtBdRFvXWQV';                       // Test location (harn
 const ARV_ID = 'QkWl09I9yXGz8OIcs5Xd', REP_ID = 'SU4n8ylrXnUm8xDi729R';
 const SCRATCH_KEY = `iaos-calculator-draft:v1:scratch|${ENV}|this-browser`;
 const fixture = {
-  contacts: { 'c-kay': { arv: '310000', rep: '20000' }, 'c-two': {}, 'c-none': {} },
+  contacts: { 'c-kay': { arv: '310000', rep: '20000' }, 'c-two': {}, 'c-none': {}, 'c-seed': { arv: '410000', rep: '30000' } },
   opportunities: [
     { id: 'o-kay-1', contactId: 'c-kay', contactName: 'Kay Fixture', opportunityName: 'Kay -- 2623 Greenway', phone: '', email: '', stageId: 's1', customFields: [] },
+    { id: 'o-seed-1', contactId: 'c-seed', contactName: 'Seed Fixture', opportunityName: 'Seed -- 7 Pine Ct', phone: '', email: '', stageId: 's1', customFields: [] },
     { id: 'o-two-1', contactId: 'c-two', contactName: 'Two Deals', opportunityName: 'Two -- Oak Ln', phone: '', email: '', stageId: 's1', customFields: [] },
     { id: 'o-two-2', contactId: 'c-two', contactName: 'Two Deals', opportunityName: 'Two -- Elm St', phone: '', email: '', stageId: 's1', customFields: [] },
   ],
   pipelineFails: false,
+  /** Milliseconds the contact read is held back (finding 3's delayed-link regression). */
+  contactDelayMs: 0,
 };
 const watchdog = setTimeout(() => { console.error('FAIL  the suite did not finish within 8 minutes -- stopped'); process.exit(1); }, 8 * 60_000);
 
@@ -94,6 +97,7 @@ async function main() {
       if (fn === 'ghl-opportunities') return fixture.pipelineFails ? json(route, 500, { error: 'fixture: pipeline down' }) : json(route, 200, { pipelineId: 'p1', stages: [], opportunities: fixture.opportunities });
       const m = fn === 'ghl-proxy' && /^\/contacts\/([^/]+)$/.exec(u.searchParams.get('path') || '');
       if (m && fixture.contacts[m[1]]) {
+        if (fixture.contactDelayMs) await new Promise((res) => setTimeout(res, fixture.contactDelayMs));
         const c = fixture.contacts[m[1]];
         const customFields = [];
         if (c.arv !== undefined) customFields.push({ id: ARV_ID, value: c.arv });
@@ -250,15 +254,48 @@ async function main() {
       none.status === 'This contact has no deal, so figures here are not kept.' && none.label === null && none.afterReload === ''
       && down.status === "This contact's deals could not be loaded, so figures here are not kept.", { none, down });
 
-    // ── Clear discards ──
+    // ── Clear discards; deliberately blank ARV / quick repairs stay blank (Bones Phase 1 finding 2) ──
     await go('contactId=c-kay');
     await T('deal-calc-clear').click(); await settle();
     await go('contactId=c-kay');
-    const cleared = { arv: await val('deal-calc-arv-input'), arvState: await txt('deal-calc-draft-arv'), test: await val('deal-calc-test-price-input'), note: await txt('deal-calc-draft-restored'), status: await status() };
-    check('Clear discards the deal\'s draft: after reload only the contact seeds show, as GHL values, and nothing is kept',
-      cleared.arv === '320000' && cleared.arvState === 'From the linked contact in GHL' && cleared.test === '' && cleared.status === 'Figures you change here are kept in this browser only. Not saved to GHL.', cleared);
+    const cleared = { arv: await val('deal-calc-arv-input'), arvState: await txt('deal-calc-draft-arv'), rep: await val('deal-calc-repairs-quick-input'), repState: await txt('deal-calc-draft-repairsQuick'),
+      test: await val('deal-calc-test-price-input'), testState: await txt('deal-calc-draft-testPrice') };
+    check('Clear discards the deal\'s figures; after reload the cleared ARV and quick repairs stay blank (kept, Not saved to GHL), not refilled from GHL',
+      cleared.arv === '' && cleared.arvState === 'Draft -- Not saved to GHL' && cleared.rep === '' && cleared.repState === 'Draft -- Not saved to GHL' && cleared.test === '' && cleared.testState === null, cleared);
     await go();
     check('Clear on the deal leaves the scratch work untouched', expectScratch(await scratchState()));
+    await go('contactId=c-seed');
+    const seededFirst = { arv: await val('deal-calc-arv-input'), rep: await val('deal-calc-repairs-quick-input') };
+    await T('deal-calc-arv-input').fill(''); await T('deal-calc-repairs-quick-input').fill(''); await settle();
+    await go('contactId=c-seed');
+    const blankReload = { arv: await val('deal-calc-arv-input'), rep: await val('deal-calc-repairs-quick-input') };
+    await T('deal-calc-unlink').click(); await settle();
+    await T('deal-calc-link-input').fill('c-seed'); await T('deal-calc-link-button').click();
+    await T('deal-calc-unlink').waitFor({ timeout: 15000 }); await settle();
+    const blankRelink = { arv: await val('deal-calc-arv-input'), rep: await val('deal-calc-repairs-quick-input'), arvState: await txt('deal-calc-draft-arv') };
+    check('an ARV and quick repairs the operator emptied by hand stay blank after reload and after unlink + relink; the seeds never refill them',
+      seededFirst.arv === '410000' && seededFirst.rep === '30000' && blankReload.arv === '' && blankReload.rep === '' && blankRelink.arv === '' && blankRelink.rep === ''
+      && blankRelink.arvState === 'Draft -- Not saved to GHL', { seededFirst, blankReload, blankRelink });
+
+    // ── edits made while a link is pending (Bones Phase 1 finding 3) ──
+    await go();
+    fixture.contactDelayMs = 1500;
+    await T('deal-calc-link-input').fill('c-kay');
+    await T('deal-calc-link-button').click();
+    await T('deal-calc-arv-input').fill('777');
+    await T('deal-calc-test-price-input').fill('888');
+    const during = { status: await status() };
+    await T('deal-calc-unlink').waitFor({ timeout: 15000 }); await settle();
+    fixture.contactDelayMs = 0;
+    const delayed = { ...during, arv: await val('deal-calc-arv-input'), test: await val('deal-calc-test-price-input'), rep: await val('deal-calc-repairs-quick-input'),
+      arvState: await txt('deal-calc-draft-arv'), testState: await txt('deal-calc-draft-testPrice') };
+    await go('contactId=c-kay');
+    delayed.afterReload = { arv: await val('deal-calc-arv-input'), test: await val('deal-calc-test-price-input') };
+    check('edits typed while a slow link is pending win over the delayed contact and deal reads (over the seed and the restored draft) and are kept for the deal',
+      delayed.status === 'Linking the contact -- figures here are not kept until a deal is chosen.' && delayed.arv === '777' && delayed.test === '888' && delayed.rep === ''
+      && delayed.arvState === 'Draft -- Not saved to GHL' && delayed.testState === 'Draft -- Not saved to GHL' && delayed.afterReload.arv === '777' && delayed.afterReload.test === '888', delayed);
+    await go();
+    check('edits typed while a link is pending are not kept in the unlinked scratch work', expectScratch(await scratchState()));
 
     // ── other operators and environments in the same browser ──
     const other = await open(`(${(env, scratch) => {
@@ -271,6 +308,36 @@ async function main() {
     check('another operator\'s or another environment\'s draft in the same browser is not shown',
       (await other.page.getByTestId('deal-calc-arv-input').inputValue()) === '' && (await other.page.getByTestId('deal-calc-draft-restored').count()) === 0);
     await other.context.close();
+
+    // ── a write-session operator change on the open page (Bones Phase 1 finding 1) ──
+    const ops = await open();
+    const O = (id) => ops.page.getByTestId(id);
+    /* Signs in (or out) through the page's own app-write-session module; the token only carries a `sub`. */
+    const signIn = (sub) => ops.page.evaluate(async (s) => {
+      const m = await import('/src/lib/app-write-session.ts');
+      const b64 = (o) => btoa(JSON.stringify(o)).replace(/=+$/, '');
+      m.setAppWriteSession(s ? { token: `${b64({ alg: 'none' })}.${b64({ sub: s })}.x`, expiresAt: new Date(Date.now() + 3600_000).toISOString() } : null);
+    }, sub);
+    const stored = (op) => ops.page.evaluate((k) => { const r = localStorage.getItem(k); return r ? JSON.parse(r).fields.arv?.value ?? null : null; }, `iaos-calculator-draft:v1:scratch|${ENV}|${op}`);
+    const opNote = () => O('deal-calc-draft-restored').count().then((n) => (n ? O('deal-calc-draft-restored').innerText() : null));
+    await ops.page.goto(`${base}${PAGE}`); await O('deal-calc-repairs-mode-toggle').waitFor({ timeout: 60000 }); await ops.page.waitForTimeout(250);
+    await signIn('op-a'); await ops.page.waitForTimeout(250);
+    await O('deal-calc-arv-input').fill('101'); await ops.page.waitForTimeout(250);
+    await signIn('op-b'); await ops.page.waitForTimeout(250);
+    const asB = { arv: await O('deal-calc-arv-input').inputValue(), note: await opNote() };
+    await O('deal-calc-arv-input').fill('202'); await ops.page.waitForTimeout(250);
+    asB.storedA = await stored('op-a'); asB.storedB = await stored('op-b');
+    check('when operator A signs out and B signs in on the open page, B sees none of A\'s figures, B\'s edits are kept under B, and A\'s kept figures are untouched',
+      asB.arv === '' && /The signed-in operator changed/.test(asB.note || '') && asB.storedA === '101' && asB.storedB === '202', asB);
+    await signIn('op-a'); await ops.page.waitForTimeout(250);
+    const backA = { arv: await O('deal-calc-arv-input').inputValue() };
+    await signIn(null); await ops.page.waitForTimeout(250);
+    backA.afterSignOut = await O('deal-calc-arv-input').inputValue();
+    await O('deal-calc-arv-input').fill('103'); await ops.page.waitForTimeout(250);
+    backA.storedA = await stored('op-a'); backA.storedB = await stored('op-b');
+    check('back to A, A\'s own figures return; a sign-out keeps the last operator (A), so A\'s later edits stay A\'s and B\'s are unchanged',
+      backA.arv === '101' && backA.afterSignOut === '101' && backA.storedA === '103' && backA.storedB === '202', backA);
+    await ops.context.close();
 
     // ── storage failures ──
     const failing = await open(() => {

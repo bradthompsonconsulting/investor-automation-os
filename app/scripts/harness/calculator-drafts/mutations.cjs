@@ -39,11 +39,25 @@ const MODEL_MUTATIONS = {
 };
 const PAGE_MUTATIONS = {
   /* linking seeds over a restored (non-empty) draft value */
-  'seed-over-draft': [['if (screen.arv.trim() === "" && seeds.arv !== null) setArvInput(String(seeds.arv));', 'if (seeds.arv !== null) setArvInput(String(seeds.arv));']],
+  'seed-over-draft': [['if (!kept.has("arv") && screen.arv.trim() === "" && seeds.arv !== null) setArvInput(String(seeds.arv));', 'if (seeds.arv !== null) setArvInput(String(seeds.arv));']],
   /* a contact seed is kept as if the operator had typed it */
   'seed-kept-as-draft': [['const atBaseline = snap[f] === baselineFor(f, ghlNow);', 'const atBaseline = snap[f] === DRAFT_DEFAULTS[f];']],
   /* leaving a deal carries its figures into the next deal or into scratch work */
-  'deal-carries-over': [['const carry = !context || context.kind === "scratch";', 'const carry = true;']],
+  'deal-carries-over': [['const carry = opts.carry ?? (!context || context.kind === "scratch");', 'const carry = true;']],
+  /* Bones Phase 1 finding 1 (the d20ad5b behaviour): no re-key on an operator change, so B edits under A */
+  'operator-not-rebound': [
+    ['    if (context.operator === operator) return false;', '    return false;'],
+    ['    if (context.operator !== draftOperator()) { rebindOperator(); return; }\n', ''],
+  ],
+  /* Bones Phase 1 finding 2 (the d20ad5b behaviour): a seed fills a kept, deliberately blank ARV */
+  'seed-over-blank': [['if (!kept.has("arv") && screen.arv.trim() === "" && seeds.arv !== null)', 'if (screen.arv.trim() === "" && seeds.arv !== null)']],
+  /* Bones Phase 1 finding 3 (the d20ad5b behaviour): the link works from the screen as it was when it started */
+  'link-overwrites-edits': [
+    ['      const now = latest.current ?? start;', '      const now = start;'],
+    ['      let screen = latest.current ?? start;', '      let screen = start;'],
+  ],
+  /* Bones Phase 1 finding 3: edits typed while the link is pending are kept in scratch work */
+  'link-edits-to-scratch': [['    leaveContext("Linking the contact -- figures here are not kept until a deal is chosen.");\n', '']],
 };
 
 function applyAll(src, subs, name) {

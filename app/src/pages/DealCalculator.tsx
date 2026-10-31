@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useReadRecovered } from "../components/access-status";
 import { Link, useSearchParams } from "react-router-dom";
 import {
@@ -30,7 +30,7 @@ import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstima
 import { NetProceedsPanel } from "../components/NetProceedsPanel";
 import { computeRepairEstimate } from "../lib/repair-estimation/compute";
 import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
-import { appWriteIdentity } from "../lib/app-write-session";
+import { appWriteIdentity, subscribeAppWriteSession } from "../lib/app-write-session";
 import type { OpportunityRow } from "../lib/ghl";
 import {
   FIELDS as DRAFT_FIELDS, NO_GHL, assess, canResolve, keepMine, openStore, parseRepairItems, recordEdit,
@@ -430,6 +430,10 @@ export default function DealCalculator() {
     arv: arvInput, repairsQuick: repairsQuickInput, testPrice: testPriceInput, assignmentMode, manualAmount: manualAmountInput,
     repairsMode, repairItems: serializeRepairItems(repairAnswers, repairMisc),
   });
+  /* Bones Phase 1 finding 3: the figures on screen NOW, read after an await (never a render-time copy). */
+  const latest = useRef<Record<DraftField, string> | null>(null);
+  latest.current = snapshot();
+  const linkGeneration = useRef(0);
   /** What a field shows when nothing is kept for it: the contact's seed (ARV, quick repairs) or the default. */
   const baselineFor = (field: DraftField, ghl: GhlNow): string => {
     const g = ghl.kind === "ok" ? ghl.values[field] : undefined;
@@ -460,29 +464,38 @@ export default function DealCalculator() {
    * Moves the screen to a draft context. A kept draft there is restored exactly (fields it does not hold
    * show their baseline). With none: figures carry over ONLY from scratch or not-kept work (typing before
    * linking survives linking, as before); leaving a deal never carries its figures into another deal or
-   * into scratch work -- the target starts from its baseline. Returns the values that will be on screen.
+   * into scratch work -- the target starts from its baseline. `overrides` (figures the operator edited
+   * while a link was pending) win over both. Returns the values on screen and the fields that are
+   * the operator's (restored or overridden) -- a seed never fills those, even when blank.
    */
-  function enterContext(id: DraftIdentity, ghl: GhlNow, label: string, screen: Record<DraftField, string>): Record<DraftField, string> {
+  function enterContext(
+    id: DraftIdentity, ghl: GhlNow, label: string, screen: Record<DraftField, string>,
+    opts: { carry?: boolean; overrides?: Partial<Record<DraftField, string>> } = {},
+  ): { values: Record<DraftField, string>; kept: Set<DraftField> } {
     const loaded = store.load(id);
-    const carry = !context || context.kind === "scratch";
+    const carry = opts.carry ?? (!context || context.kind === "scratch");
+    const overrides = opts.overrides ?? {};
+    const kept = new Set(Object.keys(overrides) as DraftField[]);
     setContext(id);
     setNotKept(null);
     setGhlNow(ghl);
     setPersist(null);
     const baseline = Object.fromEntries(DRAFT_FIELDS.map((f) => [f, baselineFor(f, ghl)])) as Record<DraftField, string>;
     if (loaded.ok && loaded.draft) {
-      const kept = loaded.draft;
-      const values = Object.fromEntries(DRAFT_FIELDS.map((f) => [f, kept.fields[f]?.value ?? baseline[f]])) as Record<DraftField, string>;
-      setDraft(kept);
+      const stored = loaded.draft;
+      for (const f of Object.keys(stored.fields) as DraftField[]) kept.add(f);
+      const values = { ...Object.fromEntries(DRAFT_FIELDS.map((f) => [f, stored.fields[f]?.value ?? baseline[f]])), ...overrides } as Record<DraftField, string>;
+      setDraft(stored);
       applyValues(values);
       setRestoreNote(`Restored the figures kept in this browser for ${label}.`);
-      return values;
+      return { values, kept };
     }
     setDraft(null);
     setRestoreNote(loaded.ok ? null : `A kept draft for ${label} could not be read, so it was not used. Editing here replaces it.`);
-    if (carry) return screen;
-    applyValues(baseline);
-    return baseline;
+    if (carry) return { values: { ...screen, ...overrides }, kept };
+    const values = { ...baseline, ...overrides };
+    applyValues(values);
+    return { values, kept };
   }
   function leaveContext(reason: string) {
     setContext(null);
@@ -492,17 +505,35 @@ export default function DealCalculator() {
     setRestoreNote(null);
     setNotKept(reason);
   }
-  function chooseDeal(deal: OpportunityRow, contactId: string, ghl: GhlNow, screen: Record<DraftField, string>) {
+  function chooseDeal(deal: OpportunityRow, contactId: string, ghl: GhlNow, screen: Record<DraftField, string>, overrides?: Partial<Record<DraftField, string>>) {
     setSelectedDealId(deal.id);
     const id: DraftIdentity = { kind: "deal", env: CONFIG.locationId, operator: draftOperator(), contactId, propertyId: deal.id, opportunityId: deal.id };
-    return enterContext(id, ghl, "this deal", screen);
+    return enterContext(id, ghl, "this deal", screen, { overrides });
   }
+
+  /* Bones Phase 1 finding 1: the draft belongs to the operator signed in NOW. When the write-session
+     operator changes, the same deal (or scratch work) is re-keyed to the new operator, with no carry-over:
+     operator B sees B's own kept figures or the baseline, never A's, and B's edits are never kept under A.
+     A's draft stays kept for A. (Sign-out or expiry keeps the last operator, as app-write-session does.) */
+  function rebindOperator(): boolean {
+    if (!context) return false;
+    const operator = draftOperator();
+    if (context.operator === operator) return false;
+    enterContext({ ...context, operator }, ghlNow, context.kind === "deal" ? "this deal" : "unlinked scratch work", latest.current ?? snapshot(), { carry: false });
+    setRestoreNote("The signed-in operator changed, so the figures shown are the ones kept for the current operator. The previous operator's figures stay kept for them.");
+    return true;
+  }
+  const [operatorTick, setOperatorTick] = useState(0);
+  useEffect(() => subscribeAppWriteSession(() => setOperatorTick((t) => t + 1)), []);
+  useEffect(() => { if (operatorTick > 0) rebindOperator(); }, [operatorTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* Keeps every change to a figure or mode: a field is kept once it differs from its baseline (a seed is
      never kept as a draft), and a kept field follows every later edit. One place for every edit path --
      typing, mode toggles, the quick-to-itemized transfer, Clear repairs. */
   useEffect(() => {
     if (!context) return;
+    /* Never keep an edit under an operator who is no longer signed in: re-key first (finding 1). */
+    if (context.operator !== draftOperator()) { rebindOperator(); return; }
     const snap = snapshot();
     let next = draft;
     let changed = false;
@@ -555,10 +586,20 @@ export default function DealCalculator() {
     );
   }
 
+  /* Bones Phase 1 finding 3: while the contact and deal reads are pending, figures are not kept anywhere
+     (not in scratch work), and every figure the operator edits during the wait wins over the reads -- over
+     a restored draft and over a seed. A response from an older link is ignored. */
   async function performLink(contactId: string) {
     if (contactId.trim() === "") return;
+    const generation = ++linkGeneration.current;
+    const start = latest.current ?? snapshot();
+    const editedSinceStart = (): Partial<Record<DraftField, string>> => {
+      const now = latest.current ?? start;
+      return Object.fromEntries(DRAFT_FIELDS.filter((f) => now[f] !== start[f]).map((f) => [f, now[f]]));
+    };
     setLinkBusy(true);
     setLinkError(null);
+    leaveContext("Linking the contact -- figures here are not kept until a deal is chosen.");
     try {
       const contact = await ghl.contacts.getDetail(contactId.trim());
       const seeds = parseContactSeeds(contact.customFields, CONTACT_IDS);
@@ -570,25 +611,31 @@ export default function DealCalculator() {
          several need a choice (no first-deal guess); none, or an unreadable read, keeps nothing. */
       let mine: OpportunityRow[] | null;
       try { mine = (await ghl.opportunities.listPipeline()).opportunities.filter((o) => o.contactId === contact.id); } catch { mine = null; }
+      if (generation !== linkGeneration.current) return;
+      const edited = editedSinceStart();
       setLinkedContactId(contact.id);
       setLinkedContactName([contact.firstName, contact.lastName].filter(Boolean).join(" ") || contact.id);
       setDeals(mine);
       setSelectedDealId(null);
       setContactGhl(seedGhl);
-      let screen = snapshot();
-      if (mine && mine.length === 1) screen = chooseDeal(mine[0], contact.id, seedGhl, screen);
+      let screen = latest.current ?? start;
+      let kept = new Set(Object.keys(edited) as DraftField[]);
+      if (mine && mine.length === 1) ({ values: screen, kept } = chooseDeal(mine[0], contact.id, seedGhl, screen, edited));
       else leaveContext(mine === null ? "This contact's deals could not be loaded, so figures here are not kept."
         : mine.length === 0 ? "This contact has no deal, so figures here are not kept."
         : "Choose a deal below to keep these figures. Until then they are not kept.");
       // Prepopulate ONLY fields still empty -- linking is a one-time
       // convenience (PB-D55), never a silent overwrite of a typed value.
-      if (screen.arv.trim() === "" && seeds.arv !== null) setArvInput(String(seeds.arv));
-      if (screen.repairsQuick.trim() === "" && seeds.repairs !== null) setRepairsQuickInput(String(seeds.repairs));
+      // B15-25 (finding 2): nor of a value the operator owns -- a kept or
+      // just-edited field, even one deliberately left blank.
+      if (!kept.has("arv") && screen.arv.trim() === "" && seeds.arv !== null) setArvInput(String(seeds.arv));
+      if (!kept.has("repairsQuick") && screen.repairsQuick.trim() === "" && seeds.repairs !== null) setRepairsQuickInput(String(seeds.repairs));
     } catch (e: any) {
+      if (generation !== linkGeneration.current) return;
       setLinkError(e?.message ?? "Could not load that contact.");
-      if (!linkedContactId) enterContext(scratchIdentity(), NO_GHL, "unlinked scratch work", snapshot());
+      if (!linkedContactId) enterContext(scratchIdentity(), NO_GHL, "unlinked scratch work", latest.current ?? start, { overrides: editedSinceStart() });
     } finally {
-      setLinkBusy(false);
+      if (generation === linkGeneration.current) setLinkBusy(false);
     }
   }
 
