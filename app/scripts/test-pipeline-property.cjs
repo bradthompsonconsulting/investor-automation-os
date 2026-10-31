@@ -17,7 +17,9 @@
  * NEGATIVE CONTROL: `node scripts/test-pipeline-property.cjs --before=<rev>`
  * runs the same checks against <rev>'s pipeline-property.ts and Pipeline.tsx
  * (extracted with `git show`) and must FAIL (exit 1) -- e.g. --before=aabffe3,
- * where an imported contact's native address was never shown.
+ * where an imported contact's native address was never shown, or
+ * --before=09c0300, where a contact with no usable address lost its
+ * deal-count note (Bones R1).
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -62,7 +64,7 @@ const { indexPropertyAddresses, countDealsByContact, pipelinePropertyCell, loadP
 const formatNativeAddress = lib.formatNativeAddress ?? (() => 'formatNativeAddress is missing');
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 49;
+const FLOOR = 53;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -160,6 +162,30 @@ const NATIVE_C1 = '500 Native Imported Rd, Dallas, TX 75001';
   check('two deals on a fallback contact: the field note carries the deal count', pipelinePropertyCell('c3', counts.get('c3'), loaded).note,
     `${FIELD_NOTE}: this contact has 2 deals in the pipeline`);
   check('a single-deal contact gets no multi-deal wording', /deals in the pipeline/.test(pipelinePropertyCell('c2', counts.get('c2'), loaded).note), false);
+}
+
+// ============================================================
+// Bones R1 on 09c0300: a contact with no usable address keeps the deal-count
+// note on every row, and keeps the missing-address wording.
+// ============================================================
+{
+  const mail = { mailingAddress: '9 Mailing Rd', mailing_city: 'Mailtown', mailing_state: 'OK', mailing_zip: '73001' };
+  const opps = [{ id: 'e1', contactId: 'empty' }, { id: 'e2', contactId: 'empty' }, { id: 'p1', contactId: 'partial' }, { id: 'p2', contactId: 'partial' }, { id: 'p3', contactId: 'partial' }, { id: 's1', contactId: 'single' }];
+  const counts = countDealsByContact(opps);
+  const loaded = { kind: 'loaded', byContactId: indexPropertyAddresses([
+    { id: 'empty', address1: '', city: '', state: '', postalCode: '', propertyAddress: '', ...mail },
+    { id: 'partial', address1: '  ', city: 'Waco', state: 'TX', postalCode: '76701', propertyAddress: ' ', ...mail },
+    { id: 'single', address1: '', city: '', state: '', postalCode: '', propertyAddress: '', ...mail },
+  ]) };
+  const rows = opps.map((o) => pipelinePropertyCell(o.contactId, counts.get(o.contactId), loaded));
+  const NONE_2 = 'The contact has no property address on record: this contact has 2 deals in the pipeline';
+  check('two deals, no usable address: BOTH rows keep the 2-deal note with the missing-address wording',
+    [rows[0], rows[1]], [{ kind: 'no_address', text: NOT_VERIFIED, note: NONE_2 }, { kind: 'no_address', text: NOT_VERIFIED, note: NONE_2 }]);
+  check('three deals, city/state/ZIP but no street or field: every row says 3 deals, and no fragment is shown as an address',
+    rows.slice(2, 5).map((r) => [r.kind, r.text, r.note]),
+    [0, 1, 2].map(() => ['no_address', NOT_VERIFIED, 'The contact has no property address on record: this contact has 3 deals in the pipeline']));
+  check('one deal, no usable address: the original sentence, unchanged and without deal wording', rows[5], { kind: 'no_address', text: NOT_VERIFIED, note: NONE_NOTE });
+  check('the missing-address rows never show a mailing address', /Mailing|Mailtown|73001/.test(JSON.stringify(rows)), false);
 }
 
 // ============================================================

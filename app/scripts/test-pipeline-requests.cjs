@@ -22,6 +22,11 @@
  *      success does not hide it.
  *   R5 unmount: a read still pending when the page is left changes nothing
  *      and raises nothing; returning shows that visit's read.
+ *   R6 rendered address cells (B15-09a, Bones R1 on 09c0300): the native
+ *      address first, the Property Address field as the fallback, the
+ *      missing-address rows of a two-deal contact each keep the 2-deal note,
+ *      a deal with no contact is unchanged, and no mailing address appears.
+ *      Its waits never throw, so a page without these cells fails its checks.
  *
  * NEGATIVE CONTROL: `node scripts/test-pipeline-requests.cjs --before=<rev>`
  * renders <rev>'s Pipeline page instead (via `git show`) and must FAIL
@@ -39,7 +44,7 @@ const beforeArg = process.argv.find((a) => a.startsWith('--before='));
 const BEFORE_REV = beforeArg ? beforeArg.slice('--before='.length) : null;
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 16;
+const FLOOR = 21;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -61,6 +66,7 @@ const pipelineBody = (label, contactId) => ({
   pipelineId: 'fixture-pipeline', stages: STAGES,
   opportunities: [{ id: `${label}-opp`, contactId, contactName: `${label} Seller`, opportunityName: `${label} deal`, phone: '', email: '', stageId: 'stage-new', customFields: [] }],
 });
+let contactsBody = [];  // the ghl-contacts answer; R6 sets fictional contacts, every other scenario reads none
 let signedIn = true;
 let held = [];          // pending ghl-opportunities routes, in arrival order
 let foreign = [];
@@ -125,7 +131,7 @@ async function main() {
       if (fn === 'app-read-session') return json(200, signedIn ? { signedIn: true, expiresAt: new Date(Date.now() + 3600_000).toISOString() } : { signedIn: false });
       if (route.request().method() !== 'GET') { foreign.push(`${route.request().method()} ${fn}`); return json(405, { error: 'fixture: reads only' }); }
       if (fn === 'ghl-opportunities') { held.push(route); return undefined; }
-      if (fn === 'ghl-contacts') return json(200, []);   // read by later Pipeline revisions; empty here
+      if (fn === 'ghl-contacts') return json(200, contactsBody);   // read by later Pipeline revisions; empty except in R6
       return json(404, { error: `fixture: ${fn} not answered` });
     });
 
@@ -241,6 +247,39 @@ async function main() {
       await answer(held[1], 200, pipelineBody('Return', 'contact-return'));
       await until(() => visibleText('Return Seller'), 'return visit rows');
       check('R5 returning shows that visit\'s read only', (await rows()).map((x) => x.href).join('|') === '/contacts/contact-return', await rows());
+    }
+
+    // ═══ R6 rendered address cells (B15-09a) ═════════════════════════════════
+    {
+      const mail = { mailingAddress: '9 Mailing Rd', mailing_city: 'Mailtown', mailing_state: 'OK', mailing_zip: '73001' };
+      const contact = (id, address1, city, state, postalCode, propertyAddress) => ({ id, address1, city, state, postalCode, propertyAddress, ...mail });
+      contactsBody = [
+        contact('addr-native', '500 Native Imported Rd', 'Dallas', 'TX', '75001', '123 Field St'),
+        contact('addr-field', '', 'Austin', 'TX', '', '77 Field Only Rd'),
+        contact('addr-empty', '', '', '', '', ''),
+      ];
+      const opp = (id, contactId, name) => ({ id, contactId, contactName: name, opportunityName: `${name} deal`, phone: '', email: '', stageId: 'stage-new', customFields: [] });
+      await freshPipeline();
+      await answer(held[0], 200, { pipelineId: 'fixture-pipeline', stages: STAGES, opportunities: [
+        opp('n1', 'addr-native', 'Native Seller'), opp('f1', 'addr-field', 'Field Seller'),
+        opp('e1', 'addr-empty', 'Empty Seller'), opp('e2', 'addr-empty', 'Empty Seller'), opp('x1', '', 'Nobody'),
+      ] });
+      contactsBody = [];
+      const cell = (id) => page.evaluate((oppId) => {
+        const el = document.querySelector(`[data-testid="pipeline-row-property-${oppId}"]`);
+        if (!el) return null;
+        const note = document.querySelector(`[data-testid="pipeline-row-property-note-${oppId}"]`);
+        return { state: el.getAttribute('data-property-state'), main: el.firstElementChild ? el.firstElementChild.innerText.trim() : '', note: note ? note.innerText.trim() : null };
+      }, id);
+      const soft = async (fn) => { try { return await until(fn, 'R6 address cells'); } catch { return false; } };
+      await soft(async () => ((await cell('n1')) || {}).state === 'contact_address');
+      const NONE_2 = 'The contact has no property address on record: this contact has 2 deals in the pipeline';
+      check('R6 the native address is shown first, labelled as the contact\'s, not the deal\'s', JSON.stringify(await cell('n1')) === JSON.stringify({ state: 'contact_address', main: '500 Native Imported Rd, Dallas, TX 75001', note: "The contact's property address, not confirmed for this deal" }), await cell('n1'));
+      check('R6 no native street: the Property Address field is shown, labelled as that field', JSON.stringify(await cell('f1')) === JSON.stringify({ state: 'contact_field', main: '77 Field Only Rd', note: "From the contact's Property Address field, not confirmed for this deal" }), await cell('f1'));
+      check('R6 two deals, no usable address: BOTH rows keep the 2-deal note', JSON.stringify([await cell('e1'), await cell('e2')]) === JSON.stringify([0, 1].map(() => ({ state: 'no_address', main: 'Property not verified for this deal', note: NONE_2 }))), [await cell('e1'), await cell('e2')]);
+      check('R6 a deal with no contact is unchanged', JSON.stringify(await cell('x1')) === JSON.stringify({ state: 'no_contact', main: 'Property not verified for this deal', note: 'No contact is linked to this deal.' }), await cell('x1'));
+      const table = await page.$eval('table', (t) => t.innerText).catch(() => '');
+      check('R6 no mailing address appears anywhere in the table', table.length > 0 && !/Mailing|Mailtown|73001/.test(table), table.slice(0, 300));
     }
 
     check('no page errors in any scenario', pageErrors.length === 0, pageErrors);

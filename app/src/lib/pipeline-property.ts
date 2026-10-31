@@ -33,7 +33,8 @@
  *   fields) is a later slice; those fields are not provisioned in Production.
  *
  * - A contact with neither a native street nor the custom field has no
- *   property address on record, and the row says exactly that.
+ *   property address on record, and the row says exactly that -- with the
+ *   same deal-count note when the contact has more than one deal.
  *
  * - A contacts read that failed, or a contact the list did not return (the
  *   list endpoint can lag), says the address couldn't be loaded.
@@ -114,11 +115,15 @@ export function pipelinePropertyCell(contactId: string, dealsForContact: number,
   if (source.kind === "failed") return { kind: "unavailable", text: PROPERTY_ADDRESS_UNAVAILABLE, note: null };
   const address = source.byContactId.get(contactId);
   if (address === undefined) return { kind: "unavailable", text: PROPERTY_ADDRESS_UNAVAILABLE, note: null };
-  if (!address.native && !address.field) return { kind: "no_address", text: PROPERTY_NOT_VERIFIED, note: PROPERTY_ADDRESS_NONE };
   const [kind, text, base] = address.native
     ? (["contact_address", address.native, PROPERTY_ADDRESS_NOTE] as const)
-    : (["contact_field", address.field, PROPERTY_FIELD_NOTE] as const);
-  const note = dealsForContact > 1 ? `${base}: this contact has ${dealsForContact} deals in the pipeline` : base;
+    : address.field
+      ? (["contact_field", address.field, PROPERTY_FIELD_NOTE] as const)
+      : (["no_address", PROPERTY_NOT_VERIFIED, PROPERTY_ADDRESS_NONE] as const);
+  // Every loaded contact's row carries the deal count, an address or not (Bones R1 on 09c0300).
+  const note = dealsForContact > 1
+    ? `${base.replace(/\.$/, "")}: this contact has ${dealsForContact} deals in the pipeline`
+    : base;
   return { kind, text, note };
 }
 
