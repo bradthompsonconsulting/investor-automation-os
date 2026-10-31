@@ -16,7 +16,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 73;
+const FLOOR = 84;
 let failures = 0;
 let checks = 0;
 
@@ -37,6 +37,8 @@ const appTsx = readSrc('src/App.tsx');
 const sidebarTsx = readSrc('src/components/Sidebar.tsx');
 const contactWorkspaceTsx = readSrc('src/pages/ContactWorkspace.tsx');
 const calcTsx = readSrc('src/pages/DealCalculator.tsx');
+// B15-25 Phase 2: the one write surface, mounted by the page for a linked contact only.
+const savePanelTsx = readSrc('src/components/DealCalculationSavePanel.tsx');
 const calcTsxNoComments = calcTsx.replace(/\/\*[\s\S]*?\*\//g, '');
 const inputsTs = readSrc('src/lib/deal-calculator-inputs.ts');
 const barTs = readSrc('src/lib/deal-calculator-bar.ts');
@@ -141,9 +143,11 @@ const barTs = readSrc('src/lib/deal-calculator-bar.ts');
 // ============================================================
 {
   check('testPriceInput state is initialized empty', /const \[testPriceInput, setTestPriceInput\] = useState\(""\)/.test(calcTsx), true);
-  /* B15-25: a third call site restores the operator's own kept text (applyValues, `v.testPrice`) -- still never a derived value. */
-  check('setTestPriceInput is called ONLY from its own input onChange, Clear-to-empty and restoring the operator\'s own kept draft text (never a derived/computed value)',
-    (calcTsx.match(/setTestPriceInput\(/g) || []).length === 3 && /setTestPriceInput\(v\.testPrice\)/.test(calcTsx), true);
+  /* B15-25 (integration ruling I5): FOUR call sites -- its own input, Clear-to-empty, Phase 1 restoring the operator's
+     own kept draft text (applyValues, `v.testPrice`) and Phase 2 loading the operator's own saved calculation. */
+  check('setTestPriceInput is called ONLY from its own input onChange, Clear-to-empty, the operator\'s own kept draft text and the B15-25 Load handler (never a derived/computed value)',
+    (calcTsx.match(/setTestPriceInput\(/g) || []).length === 4 && /setTestPriceInput\(v\.testPrice\)/.test(calcTsx), true);
+  check('B15-25 Load restores Test Price ONLY from the operator\'s own saved calculation (setTestPriceInput(next.testPriceInput) inside handleLoadCalculation)', /function handleLoadCalculation\(next: CalculatorFigures, savedAt: string\) \{[\s\S]{0,300}setTestPriceInput\(next\.testPriceInput\);/.test(calcTsx), true);
   check('every setTestPriceInput call site sets it from the raw input event or to "" (Clear), never a number expression', !/setTestPriceInput\([^)"]*\.(target|value)[^)]*\+|setTestPriceInput\(\s*\d/.test(calcTsx), true);
 }
 
@@ -189,6 +193,18 @@ const barTs = readSrc('src/lib/deal-calculator-bar.ts');
   check('page links to the Underwriting workspace for BOTH ARV and Repairs now (updated link text)', /Underwriting workspace/.test(calcTsx), true);
   check('page states plainly that NEITHER ARV nor Repairs saves from here', /Neither ARV nor Repairs is saved from here/.test(calcTsx), true);
   check('page contains no write-capable GHL call of any kind (notes.create, setApprovedArv, setEstimatedRepairs, setLastCallAttempt, setCallbackDatetime, saveUnderwritingFields)', ['.notes.create', 'setApprovedArv', 'setEstimatedRepairs', 'setLastCallAttempt', 'setCallbackDatetime', 'saveUnderwritingFields'].every((t) => calcTsx.indexOf(t) === -1), true);
+  // B15-25 Phase 2 (Jess RULING 2026-10-30): the ONE explicitly authorized write surface is the save panel.
+  check('B15-25 panel: exactly one write call, ghl.notes.create with a fresh request id; its body is only formatDealCalculationNote(calc) or the IDENTICAL unconfirmed note resent', (savePanelTsx.match(/ghl\.notes\.create\(/g) || []).length === 1 && /ghl\.notes\.create\(contactId, body, \{ requestId: crypto\.randomUUID\(\) \}\)/.test(savePanelTsx) && /const body = formatDealCalculationNote\(calc\);/.test(savePanelTsx) && (savePanelTsx.match(/\bsend\(/g) || []).length === 3 && /await send\(opportunityId, body\)/.test(savePanelTsx) && /await send\(opportunityId, attempt\.body\)/.test(savePanelTsx), true);
+  check('B15-25 r2 panel: reconcile (Check GHL / Resend the same calculation) runs only from its two buttons', (savePanelTsx.match(/\breconcile\(/g) || []).length === 3 && (savePanelTsx.match(/onClick=\{\(\) => void reconcile\(/g) || []).length === 2, true);
+  check('B15-25 r2 panel: Save is offered only when the runtime projection says saving is on; the off branch has no Save button', /getRuntimeConfig\(\)\.dealCalculationSave\?\.enabled === true/.test(savePanelTsx) && /if \(!saveEnabled\) \{[\s\S]*?deal-calc-save-disabled[\s\S]*?\n  \}/.test(savePanelTsx) && !/if \(!saveEnabled\) \{[^}]*deal-calc-save-calculation/.test(savePanelTsx), true);
+  check('B15-25 panel: no other write-capable call (approvals, Current Offer, underwriting, assignment mode, stage, raw fetch)', ['setApprovedArv', 'setEstimatedRepairs', 'setLastCallAttempt', 'setCallbackDatetime', 'saveUnderwritingFields', 'setAskingPrice', 'setCurrentOffer', 'currentOffer(', 'setAssignmentMode', 'updateStage', 'appWriteFetch', 'writeCommand', 'confirmedCommand', 'fetch('].every((t) => savePanelTsx.indexOf(t) === -1), true);
+  /* Integration ruling I1: one deal truth -- the panel reads only the chosen opportunity (get), never the pipeline. */
+  check('B15-25 panel: its only opportunity call is the existing read get (no pipeline read of its own)', (savePanelTsx.match(/ghl\.opportunities\.(\w+)/g) || []).length >= 1 && (savePanelTsx.match(/ghl\.opportunities\.(\w+)/g) || []).every((m) => m === 'ghl.opportunities.get'), true);
+  check('B15-25 panel: the save runs only from its two explicit buttons (Save, Save as New) -- no autosave', (savePanelTsx.match(/handleSave\(/g) || []).length === 3 && (savePanelTsx.match(/onClick=\{\(\) => void handleSave\(/g) || []).length === 2, true);
+  check('B15-25 I1: the panel has no deal picker of its own; its deal is the page\'s chosen opportunity', !/selectOpportunity|opportunitiesForContact|opportunityCandidates|deal-calc-deal-select"/.test(savePanelTsx) && /const selected = opportunityId \? \{ id: opportunityId, name: dealName \|\| opportunityId \} : null;/.test(savePanelTsx), true);
+  check('B15-25 page mounts the save panel only for a linked contact, for the deal the page chose (PB-D55) for that same contact', /\{linkedContactId \? \(\s*<DealCalculationSavePanel\s/.test(calcTsx) && /opportunityId=\{context && context\.kind === "deal" && context\.contactId === linkedContactId \? context\.opportunityId : null\}/.test(calcTsx), true);
+  check('B15-25 I4: the save panel remounts when the contact or the signed-in operator changes', /key=\{\x60\$\{linkedContactId\}\|\$\{draftOperator\(\)\}\x60\}/.test(calcTsx), true);
+  check('B15-25 I3: Load labels figures as loaded from GHL (never as restored from this browser)', /function handleLoadCalculation\(next: CalculatorFigures, savedAt: string\) \{[\s\S]{0,600}setRestoreNote\(\x60Loaded the calculation saved in GHL/.test(calcTsx), true);
 }
 
 // ============================================================

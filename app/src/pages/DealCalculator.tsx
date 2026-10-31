@@ -28,6 +28,7 @@ import {
 } from "../lib/repair-estimation/operator-model";
 import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstimateSummary";
 import { NetProceedsPanel } from "../components/NetProceedsPanel";
+import { DealCalculationSavePanel, type CalculatorFigures } from "../components/DealCalculationSavePanel";
 import { computeRepairEstimate } from "../lib/repair-estimation/compute";
 import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
 import { appWriteIdentity, subscribeAppWriteSession } from "../lib/app-write-session";
@@ -114,9 +115,15 @@ import {
  * page instead links to the real Underwriting workspace for BOTH figures,
  * exactly as Seller Call (B8-07) already does for ARV.
  *
- * READ ONLY. This page performs no GHL write of any kind. Its only
+ * READ ONLY, WITH ONE NAMED EXCEPTION (B15-25 Phase 2, Jess RULING 2026-10-30;
+ * Captain approved P2-1..P2-5). This page itself performs no GHL write; its
  * network calls are reads (contact detail, investor policy, and -- B15-25 --
- * the existing pipeline read, to find a linked contact's deals).
+ * the existing pipeline read, to find a linked contact's deals). The one write
+ * surface is the linked-contact `DealCalculationSavePanel`: an explicit "Save
+ * Calculation to Deal" button that appends ONE `IAOS DEAL CALCULATION` note --
+ * a working calculation, never an approval, never ARV, Repairs or Current
+ * Offer (docs/INV95_WRITE_BOUNDARIES.md; refused in Production). It saves for
+ * the deal chosen HERE (integration ruling I1).
  *
  * B15-25 (INV-133) PHASE 1 -- LOCAL AUTOSAVE. The figures and modes are kept
  * in THIS BROWSER (lib/calculator-drafts.ts), never sent to GHL, never an
@@ -713,6 +720,24 @@ export default function DealCalculator() {
 
   const [netPanelRevision, setNetPanelRevision] = useState(0);
 
+  /* B15-25 Phase 2: the figures and modes the Save/Load panel works with -- figures only; itemized
+     repair rows, Miscellaneous and the net-proceeds inputs are not saved in this phase. Loading a
+     saved calculation replaces exactly these (the panel asks first when there are unsaved changes).
+     Integration ruling I3: the setters below are ordinary edits, so Phase 1's keep-every-change effect
+     keeps the loaded figures as THIS deal's browser draft (its existing preservation path), and the
+     restore line says they came from GHL -- never "restored from this browser". */
+  const calculatorFigures: CalculatorFigures = { arvInput, repairsQuickInput, testPriceInput, assignmentMode, manualAmountInput, repairsMode };
+  function handleLoadCalculation(next: CalculatorFigures, savedAt: string) {
+    setArvInput(next.arvInput);
+    setRepairsMode(next.repairsMode);
+    setRepairsQuickInput(next.repairsQuickInput);
+    bumpRepairRevision();
+    setTestPriceInput(next.testPriceInput);
+    setAssignmentMode(next.assignmentMode);
+    setManualAmountInput(next.manualAmountInput);
+    setRestoreNote(`Loaded the calculation saved in GHL on ${new Date(savedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}. It is now kept in this browser as this deal's draft.`);
+  }
+
   function handleClear() {
     setArvInput("");
     setRepairsQuickInput("");
@@ -994,6 +1019,20 @@ export default function DealCalculator() {
         )}
         {linkError ? <div data-testid="deal-calc-link-error" style={{ color: "#EF4444", fontSize: "11px", marginTop: "8px" }}>{linkError}</div> : null}
       </div>
+
+      {/* B15-25 Phase 2: Save Calculation to Deal / Load Saved Calculation -- linked contact only.
+          I1: the panel saves for the deal chosen here. I4: remounted when the contact or the signed-in operator
+          changes, so no deal-specific state, unconfirmed save or late result crosses operators. */}
+      {linkedContactId ? (
+        <DealCalculationSavePanel
+          key={`${linkedContactId}|${draftOperator()}`}
+          contactId={linkedContactId}
+          opportunityId={context && context.kind === "deal" && context.contactId === linkedContactId ? context.opportunityId : null}
+          dealName={context && context.kind === "deal" ? (deals?.find((d) => d.id === context.opportunityId)?.opportunityName || null) : null}
+          figures={calculatorFigures}
+          onLoad={handleLoadCalculation}
+        />
+      ) : null}
 
       {/* More Detail -- Assignment Mode + the eleven Investor Policy assumptions. */}
       <div style={{ marginTop: "16px" }}>
