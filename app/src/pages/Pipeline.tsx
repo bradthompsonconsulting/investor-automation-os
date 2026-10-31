@@ -92,9 +92,10 @@ export default function Pipeline() {
     });
   }, [readRecovered]);
 
-  /* B15-09: each row shows its contact's Property Address field, from the
+  /* B15-09: each row shows its contact's property address -- the native
+     address block, else the Property Address field (B15-09a) -- from the
      existing contacts read (the one the Dashboard joins to the pipeline),
-     labelled as a contact field not confirmed for the deal -- see
+     labelled as the contact's and not confirmed for the deal -- see
      lib/pipeline-property. Read separately so a failure here never hides
      the pipeline. The cleanup cancels a superseded read, so a late success
      or failure from before a read recovery cannot overwrite the newer one. */
@@ -253,7 +254,7 @@ export default function Pipeline() {
                             data-property-state={property.kind}
                             title={addressSource.kind === "failed" && property.kind === "unavailable" ? addressSource.detail : undefined}
                           >
-                            <div style={property.kind === "contact_field" ? { color: "#E2E8F0" } : { color: "#64748B", fontStyle: "italic" }}>
+                            <div style={property.kind === "contact_address" || property.kind === "contact_field" ? { color: "#E2E8F0" } : { color: "#64748B", fontStyle: "italic" }}>
                               {property.text}
                             </div>
                             {property.note && (

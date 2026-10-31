@@ -6,24 +6,34 @@
  * Pure apart from loadPropertyAddresses, which only sequences a read it is
  * handed. No React, no GHL.
  *
- * WHAT IS SHOWN, AND WHAT IT IS NOT (Bones review of 9542868):
+ * WHAT IS SHOWN, AND WHAT IT IS NOT (B15-09a, Jess D3-i ruling 2026-10-31;
+ * earlier Bones review of 9542868):
  *
- * - The value is the contact's own Property Address custom field
- *   (contact.property_address), from the existing contacts read. It is a
- *   CONTACT field: no authorized read associates a property with an
- *   opportunity, and one seller may have several properties or deals
- *   (PB-D55). So the value is always labelled as the contact's field and not
+ * - PRIMARY: the contact's native address block (address1 / city / state /
+ *   postalCode), from the existing contacts read. It is the contact's
+ *   address-identity set -- one contact = one property
+ *   (docs/CONTACTS_OPPORTUNITIES_SPEC.md §4.3) -- which the PropStream
+ *   importer fills from PropStream's own property columns, and which the
+ *   Contact header, Dashboard, Contract workspace and comps hand-off already
+ *   show as the property address. It counts only when the street is set: a
+ *   city or state alone does not name a property.
+ *
+ * - FALLBACK: the contact's Property Address custom field
+ *   (contact.property_address), used only when the native street is empty.
+ *
+ * - NEVER: a mailing address. The index below accepts only `id`, the four
+ *   native address parts and `propertyAddress`, so no mailing field can
+ *   reach a Pipeline row.
+ *
+ * - Either value is a CONTACT address: no authorized read associates a
+ *   property with an opportunity, and one seller may have several properties
+ *   or deals (PB-D55). So it is always labelled as the contact's and not
  *   confirmed for this deal, and a contact with more than one deal in the
- *   pipeline says so.
+ *   pipeline says so. A deal-confirmed address (the B15-04 opportunity
+ *   fields) is a later slice; those fields are not provisioned in Production.
  *
- * - An empty field is reported as exactly that -- the contact's Property
- *   Address field is empty -- never as "no property address". The PropStream
- *   importer puts the property's address in the contact's native address
- *   fields and leaves this custom field blank, so an empty field does not
- *   mean the property is unknown. Those native fields are NOT used here:
- *   whether they may stand in for the property address is an open ruling,
- *   and the index below accepts only `id` and `propertyAddress`, so neither
- *   they nor any mailing address can reach a Pipeline row.
+ * - A contact with neither a native street nor the custom field has no
+ *   property address on record, and the row says exactly that.
  *
  * - A contacts read that failed, or a contact the list did not return (the
  *   list endpoint can lag), says the address couldn't be loaded.
@@ -32,30 +42,59 @@
 export const PROPERTY_ADDRESS_UNAVAILABLE = "Property address couldn't be loaded.";
 export const PROPERTY_ADDRESS_LOADING = "Loading address…";
 export const PROPERTY_NOT_VERIFIED = "Property not verified for this deal";
+export const PROPERTY_ADDRESS_NOTE = "The contact's property address, not confirmed for this deal";
 export const PROPERTY_FIELD_NOTE = "From the contact's Property Address field, not confirmed for this deal";
-export const PROPERTY_FIELD_EMPTY = "The contact's Property Address field is empty.";
+export const PROPERTY_ADDRESS_NONE = "The contact has no property address on record.";
 export const NO_CONTACT_ON_DEAL = "No contact is linked to this deal.";
 
-/** Only these two contact fields are accepted; no other address can be passed in. */
-export type PropertyAddressContact = { id: string; propertyAddress: string };
+/** Only these contact fields are accepted; no other address can be passed in. */
+export type PropertyAddressContact = {
+  id: string;
+  address1: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  propertyAddress: string;
+};
+
+/** A contact's two address carriers, each "" when it holds no usable value. */
+export type ContactPropertyAddress = {
+  /** The native address block on one line, or "" when the street is empty. */
+  native: string;
+  /** The Property Address custom field, trimmed. */
+  field: string;
+};
 
 export type PropertyAddressSource =
   | { kind: "loading" }
   | { kind: "failed"; detail: string }
-  | { kind: "loaded"; byContactId: ReadonlyMap<string, string> };
+  | { kind: "loaded"; byContactId: ReadonlyMap<string, ContactPropertyAddress> };
 
 export type PipelinePropertyCell = {
-  kind: "contact_field" | "field_empty" | "no_contact" | "unavailable" | "loading";
-  /** The main line: the field's value, or what is known instead. */
+  kind: "contact_address" | "contact_field" | "no_address" | "no_contact" | "unavailable" | "loading";
+  /** The main line: the address, or what is known instead. */
   text: string;
   /** Where the value came from and what it does not establish; null when nothing to add. */
   note: string | null;
 };
 
-export function indexPropertyAddresses(contacts: readonly PropertyAddressContact[]): Map<string, string> {
-  const byContactId = new Map<string, string>();
+const clean = (v: string | null | undefined) => (v ?? "").replace(/\s+/g, " ").trim();
+
+/**
+ * The native address block on one line, "street, city, ST zip" (the Contact
+ * header's shape), or "" when the street is empty.
+ */
+export function formatNativeAddress(c: Pick<PropertyAddressContact, "address1" | "city" | "state" | "postalCode">): string {
+  const street = clean(c.address1);
+  if (!street) return "";
+  const stateZip = [clean(c.state), clean(c.postalCode)].filter(Boolean).join(" ");
+  return [street, clean(c.city), stateZip].filter(Boolean).join(", ");
+}
+
+export function indexPropertyAddresses(contacts: readonly PropertyAddressContact[]): Map<string, ContactPropertyAddress> {
+  const byContactId = new Map<string, ContactPropertyAddress>();
   for (const c of contacts) {
-    if (c.id) byContactId.set(c.id, (c.propertyAddress ?? "").trim());
+    if (c.id) byContactId.set(c.id, { native: formatNativeAddress(c), field: clean(c.propertyAddress) });
   }
   return byContactId;
 }
@@ -75,11 +114,12 @@ export function pipelinePropertyCell(contactId: string, dealsForContact: number,
   if (source.kind === "failed") return { kind: "unavailable", text: PROPERTY_ADDRESS_UNAVAILABLE, note: null };
   const address = source.byContactId.get(contactId);
   if (address === undefined) return { kind: "unavailable", text: PROPERTY_ADDRESS_UNAVAILABLE, note: null };
-  if (!address) return { kind: "field_empty", text: PROPERTY_NOT_VERIFIED, note: PROPERTY_FIELD_EMPTY };
-  const note = dealsForContact > 1
-    ? `${PROPERTY_FIELD_NOTE}: this contact has ${dealsForContact} deals in the pipeline`
-    : PROPERTY_FIELD_NOTE;
-  return { kind: "contact_field", text: address, note };
+  if (!address.native && !address.field) return { kind: "no_address", text: PROPERTY_NOT_VERIFIED, note: PROPERTY_ADDRESS_NONE };
+  const [kind, text, base] = address.native
+    ? (["contact_address", address.native, PROPERTY_ADDRESS_NOTE] as const)
+    : (["contact_field", address.field, PROPERTY_FIELD_NOTE] as const);
+  const note = dealsForContact > 1 ? `${base}: this contact has ${dealsForContact} deals in the pipeline` : base;
+  return { kind, text, note };
 }
 
 /**
