@@ -434,6 +434,21 @@ export default function DealCalculator() {
   const latest = useRef<Record<DraftField, string> | null>(null);
   latest.current = snapshot();
   const linkGeneration = useRef(0);
+  /* Bones Phase 1 r2 finding 2: the fields the operator TOUCHED while a link was pending -- any change, even
+     one later undone (typed, then cleared). Ownership follows the touch, not the final value. null = no
+     link pending. `linkOperator` is the operator those touches belong to. */
+  const linkTouched = useRef<Set<DraftField> | null>(null);
+  const linkOperator = useRef<string | null>(null);
+  const previousScreen = useRef<Record<DraftField, string> | null>(null);
+  /* r2 finding 1: the operator the figures on a not-kept screen belong to. */
+  const notKeptOwner = useRef<string | null>(null);
+  useEffect(() => {
+    const snap = latest.current ?? snapshot();
+    const prev = previousScreen.current;
+    if (linkTouched.current && prev) for (const f of DRAFT_FIELDS) if (snap[f] !== prev[f]) linkTouched.current.add(f);
+    previousScreen.current = snap;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arvInput, repairsQuickInput, testPriceInput, assignmentMode, manualAmountInput, repairsMode, repairAnswers, repairMisc]);
   /** What a field shows when nothing is kept for it: the contact's seed (ARV, quick repairs) or the default. */
   const baselineFor = (field: DraftField, ghl: GhlNow): string => {
     const g = ghl.kind === "ok" ? ghl.values[field] : undefined;
@@ -504,6 +519,7 @@ export default function DealCalculator() {
     setPersist(null);
     setRestoreNote(null);
     setNotKept(reason);
+    notKeptOwner.current = draftOperator();
   }
   function chooseDeal(deal: OpportunityRow, contactId: string, ghl: GhlNow, screen: Record<DraftField, string>, overrides?: Partial<Record<DraftField, string>>) {
     setSelectedDealId(deal.id);
@@ -516,11 +532,26 @@ export default function DealCalculator() {
      operator B sees B's own kept figures or the baseline, never A's, and B's edits are never kept under A.
      A's draft stays kept for A. (Sign-out or expiry keeps the last operator, as app-write-session does.) */
   function rebindOperator(): boolean {
-    if (!context) return false;
+    if (!context) return clearNotKeptForNewOperator();
     const operator = draftOperator();
     if (context.operator === operator) return false;
     enterContext({ ...context, operator }, ghlNow, context.kind === "deal" ? "this deal" : "unlinked scratch work", latest.current ?? snapshot(), { carry: false });
     setRestoreNote("The signed-in operator changed, so the figures shown are the ones kept for the current operator. The previous operator's figures stay kept for them.");
+    return true;
+  }
+  /* Bones Phase 1 r2 finding 1: figures on a screen where nothing is kept (a link pending, a deal not yet
+     chosen) belong to the operator who typed them. When the operator changes there, they are cleared, so they
+     can never carry into the new operator's deal; touches made during a pending link restart under the new
+     operator (the new operator's own edits still win over the link's reads). */
+  function clearNotKeptForNewOperator(): boolean {
+    const operator = draftOperator();
+    if (notKeptOwner.current === null || notKeptOwner.current === operator) return false;
+    const defaults = { ...DRAFT_DEFAULTS };
+    previousScreen.current = defaults;   // the reset itself is not a touch
+    applyValues(defaults);
+    notKeptOwner.current = operator;
+    if (linkTouched.current) { linkTouched.current = new Set(); linkOperator.current = operator; }
+    setRestoreNote("The signed-in operator changed, so the previous operator's figures, which were not kept, were cleared from the screen.");
     return true;
   }
   const [operatorTick, setOperatorTick] = useState(0);
@@ -593,10 +624,14 @@ export default function DealCalculator() {
     if (contactId.trim() === "") return;
     const generation = ++linkGeneration.current;
     const start = latest.current ?? snapshot();
+    /* r2 finding 2: every field touched during the wait, with its value now (typed-then-cleared included). */
     const editedSinceStart = (): Partial<Record<DraftField, string>> => {
       const now = latest.current ?? start;
-      return Object.fromEntries(DRAFT_FIELDS.filter((f) => now[f] !== start[f]).map((f) => [f, now[f]]));
+      return Object.fromEntries([...(linkTouched.current ?? [])].map((f) => [f, now[f]]));
     };
+    linkTouched.current = new Set();
+    linkOperator.current = draftOperator();
+    previousScreen.current = start;
     setLinkBusy(true);
     setLinkError(null);
     leaveContext("Linking the contact -- figures here are not kept until a deal is chosen.");
@@ -612,7 +647,17 @@ export default function DealCalculator() {
       let mine: OpportunityRow[] | null;
       try { mine = (await ghl.opportunities.listPipeline()).opportunities.filter((o) => o.contactId === contact.id); } catch { mine = null; }
       if (generation !== linkGeneration.current) return;
-      const edited = editedSinceStart();
+      /* r2 finding 1 (backstop): if the operator changed during the wait without the reset above, nothing
+         from the screen carries into the new operator's deal. */
+      const operatorChanged = draftOperator() !== linkOperator.current;
+      const edited = operatorChanged ? {} : editedSinceStart();
+      linkTouched.current = null;
+      if (operatorChanged) {
+        const defaults = { ...DRAFT_DEFAULTS };
+        previousScreen.current = defaults;
+        applyValues(defaults);
+        latest.current = defaults;
+      }
       setLinkedContactId(contact.id);
       setLinkedContactName([contact.firstName, contact.lastName].filter(Boolean).join(" ") || contact.id);
       setDeals(mine);
@@ -633,9 +678,12 @@ export default function DealCalculator() {
     } catch (e: any) {
       if (generation !== linkGeneration.current) return;
       setLinkError(e?.message ?? "Could not load that contact.");
-      if (!linkedContactId) enterContext(scratchIdentity(), NO_GHL, "unlinked scratch work", latest.current ?? start, { overrides: editedSinceStart() });
+      const sameOperator = draftOperator() === linkOperator.current;
+      const overrides = sameOperator ? editedSinceStart() : {};
+      linkTouched.current = null;
+      if (!linkedContactId) enterContext(scratchIdentity(), NO_GHL, "unlinked scratch work", latest.current ?? start, { overrides, carry: sameOperator ? undefined : false });
     } finally {
-      if (generation === linkGeneration.current) setLinkBusy(false);
+      if (generation === linkGeneration.current) { setLinkBusy(false); linkTouched.current = null; }
     }
   }
 

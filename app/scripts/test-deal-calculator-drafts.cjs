@@ -22,8 +22,8 @@ const PAGE = '/scripts/harness/deal-calculator/index.html';
 const mutateArg = process.argv.find((a) => a.startsWith('--mutate='));
 const MUTATE = mutateArg ? mutateArg.slice('--mutate='.length) : null;
 
-/** Taken from the finished file: 26 check() call sites. */
-const FLOOR = 26;
+/** Taken from the finished file: 29 check() call sites. */
+const FLOOR = 29;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -43,8 +43,12 @@ const ENV = 'SoTgVoaFGHtBdRFvXWQV';                       // Test location (harn
 const ARV_ID = 'QkWl09I9yXGz8OIcs5Xd', REP_ID = 'SU4n8ylrXnUm8xDi729R';
 const SCRATCH_KEY = `iaos-calculator-draft:v1:scratch|${ENV}|this-browser`;
 const fixture = {
-  contacts: { 'c-kay': { arv: '310000', rep: '20000' }, 'c-two': {}, 'c-none': {}, 'c-seed': { arv: '410000', rep: '30000' } },
+  contacts: { 'c-kay': { arv: '310000', rep: '20000' }, 'c-two': {}, 'c-none': {}, 'c-seed': { arv: '410000', rep: '30000' },
+    'c-op': { arv: '610000', rep: '60000' }, 'c-tc': { arv: '710000', rep: '70000' }, 'c-combo': { arv: '810000', rep: '80000' } },
   opportunities: [
+    { id: 'o-op-1', contactId: 'c-op', contactName: 'Op Fixture', opportunityName: 'Op -- 1 Elm', phone: '', email: '', stageId: 's1', customFields: [] },
+    { id: 'o-tc-1', contactId: 'c-tc', contactName: 'TC Fixture', opportunityName: 'TC -- 2 Elm', phone: '', email: '', stageId: 's1', customFields: [] },
+    { id: 'o-combo-1', contactId: 'c-combo', contactName: 'Combo Fixture', opportunityName: 'Combo -- 3 Elm', phone: '', email: '', stageId: 's1', customFields: [] },
     { id: 'o-kay-1', contactId: 'c-kay', contactName: 'Kay Fixture', opportunityName: 'Kay -- 2623 Greenway', phone: '', email: '', stageId: 's1', customFields: [] },
     { id: 'o-seed-1', contactId: 'c-seed', contactName: 'Seed Fixture', opportunityName: 'Seed -- 7 Pine Ct', phone: '', email: '', stageId: 's1', customFields: [] },
     { id: 'o-two-1', contactId: 'c-two', contactName: 'Two Deals', opportunityName: 'Two -- Oak Ln', phone: '', email: '', stageId: 's1', customFields: [] },
@@ -338,6 +342,59 @@ async function main() {
     check('back to A, A\'s own figures return; a sign-out keeps the last operator (A), so A\'s later edits stay A\'s and B\'s are unchanged',
       backA.arv === '101' && backA.afterSignOut === '101' && backA.storedA === '103' && backA.storedB === '202', backA);
     await ops.context.close();
+
+    // ── Bones Phase 1 r2: an operator change, and typed-then-cleared fields, while a link is pending ──
+    const signInOn = (p, sub) => p.evaluate(async (s) => {
+      const m = await import('/src/lib/app-write-session.ts');
+      const b64 = (o) => btoa(JSON.stringify(o)).replace(/=+$/, '');
+      m.setAppWriteSession(s ? { token: `${b64({ alg: 'none' })}.${b64({ sub: s })}.x`, expiresAt: new Date(Date.now() + 3600_000).toISOString() } : null);
+    }, sub);
+    const allArvFor = (p, deal) => p.evaluate((d) => Object.keys(localStorage).filter((k) => k.includes(`|${d}`)).map((k) => ({ k, arv: JSON.parse(localStorage.getItem(k)).fields.arv?.value ?? null, test: JSON.parse(localStorage.getItem(k)).fields.testPrice?.value ?? null })), deal);
+    const pendingLink = async (p, contact) => {
+      fixture.contactDelayMs = 1500;
+      await p.getByTestId('deal-calc-link-input').fill(contact);
+      await p.getByTestId('deal-calc-link-button').click();
+    };
+    const linkDone = async (p) => { await p.getByTestId('deal-calc-unlink').waitFor({ timeout: 15000 }); await p.waitForTimeout(250); fixture.contactDelayMs = 0; };
+    const fresh = async () => { const c = await open(); await c.page.goto(`${base}${PAGE}`); await c.page.getByTestId('deal-calc-repairs-mode-toggle').waitFor({ timeout: 60000 }); await c.page.waitForTimeout(250); return c; };
+
+    const x1 = await fresh(); const P1 = (id) => x1.page.getByTestId(id);
+    await signInOn(x1.page, 'op-a'); await x1.page.waitForTimeout(250);
+    await P1('deal-calc-arv-input').fill('555'); await P1('deal-calc-test-price-input').fill('556'); await x1.page.waitForTimeout(250);
+    await pendingLink(x1.page, 'c-op');
+    await signInOn(x1.page, 'op-b'); await x1.page.waitForTimeout(150);
+    await linkDone(x1.page);
+    const opChange = { arv: await P1('deal-calc-arv-input').inputValue(), test: await P1('deal-calc-test-price-input').inputValue(), stored: await allArvFor(x1.page, 'o-op-1'),
+      scratchA: await x1.page.evaluate((k) => JSON.parse(localStorage.getItem(k) || 'null')?.fields.arv?.value ?? null, `iaos-calculator-draft:v1:scratch|${ENV}|op-a`) };
+    check('when operator B signs in while A\'s link is pending, none of A\'s figures carry into B\'s deal (B sees the contact seed); A\'s own kept figures stay A\'s',
+      opChange.arv === '610000' && opChange.test === '' && opChange.stored.every((s) => s.arv !== '555' && s.test !== '556') && opChange.scratchA === '555', opChange);
+    await x1.context.close();
+
+    const x2 = await fresh(); const P2 = (id) => x2.page.getByTestId(id);
+    await pendingLink(x2.page, 'c-tc');
+    await P2('deal-calc-arv-input').fill('9'); await x2.page.waitForTimeout(80);
+    await P2('deal-calc-arv-input').fill(''); await x2.page.waitForTimeout(80);
+    await linkDone(x2.page);
+    const typeClear = { arv: await P2('deal-calc-arv-input').inputValue(), arvState: (await P2('deal-calc-draft-arv').count()) ? (await P2('deal-calc-draft-arv').innerText()).trim() : null, rep: await P2('deal-calc-repairs-quick-input').inputValue() };
+    await x2.page.goto(`${base}${PAGE}?contactId=c-tc`); await P2('deal-calc-repairs-mode-toggle').waitFor({ timeout: 60000 });
+    await x2.page.waitForFunction(() => !/Linking the contact/.test(document.querySelector('[data-testid="deal-calc-draft-status"]')?.textContent || ''), null, { timeout: 15000 }); await x2.page.waitForTimeout(250);
+    typeClear.afterReload = await P2('deal-calc-arv-input').inputValue();
+    check('an ARV typed and then cleared while a link is pending is owned and stays blank: the late seed does not fill it, through reload (untouched quick repairs still take the seed)',
+      typeClear.arv === '' && typeClear.arvState === 'Draft -- Not saved to GHL' && typeClear.rep === '70000' && typeClear.afterReload === '', typeClear);
+    await x2.context.close();
+
+    const x3 = await fresh(); const P3 = (id) => x3.page.getByTestId(id);
+    await signInOn(x3.page, 'op-a'); await x3.page.waitForTimeout(250);
+    await pendingLink(x3.page, 'c-combo');
+    await P3('deal-calc-arv-input').fill('9'); await x3.page.waitForTimeout(80);
+    await P3('deal-calc-arv-input').fill(''); await x3.page.waitForTimeout(80);
+    await signInOn(x3.page, 'op-b'); await x3.page.waitForTimeout(150);
+    await P3('deal-calc-test-price-input').fill('42'); await x3.page.waitForTimeout(80);
+    await linkDone(x3.page);
+    const combo = { arv: await P3('deal-calc-arv-input').inputValue(), test: await P3('deal-calc-test-price-input').inputValue(), note: (await P3('deal-calc-draft-restored').count()) ? (await P3('deal-calc-draft-restored').innerText()).trim() : null };
+    check('combined: A types then clears ARV, then B signs in during the pending link -- A\'s touch is not B\'s (B gets the seed), while B\'s own edit made during the wait still wins',
+      combo.arv === '810000' && combo.test === '42', combo);
+    await x3.context.close();
 
     // ── storage failures ──
     const failing = await open(() => {

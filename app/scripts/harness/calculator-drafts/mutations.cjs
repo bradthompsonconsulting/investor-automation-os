@@ -58,6 +58,14 @@ const PAGE_MUTATIONS = {
   ],
   /* Bones Phase 1 finding 3: edits typed while the link is pending are kept in scratch work */
   'link-edits-to-scratch': [['    leaveContext("Linking the contact -- figures here are not kept until a deal is chosen.");\n', '']],
+  /* Bones Phase 1 r2 finding 1 (the 3962542 behaviour): an operator change while a link is pending carries
+     the previous operator's figures into the new operator's deal */
+  'pending-link-carries-across-operators': [
+    ['    if (notKeptOwner.current === null || notKeptOwner.current === operator) return false;', '    return false;'],
+    ['      const operatorChanged = draftOperator() !== linkOperator.current;', '      const operatorChanged = false;'],
+  ],
+  /* Bones Phase 1 r2 finding 2 (the 3962542 behaviour): ownership by final value, so typed-then-cleared is not owned */
+  'ownership-by-final-value': [['      return Object.fromEntries([...(linkTouched.current ?? [])].map((f) => [f, now[f]]));', '      return Object.fromEntries(DRAFT_FIELDS.filter((f) => now[f] !== start[f]).map((f) => [f, now[f]]));']],
 };
 
 function applyAll(src, subs, name) {
