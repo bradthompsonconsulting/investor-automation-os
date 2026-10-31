@@ -372,9 +372,9 @@ jobs:
         run: node app/scripts/test-b15-18-map-settings-redirect.cjs
       - name: Deal Calculator itemized repairs, both Clears and transfer-once, real page (INV-100, B15-01)
         run: node app/scripts/test-deal-calculator-interaction.cjs
-      - name: Deal Calculation ledger carrier and server guard -- registered v1 note, ownership, no silent overwrite, fresh basis, Production refused, separate from approvals (B15-25 Phase 2) — 35 checks
+      - name: Deal Calculation ledger carrier and server guard -- registered v1 note, ownership, no silent overwrite, fresh basis, Production refused, separate from approvals, malformed basis refused, runtime projection (B15-25 Phase 2 r2) — 42 checks
         run: node app/scripts/test-deal-calculation.cjs
-      - name: Save Calculation to Deal / Load Saved Calculation, real page -- explicit save only, one note.create, stale save blocked, Load asks first (B15-25 Phase 2) — 24 checks
+      - name: Save Calculation to Deal / Load Saved Calculation, real page -- explicit save only, one note.create, stale save blocked, Load asks first, OFF branch, unchanged/double-click/unconfirmed guards, cross-deal isolation (B15-25 Phase 2 r2) — 38 checks
         run: node app/scripts/test-deal-calculation-save.cjs
       - name: Incomplete repairs read as provisional, never a green Meets; numbers unchanged, real page (INV-134 B15-26, INV-100 B15-01) — 55 checks
         run: node app/scripts/test-b15-26-provisional-repairs.cjs

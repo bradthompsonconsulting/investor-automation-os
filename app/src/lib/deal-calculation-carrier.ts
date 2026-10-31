@@ -163,20 +163,33 @@ export function latestDealCalculationForOpportunity(notes: { body: string }[], o
 /**
  * The approved facts as BOTH sides read them: the opportunity's own custom
  * field `fieldValue` (the `/opportunities/{id}` shape `ghl-write-boundary.ts`
- * reads). Absent or empty = null; a non-numeric value is unreadable (throws)
- * -- a basis is never guessed.
+ * reads). A basis is never guessed:
+ *   - no entry for the field, or an entry whose `fieldValue` is null or "" -> null (nothing recorded);
+ *   - Bones B15-25 Phase 2 finding 3: MALFORMED evidence is unreadable, never "absent" -- the list is not an
+ *     array, an entry is not an object or has no string `id`, the field's entry has no own `fieldValue`, or its
+ *     value is anything but a non-negative number or a plain decimal string (object, array, boolean, text,
+ *     negative, non-finite) -> throws. Duplicate entries for one field -> throws.
  */
 export function basisFromOpportunityFields(
-  customFields: { id: string; [key: string]: unknown }[],
+  customFields: unknown,
   ids: { arv: string; repairs: string; currentOffer: string },
 ): DealCalculationBasis {
+  if (!Array.isArray(customFields)) throw new Error("deal calculation: opportunity fields are not a list");
+  for (const f of customFields) {
+    if (!f || typeof f !== "object" || Array.isArray(f) || typeof (f as { id?: unknown }).id !== "string") throw new Error("deal calculation: malformed opportunity field entry");
+  }
+  const fields = customFields as { id: string; [key: string]: unknown }[];
   const read = (id: string): number | null => {
-    const entries = customFields.filter((f) => f && f.id === id);
+    const entries = fields.filter((f) => f.id === id);
     if (entries.length > 1) throw new Error("deal calculation: duplicate field readback");
     if (entries.length === 0) return null;
+    if (!Object.prototype.hasOwnProperty.call(entries[0], "fieldValue")) throw new Error("deal calculation: malformed field readback (no fieldValue)");
     const raw = entries[0].fieldValue;
-    if (raw === null || raw === undefined || raw === "") return null;
-    const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : NaN;
+    if (raw === null || raw === "") return null;
+    let n: number;
+    if (typeof raw === "number") n = raw;
+    else if (typeof raw === "string" && /^\s*\d+(\.\d+)?\s*$/.test(raw)) n = Number(raw.trim());
+    else throw new Error("deal calculation: unreadable approved fact");
     if (!Number.isFinite(n) || n < 0) throw new Error("deal calculation: unreadable approved fact");
     return Math.round(n * 100) / 100;
   };

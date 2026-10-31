@@ -16,7 +16,7 @@ const path = require('path');
 const APP = path.resolve(__dirname, '..');
 const readSrc = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8');
 
-const FLOOR = 80;
+const FLOOR = 82;
 let failures = 0;
 let checks = 0;
 
@@ -185,7 +185,9 @@ const barTs = readSrc('src/lib/deal-calculator-bar.ts');
   check('page states plainly that NEITHER ARV nor Repairs saves from here', /Neither ARV nor Repairs is saved from here/.test(calcTsx), true);
   check('page contains no write-capable GHL call of any kind (notes.create, setApprovedArv, setEstimatedRepairs, setLastCallAttempt, setCallbackDatetime, saveUnderwritingFields)', ['.notes.create', 'setApprovedArv', 'setEstimatedRepairs', 'setLastCallAttempt', 'setCallbackDatetime', 'saveUnderwritingFields'].every((t) => calcTsx.indexOf(t) === -1), true);
   // B15-25 Phase 2 (Jess RULING 2026-10-30): the ONE explicitly authorized write surface is the save panel.
-  check('B15-25 panel: exactly one write call, ghl.notes.create, fed only by formatDealCalculationNote', (savePanelTsx.match(/ghl\.notes\.create\(/g) || []).length === 1 && /ghl\.notes\.create\(contactId, formatDealCalculationNote\(calc\)\)/.test(savePanelTsx), true);
+  check('B15-25 panel: exactly one write call, ghl.notes.create with a fresh request id; its body is only formatDealCalculationNote(calc) or the IDENTICAL unconfirmed note resent', (savePanelTsx.match(/ghl\.notes\.create\(/g) || []).length === 1 && /ghl\.notes\.create\(contactId, body, \{ requestId: crypto\.randomUUID\(\) \}\)/.test(savePanelTsx) && /const body = formatDealCalculationNote\(calc\);/.test(savePanelTsx) && (savePanelTsx.match(/\bsend\(/g) || []).length === 3 && /await send\(opportunityId, body\)/.test(savePanelTsx) && /await send\(opportunityId, attempt\.body\)/.test(savePanelTsx), true);
+  check('B15-25 r2 panel: reconcile (Check GHL / Resend the same calculation) runs only from its two buttons', (savePanelTsx.match(/\breconcile\(/g) || []).length === 3 && (savePanelTsx.match(/onClick=\{\(\) => void reconcile\(/g) || []).length === 2, true);
+  check('B15-25 r2 panel: Save is offered only when the runtime projection says saving is on; the off branch has no Save button', /getRuntimeConfig\(\)\.dealCalculationSave\?\.enabled === true/.test(savePanelTsx) && /if \(!saveEnabled\) \{[\s\S]*?deal-calc-save-disabled[\s\S]*?\n  \}/.test(savePanelTsx) && !/if \(!saveEnabled\) \{[^}]*deal-calc-save-calculation/.test(savePanelTsx), true);
   check('B15-25 panel: no other write-capable call (approvals, Current Offer, underwriting, assignment mode, stage, raw fetch)', ['setApprovedArv', 'setEstimatedRepairs', 'setLastCallAttempt', 'setCallbackDatetime', 'saveUnderwritingFields', 'setAskingPrice', 'setCurrentOffer', 'currentOffer(', 'setAssignmentMode', 'updateStage', 'appWriteFetch', 'writeCommand', 'confirmedCommand', 'fetch('].every((t) => savePanelTsx.indexOf(t) === -1), true);
   check('B15-25 panel: its only opportunity calls are the existing reads listPipeline and get', (savePanelTsx.match(/ghl\.opportunities\.(\w+)/g) || []).every((m) => m === 'ghl.opportunities.listPipeline' || m === 'ghl.opportunities.get'), true);
   check('B15-25 panel: the save runs only from its two explicit buttons (Save, Save as New) -- no autosave', (savePanelTsx.match(/handleSave\(/g) || []).length === 3 && (savePanelTsx.match(/onClick=\{\(\) => void handleSave\(/g) || []).length === 2, true);

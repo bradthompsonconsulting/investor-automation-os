@@ -26,6 +26,8 @@ const MUTATIONS = {
   'parser-ignores-status': { file: 'src/lib/deal-calculation-carrier.ts', from: ' || status !== DEAL_CALCULATION_STATUS', to: '' },
   'regex-without-deal': { file: 'netlify/functions/lib/write-note-guard.ts', from: '|ATTORNEY|DEAL)/', to: '|ATTORNEY)/' },
   'guard-skips-switch': { file: 'netlify/functions/lib/write-note-guard.ts', from: 'if (config.dealCalculationSave.enabled !== DEAL_CALCULATION_SAVE_ENABLED) throw new Error("Deal calculation saving is disabled");', to: '' },
+  // r2 (Bones finding 3): treat a field entry with no own fieldValue as "nothing recorded" again.
+  'basis-malformed-as-absent': { file: 'src/lib/deal-calculation-carrier.ts', from: 'if (!Object.prototype.hasOwnProperty.call(entries[0], "fieldValue")) throw new Error("deal calculation: malformed field readback (no fieldValue)");', to: 'if (!Object.prototype.hasOwnProperty.call(entries[0], "fieldValue")) return null;' },
 };
 const mutateArg = process.argv.find((a) => a.startsWith('--mutate='));
 const mutation = mutateArg ? MUTATIONS[mutateArg.slice('--mutate='.length)] : null;
@@ -61,7 +63,7 @@ const sellerPosition = require('../src/lib/seller-call-seller-position-note.ts')
 const scope = require('../netlify/functions/lib/production-write-scope.ts');
 const { validateLedgerNote } = require('../netlify/functions/lib/write-note-guard.ts');
 
-const FLOOR = 35;
+const FLOOR = 42;
 let checks = 0, failures = 0;
 async function check(name, fn) {
   checks++;
@@ -137,6 +139,16 @@ const swapLine = (body, label, value) => body.split('\n').map((l) => (l.startsWi
     assert.deepEqual(dc.basisFromOpportunityFields([{ id: IDS.arv, fieldValue: '250000' }, { id: IDS.repairs, fieldValue: '' }, { id: IDS.currentOffer, fieldValue: 145000 }], IDS), { arv: 250000, repairs: null, currentOffer: 145000 });
     assert.throws(() => dc.basisFromOpportunityFields([{ id: IDS.arv, fieldValue: 'lots' }], IDS));
     assert.throws(() => dc.basisFromOpportunityFields([{ id: IDS.arv, fieldValue: 1 }, { id: IDS.arv, fieldValue: 2 }], IDS));
+  });
+  await check('r2 basis reader: the field\'s entry with no own fieldValue is MALFORMED (throws), never "nothing recorded"', () => {
+    assert.throws(() => dc.basisFromOpportunityFields([{ id: IDS.arv }], IDS), /no fieldValue/);
+    assert.throws(() => dc.basisFromOpportunityFields([{ id: IDS.currentOffer, value: 145000 }], IDS), /no fieldValue/);
+  });
+  await check('r2 basis reader: an object, array, boolean, text, negative or non-finite fieldValue throws', () => {
+    for (const v of [{}, [1], true, 'n/a', '12abc', -1, Infinity, '1e5']) assert.throws(() => dc.basisFromOpportunityFields([{ id: IDS.repairs, fieldValue: v }], IDS), undefined, JSON.stringify(v));
+  });
+  await check('r2 basis reader: a non-array list, a null entry or an entry without a string id throws', () => {
+    for (const list of [null, {}, 'x', [null], [42], [{ fieldValue: 1 }], [{ id: 7, fieldValue: 1 }]]) assert.throws(() => dc.basisFromOpportunityFields(list, IDS), undefined, JSON.stringify(list));
   });
   const fresh = (over = {}) => ({ latest: null, basis: { arv: null, repairs: null, currentOffer: null }, propertyIdentity: null, nowMs: Date.now(), ...over });
   await check('save rule: Supersedes must equal the latest saved calculation (else newer_calculation_exists)', () => {
@@ -229,6 +241,13 @@ const swapLine = (body, label, value) => body.split('\n').map((l) => (l.startsWi
     await rejects(validateLedgerNote(boundary({ fields }), CONTACT, bodyOf(), 'b'), /basis_mismatch/);
     await validateLedgerNote(boundary({ fields }), CONTACT, bodyOf({ basis: { arv: 250000, repairs: null, currentOffer: null } }), 'b');
   }));
+  await check('r2 ENABLED: the deal\'s field entry with no fieldValue is refused by the server guard (malformed, not absent)', () => enabled(async () => {
+    await rejects(validateLedgerNote(boundary({ fields: [{ id: IDS.arv }] }), CONTACT, bodyOf(), 'b'), /no fieldValue/);
+  }));
+  await check('r2 ENABLED: an object or array fieldValue on an approved-fact field is refused by the server guard', () => enabled(async () => {
+    await rejects(validateLedgerNote(boundary({ fields: [{ id: IDS.currentOffer, fieldValue: { amount: 1 } }] }), CONTACT, bodyOf(), 'b'), /unreadable approved fact/);
+    await rejects(validateLedgerNote(boundary({ fields: [{ id: IDS.repairs, fieldValue: [30000] }] }), CONTACT, bodyOf(), 'b'), /unreadable approved fact/);
+  }));
   await check('ENABLED: a property identity other than the latest confirmation is refused', () => enabled(async () => {
     const at = iso(Date.now() - 5000);
     const pid = rc.formatPropertyIdentityConfirmationNote({ opportunityId: OPP, at, operator: 'brad', status: 'confirmed', address: '1 Test St' });
@@ -241,6 +260,22 @@ const swapLine = (body, label, value) => body.split('\n').map((l) => (l.startsWi
   }));
   await check('an undeclared "IAOS DEAL ..." note is refused by the reserved prefix (never stored as a plain note)', async () => {
     await rejects(validateLedgerNote(boundary({}), CONTACT, 'IAOS DEAL CALCULATION — forged\nOpportunity: x', 'b'), /Malformed or undeclared ledger note/);
+  });
+  await check('r2 projection: committed config projects saving OFF in both environments; ON only for env "test" with the sentinel ENABLED', () => enabled(async () => {
+    test.dealCalculationSave.enabled = cfgLib.DEAL_CALCULATION_SAVE_DISABLED;
+    assert.deepEqual(cfgLib.projectRuntimeConfig(test, 'test').dealCalculationSave, { enabled: false });
+    assert.deepEqual(cfgLib.projectRuntimeConfig(cfgLib.getConfig('production'), 'production').dealCalculationSave, { enabled: false });
+    test.dealCalculationSave.enabled = cfgLib.DEAL_CALCULATION_SAVE_ENABLED;
+    assert.deepEqual(cfgLib.projectRuntimeConfig(test, 'test').dealCalculationSave, { enabled: true });
+    assert.deepEqual(cfgLib.projectRuntimeConfig(test, 'production').dealCalculationSave, { enabled: false });
+    assert.deepEqual(cfgLib.projectRuntimeConfig(test).dealCalculationSave, { enabled: false });
+  }));
+  await check('r2 runtime validator: dealCalculationSave must be exactly { enabled: boolean }; absent is accepted (= off)', () => {
+    const good = cfgLib.projectRuntimeConfig(test, 'test');
+    for (const bad of [{ enabled: 'yes' }, { enabled: 1 }, { enabled: true, extra: 1 }, [], null, 'on']) assert.throws(() => cfgLib.setRuntimeConfig({ ...good, dealCalculationSave: bad }), /dealCalculationSave/, JSON.stringify(bad));
+    const { dealCalculationSave, ...absent } = good; void dealCalculationSave;
+    assert.equal(cfgLib.setRuntimeConfig(absent).dealCalculationSave, undefined);
+    assert.deepEqual(cfgLib.setRuntimeConfig({ ...good, dealCalculationSave: { enabled: false } }).dealCalculationSave, { enabled: false });
   });
   await check('a plain note is unchanged (not a ledger note; the guard accepts it as before)', async () => {
     await validateLedgerNote(boundary({}), CONTACT, 'Called the seller; left a voicemail.', 'b');

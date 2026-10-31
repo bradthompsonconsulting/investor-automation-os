@@ -1532,10 +1532,32 @@ export interface RuntimeConfig {
    * and recovery on its own config; this projection only tells the page what to offer.
    */
   propertyAnswerRecovery: RecoveryProjection;
+  /**
+   * B15-25 Phase 2 (r2, Bones finding 4): ONLY whether this deployment accepts Deal Calculation saves -- true
+   * only on a Test deployment whose `dealCalculationSave` sentinel is exactly ENABLED. ABSENT reads as disabled
+   * (the page then offers no Save). The server decides every save on its own config; this only tells the page
+   * whether to offer it.
+   */
+  dealCalculationSave?: DealCalculationSaveProjection;
 }
 
 export type RecoveryPair = { contactId: string; opportunityId: string };
 export type RecoveryProjection = { enabled: boolean; pairs: RecoveryPair[] };
+
+/** B15-25 Phase 2 (r2) -- see `RuntimeConfig.dealCalculationSave`. */
+export type DealCalculationSaveProjection = { enabled: boolean };
+/** `environment` is the server's IAOS_ENV; anything but "test", or a sentinel other than ENABLED, projects disabled. */
+export function projectDealCalculationSave(config: GhlConfig, environment: string | undefined): DealCalculationSaveProjection {
+  return { enabled: environment === "test" && config.dealCalculationSave.enabled === DEAL_CALCULATION_SAVE_ENABLED };
+}
+/** Absent is accepted (= disabled). Present must be exactly { enabled: boolean } -- never a truthy sentinel. */
+function invalidDealCalculationSave(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "dealCalculationSave";
+  const v = value as Record<string, unknown>;
+  if (Object.keys(v).join(",") !== "enabled" || typeof v.enabled !== "boolean") return "dealCalculationSave";
+  return null;
+}
 const RECOVERY_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** The close/recovery projection for one deployment. `environment` is the server's IAOS_ENV; anything but "test" projects disabled. */
@@ -1571,7 +1593,7 @@ function invalidRecovery(value: unknown): string | null {
 
 /**
  * Server side: project a full config down to what the browser consumes.
- * `environment` (the server's IAOS_ENV) is used ONLY for `propertyAnswerRecovery`; omitted, it projects disabled.
+ * `environment` (the server's IAOS_ENV) is used ONLY for `propertyAnswerRecovery` and `dealCalculationSave`; omitted, both project disabled.
  */
 export function projectRuntimeConfig(config: GhlConfig, environment?: string): RuntimeConfig {
   const out: Record<string, unknown> = {
@@ -1579,6 +1601,7 @@ export function projectRuntimeConfig(config: GhlConfig, environment?: string): R
     contractDraftRequest: config.contractDraftRequest,
     contractSellerCountField: config.contractSellerCountField,
     propertyAnswerRecovery: projectRecovery(config, environment),
+    dealCalculationSave: projectDealCalculationSave(config, environment),
   };
   for (const [group, keys] of Object.entries(RUNTIME_GROUPS)) {
     const source = config[group as keyof GhlConfig] as Record<string, string>;
@@ -1616,7 +1639,8 @@ let RUNTIME: RuntimeConfig | null = null;
  * incomplete, which is what keeps main.tsx from importing App.
  */
 export function setRuntimeConfig(payload: unknown): RuntimeConfig {
-  const missing = firstIncompleteKey(runtimeEntries(payload)) ?? invalidRecovery((payload as Record<string, unknown> | null)?.propertyAnswerRecovery);
+  const missing = firstIncompleteKey(runtimeEntries(payload)) ?? invalidRecovery((payload as Record<string, unknown> | null)?.propertyAnswerRecovery)
+    ?? invalidDealCalculationSave((payload as Record<string, unknown> | null)?.dealCalculationSave);
   if (missing !== null) {
     throw new Error(
       `[ghl-config] runtime configuration is incomplete: ${missing} is ` +

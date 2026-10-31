@@ -13,7 +13,9 @@ import { getConfig, projectRuntimeConfig, setRuntimeConfig } from "../../../shar
 import { setAppWriteSession } from "../../../src/lib/app-write-session";
 import { formatDealCalculationNote, parseDealCalculationNote } from "../../../src/lib/deal-calculation-carrier";
 
-setRuntimeConfig(projectRuntimeConfig(getConfig("test")));
+/* Test-only: the deployment projection would say "off" (DISABLED is committed); the harness turns saving on, unless
+   the URL asks for the off branch (?saveDisabled=1). The test answers ghl-write itself; nothing reaches GHL. */
+setRuntimeConfig({ ...projectRuntimeConfig(getConfig("test")), dealCalculationSave: { enabled: new URLSearchParams(location.search).get("saveDisabled") !== "1" } });
 setAppWriteSession({ token: "offline-harness", expiresAt: "2099-01-01T00:00:00.000Z" });
 (window as unknown as Record<string, unknown>).__dealCalc = { format: formatDealCalculationNote, parse: parseDealCalculationNote, arvField: getConfig("test").opportunityFacts.arv };
 
