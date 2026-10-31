@@ -28,6 +28,7 @@ import {
 } from "../lib/repair-estimation/operator-model";
 import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstimateSummary";
 import { NetProceedsPanel } from "../components/NetProceedsPanel";
+import { DealCalculationSavePanel, type CalculatorFigures } from "../components/DealCalculationSavePanel";
 import { computeRepairEstimate } from "../lib/repair-estimation/compute";
 import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
 
@@ -107,8 +108,13 @@ import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
  * page instead links to the real Underwriting workspace for BOTH figures,
  * exactly as Seller Call (B8-07) already does for ARV.
  *
- * READ ONLY. This page performs no GHL write of any kind. Its only
- * network calls are reads (contact detail, investor policy).
+ * READ ONLY, WITH ONE NAMED EXCEPTION (B15-25 Phase 2, Jess RULING 2026-10-30;
+ * Captain approved P2-1..P2-5). This page itself performs no GHL write; its
+ * network calls are reads (contact detail, investor policy). The one write
+ * surface is the linked-contact `DealCalculationSavePanel`: an explicit "Save
+ * Calculation to Deal" button that appends ONE `IAOS DEAL CALCULATION` note --
+ * a working calculation, never an approval, never ARV, Repairs or Current
+ * Offer (docs/INV95_WRITE_BOUNDARIES.md; refused in Production).
  */
 
 const CONFIG = getRuntimeConfig();
@@ -414,6 +420,20 @@ export default function DealCalculator() {
 
   const [netPanelRevision, setNetPanelRevision] = useState(0);
 
+  /* B15-25 Phase 2: the figures and modes the Save/Load panel works with -- figures only; itemized
+     repair rows, Miscellaneous and the net-proceeds inputs are not saved in this phase. Loading a
+     saved calculation replaces exactly these (the panel asks first when there are unsaved changes). */
+  const calculatorFigures: CalculatorFigures = { arvInput, repairsQuickInput, testPriceInput, assignmentMode, manualAmountInput, repairsMode };
+  function handleLoadCalculation(next: CalculatorFigures) {
+    setArvInput(next.arvInput);
+    setRepairsMode(next.repairsMode);
+    setRepairsQuickInput(next.repairsQuickInput);
+    bumpRepairRevision();
+    setTestPriceInput(next.testPriceInput);
+    setAssignmentMode(next.assignmentMode);
+    setManualAmountInput(next.manualAmountInput);
+  }
+
   function handleClear() {
     setArvInput("");
     setRepairsQuickInput("");
@@ -659,6 +679,11 @@ export default function DealCalculator() {
         )}
         {linkError ? <div data-testid="deal-calc-link-error" style={{ color: "#EF4444", fontSize: "11px", marginTop: "8px" }}>{linkError}</div> : null}
       </div>
+
+      {/* B15-25 Phase 2: Save Calculation to Deal / Load Saved Calculation -- linked contact only. */}
+      {linkedContactId ? (
+        <DealCalculationSavePanel key={linkedContactId} contactId={linkedContactId} figures={calculatorFigures} onLoad={handleLoadCalculation} />
+      ) : null}
 
       {/* More Detail -- Assignment Mode + the eleven Investor Policy assumptions. */}
       <div style={{ marginTop: "16px" }}>
