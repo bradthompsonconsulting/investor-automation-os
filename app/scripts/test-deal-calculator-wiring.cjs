@@ -141,7 +141,9 @@ const barTs = readSrc('src/lib/deal-calculator-bar.ts');
 // ============================================================
 {
   check('testPriceInput state is initialized empty', /const \[testPriceInput, setTestPriceInput\] = useState\(""\)/.test(calcTsx), true);
-  check('setTestPriceInput is called ONLY from its own input onChange and Clear-to-empty (never a derived/computed value)', (calcTsx.match(/setTestPriceInput\(/g) || []).length, 2);
+  /* B15-25: a third call site restores the operator's own kept text (applyValues, `v.testPrice`) -- still never a derived value. */
+  check('setTestPriceInput is called ONLY from its own input onChange, Clear-to-empty and restoring the operator\'s own kept draft text (never a derived/computed value)',
+    (calcTsx.match(/setTestPriceInput\(/g) || []).length === 3 && /setTestPriceInput\(v\.testPrice\)/.test(calcTsx), true);
   check('every setTestPriceInput call site sets it from the raw input event or to "" (Clear), never a number expression', !/setTestPriceInput\([^)"]*\.(target|value)[^)]*\+|setTestPriceInput\(\s*\d/.test(calcTsx), true);
 }
 
@@ -151,9 +153,15 @@ const barTs = readSrc('src/lib/deal-calculator-bar.ts');
 // ============================================================
 {
   check('page renders a link panel', /data-testid="deal-calc-link-panel"/.test(calcTsx), true);
-  check('page reads ghl.contacts.getDetail for linking (no ghl.opportunities call anywhere -- Contact-level only)', /ghl\.contacts\.getDetail/.test(calcTsx) && !/ghl\.opportunities\./.test(calcTsx), true);
+  /* B15-25 (Jess GO 2026-10-30): drafts are isolated per deal, so the page now finds the linked contact's deals --
+     through the existing READ ghl.opportunities.listPipeline() only; no other opportunities method, no write. */
+  check('page reads ghl.contacts.getDetail for linking, and its only ghl.opportunities use is the existing listPipeline() read',
+    /ghl\.contacts\.getDetail/.test(calcTsx) && (calcTsx.match(/ghl\.opportunities\.\w+/g) || []).every((m) => m === 'ghl.opportunities.listPipeline')
+    && (calcTsx.match(/ghl\.opportunities\.listPipeline\(\)/g) || []).length === 1, true);
   check('page imports parseContactSeeds (the same PB-D55 seed concept Seller Call/Underwriting already read)', /parseContactSeeds/.test(calcTsx), true);
-  check('linking never overwrites an already-typed ARV/Repairs value (guarded on the input being empty first)', /arvInput\.trim\(\) === ""[\s\S]{0,20}&&[\s\S]{0,20}seeds\.arv/.test(calcTsx) && /repairsQuickInput\.trim\(\) === ""[\s\S]{0,20}&&[\s\S]{0,20}seeds\.repairs/.test(calcTsx), true);
+  /* B15-25: the guard reads the value that is on screen after a kept draft is restored (`screen`), so a seed
+     never overwrites a typed or restored value. */
+  check('linking never overwrites an already-typed or restored ARV/Repairs value (guarded on the on-screen value being empty first)', /screen\.arv\.trim\(\) === ""[\s\S]{0,20}&&[\s\S]{0,20}seeds\.arv/.test(calcTsx) && /screen\.repairsQuick\.trim\(\) === ""[\s\S]{0,20}&&[\s\S]{0,20}seeds\.repairs/.test(calcTsx), true);
   // Checked against comments-stripped source: the module's OWN header
   // comment names `persistApprovedArv` in prose to EXPLAIN why ARV is
   // never saved back, which would false-positive a plain substring check

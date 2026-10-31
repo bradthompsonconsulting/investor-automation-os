@@ -139,7 +139,8 @@ check('F45 Contract BLOCKED stage uses a label', /\{VERIFICATION_STAGE_LABEL\[fu
 // F45 Underwriting partial-save carrier labels: owned by PR #123 (test-b15-operator-copy.cjs), not duplicated here.
 
 // ── F41 / F42 / F46 Deal Calculator ─────────────────────────────────────
-check('F41 Deal Calculator title area says nothing is saved', /Scratchpad -- nothing here is saved\./.test(calc), true);
+/* B15-25: figures are now kept in this browser, so the title area says nothing is saved TO GHL. */
+check('F41 Deal Calculator title area says nothing is saved to GHL', /Scratchpad -- nothing here is saved to GHL\./.test(calc), true);
 check('F42/F46 practice-figures note under the figure bar',
   /data-testid="deal-calc-practice-figures-note"[\s\S]{0,200}Practice figures: the repairs, offer and spread here do not change the deal\./.test(calc), true);
 check('F42/F46 Underwriting legend line near the decision figures',
