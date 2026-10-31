@@ -1,9 +1,11 @@
 import { useState } from "react";
+import { defaultCallbackLocalValue } from "../lib/callback-default";
 
 /**
  * CallbackPopover — shared schedule-callback control. Extracted verbatim from
  * Dashboard.tsx so the Dashboard and the Contact Workspace use ONE popover and
- * cannot drift. Defaults to today at the next :00/:30, step={1800}, un-muted
+ * cannot drift. Defaults to the next :00/:30 inside calling hours (9:00 AM -
+ * 7:00 PM operator local; B15-20, lib/callback-default.ts), step={1800}, un-muted
  * Save/Clear/Cancel. Save/Clear semantics (which writes fire) are the caller's
  * concern via onSave/onClear — this component only collects a datetime.
  */
@@ -17,18 +19,12 @@ function toDatetimeLocalValue(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// Default value when the popover opens with no existing callback — today,
-// rounded up to the next :00/:30 mark so it lines up with the input's
-// step={1800} constraint and Save is immediately usable. UX default only;
-// does not change what setCallbackDatetime writes (that's still whatever
-// the field holds when Save is clicked).
-function defaultCallbackLocalValue(): string {
-  const d = new Date();
-  if (d.getMinutes() < 30) d.setMinutes(30, 0, 0);
-  else d.setHours(d.getHours() + 1, 0, 0, 0);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
+// Default value when the popover opens with no existing callback: the next
+// :00/:30 mark (lines up with step={1800}, so Save is immediately usable),
+// kept inside calling hours 9:00 AM - 7:00 PM operator local time
+// (B15-20, lib/callback-default.ts). UX default only; does not change what
+// setCallbackDatetime writes (that's still whatever the field holds when
+// Save is clicked).
 
 export function CallbackPopover({
   current, saving, error, onSave, onClear, onClose,
@@ -40,7 +36,7 @@ export function CallbackPopover({
   onClear: () => void;
   onClose: () => void;
 }) {
-  // Defaults to today (rounded to the next :00/:30) rather than blank, so
+  // Defaults to the next :00/:30 inside calling hours rather than blank, so
   // Save is usable immediately without requiring input first.
   const [value, setValue] = useState(current ? toDatetimeLocalValue(current) : defaultCallbackLocalValue());
   return (
