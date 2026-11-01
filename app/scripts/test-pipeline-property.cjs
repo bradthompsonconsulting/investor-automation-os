@@ -62,9 +62,11 @@ fs.rmSync(TMP, { recursive: true, force: true });
 const { indexPropertyAddresses, countDealsByContact, pipelinePropertyCell, loadPropertyAddresses } = lib;
 // Absent before B15-09a: the negative control must fail these checks, not crash on them.
 const formatNativeAddress = lib.formatNativeAddress ?? (() => 'formatNativeAddress is missing');
+// Absent before the Contacts-grid change (R-C1): the same rule.
+const contactPropertyAddress = lib.contactPropertyAddress ?? (() => 'contactPropertyAddress is missing');
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 53;
+const FLOOR = 58;
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -140,6 +142,23 @@ const NATIVE_C1 = '500 Native Imported Rd, Dallas, TX 75001';
   check('whitespace is collapsed and trimmed', f('  12   Oak St ', ' Austin ', ' TX', '78701 '), '12 Oak St, Austin, TX 78701');
   check('no street: no native address, whatever else is set', f('', 'Austin', 'TX', '78701'), '');
   check('missing parts (undefined) are treated as empty', formatNativeAddress({ address1: '12 Oak St' }), '12 Oak St');
+}
+
+// ============================================================
+// The Contacts grid's displayed address (Jess R-C1, 2026-10-31).
+// ============================================================
+{
+  const mail = { mailingAddress: '9 Mailing Rd', mailing_city: 'Mailtown', mailing_state: 'OK', mailing_zip: '73001' };
+  const g = (address1, city, state, postalCode, propertyAddress) => contactPropertyAddress({ address1, city, state, postalCode, propertyAddress, ...mail });
+  check('grid: the native address first, marked native, even when the Property Address field is set',
+    g('417 Cedar Bend Rd', 'Waco', 'TX', '76701', '9 Customonly Ct'), { text: '417 Cedar Bend Rd, Waco, TX 76701', source: 'native' });
+  check('grid: no native street (city/state only, or whitespace): the trimmed Property Address field, marked field',
+    [g('', 'Frisco', 'TX', '75034', ' 77 Field Only Rd '), g('   ', '', '', '', '9 Elm St')], [{ text: '77 Field Only Rd', source: 'field' }, { text: '9 Elm St', source: 'field' }]);
+  check('grid: neither: empty, marked none (a city or state alone is not an address)', g('', 'Frisco', 'TX', '75034', '  '), { text: '', source: 'none' });
+  check('grid: a mailing address is never the displayed value', /Mailing|Mailtown|73001/.test(JSON.stringify([g('', '', '', '', ''), g('1 A St', 'X', 'TX', '75001', '')])), false);
+  check('grid: the native qualifier never claims a confirmed property address',
+    [lib.NATIVE_ADDRESS_QUALIFIER, /not confirmed as the property address$/.test(lib.NATIVE_ADDRESS_QUALIFIER ?? '')],
+    ["From the contact's address fields; not confirmed as the property address", true]);
 }
 
 // ============================================================

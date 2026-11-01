@@ -4,8 +4,15 @@
  * Ruling (Jess, 2026-10-08): the search may also match the Property Address
  * value the grid already displays -- case-insensitive, partial -- while Name,
  * Email and punctuation-insensitive phone search stay as they were. A blank
- * address never matches. No native-address fallback, no new read, no save.
+ * address never matches. No new read, no save.
  * CONTACTS_OPPORTUNITIES_SPEC.md §5.1, amendment 2026-10-08.
+ *
+ * R-C1 (Jess, 2026-10-31; §5.1 amendment 2026-10-31) supersedes that
+ * amendment's "no native-address fallback": the displayed (and searched)
+ * address is the native block first (street required), else the Property
+ * Address field. A native value carries a qualifier and is never shown as a
+ * confirmed property address; the qualifier and mailing fields never match.
+ * NEGATIVE CONTROL for R-C1: --before=fdb2a8a (the B15-09a base) must FAIL.
  *
  * BEHAVIOUR, rendered. Vite serves scripts/harness/contacts-search -- the REAL
  * Layout and Contacts page with the real GHL client AND the app's real
@@ -50,11 +57,11 @@ const MUTATE = mutateArg ? mutateArg.slice('--mutate='.length) : null;
 const CONTROL = BEFORE_REV ?? (MUTATE && `--mutate=${MUTATE}`);
 
 /**
- * Taken from the finished file, never back-filled from a passing run: 10 single
- * check() call sites + 1 inside the width loop x 6 widths + 11 expectRows()
- * call sites (one check each) = 27.
+ * Taken from the finished file, never back-filled from a passing run: 13 single
+ * check() call sites + 1 inside the width loop x 6 widths + 18 expectRows()
+ * call sites (one check each) = 37.
  */
-const FLOOR = 27;
+const FLOOR = 37;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -79,19 +86,31 @@ if (MUTATE) {
 }
 
 // ── Fixture (ghl-contacts returns ContactRow[]; names arrive lowercased) ─────
-const contact = (id, firstName, lastName, phone, email, propertyAddress, dateAdded) =>
-  ({ id, firstName, lastName, phone, email, propertyAddress, dateAdded });
+// All fictional. The first four carry no native address (the B15-11 cases);
+// the R-C1 three carry native parts, and every one of those also carries a
+// mailing address that must never be shown or matched.
+const contact = (id, firstName, lastName, phone, email, propertyAddress, dateAdded, native) =>
+  ({ id, firstName, lastName, phone, email, propertyAddress, dateAdded, ...native });
+const native = (address1, city, state, postalCode) =>
+  ({ address1, city, state, postalCode, mailingAddress: '700 Mailbox Way', mailing_city: 'Mailville', mailing_state: 'OK', mailing_zip: '73001' });
 const CONTACTS = [
   contact('c-kay', 'kay', 'fixture', '+18175550101', 'kay@example.com', '2623 Greenway Dr, Dallas, TX 75201', '2026-10-07T15:00:00.000Z'),
   contact('c-lee', 'lee', 'blank', '+12149146151', 'lee@sample.org', '', '2026-10-06T15:00:00.000Z'),
   contact('c-max', 'max', 'third', '+14695550123', 'max@third.net', '88 Oak Ln, Austin, TX 78701', '2026-10-05T15:00:00.000Z'),
   contact('c-ann', 'ann', 'oakley', '+19725550188', 'ann@oakley.io', '', '2026-10-04T15:00:00.000Z'),
+  contact('c-ivy', 'ivy', 'imported', '+12545550111', 'ivy@example.net', '', '2026-10-03T15:00:00.000Z', native('417 Cedar Bend Rd', 'Waco', 'TX', '76701')),
+  contact('c-bo', 'bo', 'bothset', '+19725550122', 'bo@example.net', '9 Customonly Ct', '2026-10-02T15:00:00.000Z', native('55 Native Pl', 'Plano', 'TX', '75074')),
+  contact('c-cy', 'cy', 'cityonly', '+14695550133', 'cy@example.net', '', '2026-10-01T15:00:00.000Z', native('', 'Frisco', 'TX', '75034')),
 ];
 const KAY = 'kay fixture';
 const LEE = 'lee blank';
 const MAX = 'max third';
 const ANN = 'ann oakley';
-const ALL = [KAY, LEE, MAX, ANN];
+const IVY = 'ivy imported';
+const BO = 'bo bothset';
+const CY = 'cy cityonly';
+const ALL = [KAY, LEE, MAX, ANN, IVY, BO, CY];
+const QUALIFIER = "From the contact's address fields; not confirmed as the property address";
 const PLACEHOLDER = 'Search name, phone, email, property address…';
 const WIDTHS = [2560, 1440, 1280, 1024, 768, 640];
 
@@ -207,7 +226,7 @@ async function main() {
     await expectRows('an address match and a name/email match both show, in the active Date Added order', 'oak', [MAX, ANN]);
     const badge = (await page.locator('main h1 + span').innerText()).trim();
     /* B15-19: the badge names what it counts and, while searching, the total. */
-    check('the count badge counts the address matches', badge === '2 of 4 contacts', badge);
+    check('the count badge counts the address matches', badge === '2 of 7 contacts', badge);
     const nameHeader = page.locator('thead th', { hasText: /^Name$/ });
     await nameHeader.click();
     const asc = await search('oak', [ANN, MAX]);
@@ -225,6 +244,33 @@ async function main() {
     check('phone search unchanged, punctuation-insensitive', Object.values(phoneRuns).every((x) => same(x, [LEE])), phoneRuns);
     await expectRows('a query matching nothing shows no rows', 'zzzz', []);
     await expectRows('clearing the search restores every row in Date Added order', '', ALL);
+
+    // ═══ R-C1 (Jess, 2026-10-31): native address first, qualified; field fallback ═══
+    /** The rendered Property Address cell: its source, its address line (the note excluded), and its note. */
+    const cell = (id) => page.evaluate((cid) => {
+      const el = document.querySelector(`[data-testid="contacts-address-${cid}"]`);
+      const row = [...document.querySelectorAll('tbody tr')].find((tr) => tr.querySelector(`a[href="/contacts/${cid}"]`));
+      const td = el || (row ? row.cells[3] : null);
+      if (!td) return null;
+      const note = document.querySelector(`[data-testid="contacts-address-note-${cid}"]`);
+      const all = td.innerText.trim();
+      return { source: el ? el.getAttribute('data-address-source') : null, text: (note ? all.replace(note.innerText, '') : all).trim(), note: note ? note.innerText.trim() : null };
+    }, id);
+    const cells = { ivy: await cell('c-ivy'), bo: await cell('c-bo'), kay: await cell('c-kay'), cy: await cell('c-cy') };
+    check('R-C1 a native address is shown first and carries the qualifier (imported contact; and over a set Property Address field)',
+      same([cells.ivy, cells.bo], [{ source: 'native', text: '417 Cedar Bend Rd, Waco, TX 76701', note: QUALIFIER }, { source: 'native', text: '55 Native Pl, Plano, TX 75074', note: QUALIFIER }]), cells);
+    check('R-C1 the Property Address field (no native street) keeps its plain display; neither shows — with no qualifier',
+      same([cells.kay, cells.cy], [{ source: 'field', text: '2623 Greenway Dr, Dallas, TX 75201', note: null }, { source: 'none', text: '—', note: null }]), cells);
+    await expectRows('R-C1 an imported contact is found by its house number', '417', [IVY]);
+    await expectRows('R-C1 an imported contact is found by its street name, case-insensitive', 'CEDAR bend', [IVY]);
+    await expectRows('R-C1 a native address is found by its city/state/ZIP run', 'plano, tx 750', [BO]);
+    await expectRows('R-C1 search matches the DISPLAYED address: a Property Address hidden behind a native one does not match', 'customonly', []);
+    await expectRows('R-C1 a city with no street is not an address and does not match', 'frisco', []);
+    await expectRows('R-C1 a mailing address never matches', 'mailbox', []);
+    await expectRows('R-C1 the qualifier text is not searchable', 'not confirmed', []);
+    const gridText = (await page.locator('tbody').innerText());
+    check('R-C1 no mailing address appears anywhere in the grid', !/Mailbox|Mailville|73001/.test(gridText), gridText.slice(0, 300));
+    await search('', ALL);
 
     await page.setViewportSize({ width: 480, height: 900 });
     await expectRows('at 480px an address search still finds the contact', 'greenway', [KAY]);

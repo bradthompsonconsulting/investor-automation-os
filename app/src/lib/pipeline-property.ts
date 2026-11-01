@@ -92,6 +92,23 @@ export function formatNativeAddress(c: Pick<PropertyAddressContact, "address1" |
   return [street, clean(c.city), stateZip].filter(Boolean).join(", ");
 }
 
+/**
+ * The Contacts grid's displayed address (Jess R-C1, 2026-10-31): the native
+ * block (street required) first, else the Property Address field, else "".
+ * The grid shows and searches `text`; `source` says where it came from, and a
+ * "native" value is qualified on screen, never presented as confirmed.
+ */
+export const NATIVE_ADDRESS_QUALIFIER = "From the contact's address fields; not confirmed as the property address";
+
+export type ContactAddressDisplay = { text: string; source: "native" | "field" | "none" };
+
+export function contactPropertyAddress(c: Omit<PropertyAddressContact, "id">): ContactAddressDisplay {
+  const native = formatNativeAddress(c);
+  if (native) return { text: native, source: "native" };
+  const field = clean(c.propertyAddress);
+  return field ? { text: field, source: "field" } : { text: "", source: "none" };
+}
+
 export function indexPropertyAddresses(contacts: readonly PropertyAddressContact[]): Map<string, ContactPropertyAddress> {
   const byContactId = new Map<string, ContactPropertyAddress>();
   for (const c of contacts) {
