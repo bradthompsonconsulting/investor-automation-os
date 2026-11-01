@@ -68,6 +68,7 @@ import {
   CONTRACT_READY_ITEM_KEYS, type ContractReadyItemKey, type ContractReadyItems,
 } from "../lib/seller-call-readiness-carriers";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
+import { callbackStatusLine } from "../lib/seller-call-callback-status";
 /* INV-70 / B9-07A Phase 2 — Family 5's approved ruling. The pure gate/
    freeze logic lives in its own module so "frozen after Agreement
    Reached" is provable without a network call, mirroring how
@@ -823,6 +824,16 @@ export default function SellerCallWorkspace() {
     contact?.id === contactId ? contact.customFields : null,
     { precise: CONFIG.fields.callbackDatetimePrecise, date: CONFIG.fields.callbackDatetime });
   const passCallbackKnown = passCallback !== "unknown";
+  /* B15-20b: the status line under the header words that SAME value, so it
+     and the Pass consequence always name one callback. The clock re-reads
+     every 30 s, so a callback whose time passes while the page is open turns
+     Overdue. Display only: no read, no write. */
+  const [callbackNow, setCallbackNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setCallbackNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const callbackStatus = callbackStatusLine(passCallback, new Date(callbackNow), fetchError !== null);
 
   const candidates: SelectedOpportunity[] = useMemo(() => opportunityCandidates(opps), [opps]);
   const selected: SelectedOpportunity | null = useMemo(
@@ -2492,6 +2503,18 @@ export default function SellerCallWorkspace() {
         </div>
         <div style={{ fontSize: "12px", color: "#475569", marginTop: "2px" }}>
           {formatAddress(contact)}{contact?.phone ? ` · ${formatPhone(contact.phone)}` : ""}
+        </div>
+        {/* B15-20b: this contact's scheduled callback, under the Contact link and above the deal bar. */}
+        <div
+          data-testid="seller-call-callback-status"
+          data-callback-state={callbackStatus.kind}
+          role="status"
+          style={{
+            fontSize: "12px", marginTop: "6px", fontWeight: callbackStatus.tone === "muted" ? 400 : 600,
+            color: callbackStatus.tone === "warn" ? "#F59E0B" : callbackStatus.tone === "info" ? "#1EC8FF" : "#64748B",
+          }}
+        >
+          {callbackStatus.text}
         </div>
       </div>
 
