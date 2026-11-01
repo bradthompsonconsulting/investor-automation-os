@@ -33,6 +33,10 @@ const MUTATIONS = {
     { from: 'position: "fixed", top: pos?.top ?? -10000, left: pos?.left ?? -10000,', to: 'position: "relative", top: 0, left: 0,' }],
   'no-flip': [{ from: 'if (a.bottom + GAP + h > window.innerHeight - EDGE && a.top - GAP - h >= EDGE) top = a.top - 2 * GAP - h;', to: 'void h;' }],
   'no-clamp': [{ from: 'if (left + w > window.innerWidth - EDGE) left = Math.max(EDGE, window.innerWidth - EDGE - w);', to: 'void w;' }],
+  // Bones REVISE (be9ef7a) P2-1 and P2-2: the keyboard and the grown-popover corrections, undone one at a time.
+  'no-focus': [{ from: '    first?.focus();\n', to: '    void first;\n' }],
+  'no-tab': [{ from: 'if (e.key !== "Tab" || !anchor || !layer.current) return;', to: 'return;' }],
+  'no-resize': [{ from: 'if (resized && child) resized.observe(child);', to: 'void resized;' }],
 };
 const mutateArg = process.argv.find((a) => a.startsWith('--mutate='));
 const mutationName = mutateArg ? mutateArg.slice('--mutate='.length) : null;
@@ -46,7 +50,7 @@ const mutate = { name: 'popover-mutation', enforce: 'pre', transform(code, id) {
   mutationApplied += 1; return src;
 } };
 
-const FLOOR = 25;
+const FLOOR = 59;
 let checks = 0, failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -76,6 +80,7 @@ const MAILERS = { weekStartCT: '2026-10-31', weekEndCT: '2026-11-06', thisWeekRe
 const bf = createBarrierFixture({ contactOf: (o) => (people[String(o).replace(/-opp$/, '')] ? String(o).replace(/-opp$/, '') : null) });
 
 const counters = { writes: [], blocked: [], unmodelled: [] };
+let expectedWrites = 0;   // the refused Saves of the error cases, each refused offline (409) and never sent
 function answer(u) {
   const fn = u.pathname.replace(/^.*\/\.netlify\/functions\//, '');
   if (fn === 'ghl-contacts') return Object.values(people).map(row);
@@ -106,6 +111,9 @@ function visibility() {
   const centre = (el) => { const b = el.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; };
   const pts = { centre: [r.left + r.width / 2, r.top + r.height / 2], input: centre(inputs[0]), save: centre(btn('Save')), cancel: centre(btn('Cancel')),
     topLeft: [r.left + 6, r.top + 6], bottomRight: [r.right - 6, r.bottom - 6] };
+  // A save error adds a red line at the bottom of the popover: when present, it must be visible too.
+  const err = [...pop.querySelectorAll('div')].find((d) => getComputedStyle(d).color === 'rgb(248, 113, 113)' && d.textContent.trim());
+  if (err) { const e = err.getBoundingClientRect(); pts.errorCentre = centre(err); pts.errorLeft = [e.left + 3, e.top + e.height / 2]; pts.errorBottom = [e.left + e.width / 2, e.bottom - 1]; }
   const misses = [];
   for (const [name, [x, y]] of Object.entries(pts)) {
     const inView = x >= 0 && y >= 0 && x < innerWidth && y < innerHeight;
@@ -113,7 +121,16 @@ function visibility() {
     if (!inView || !hit || !pop.contains(hit)) misses.push({ point: name, x: Math.round(x), y: Math.round(y), inView, hit: hit ? `${hit.tagName}${hit.textContent ? ':' + hit.textContent.trim().slice(0, 30) : ''}` : null });
   }
   return { ok: misses.length === 0, rect: { top: Math.round(r.top), left: Math.round(r.left), w: Math.round(r.width), h: Math.round(r.height) }, misses,
-    cancel: pts.cancel };
+    cancel: pts.cancel, error: err ? err.textContent.trim().slice(0, 80) : null };
+}
+
+/* In the page: where is keyboard focus? "input"/button text inside the open popover, else OUT:<tag>. */
+function focusSpot() {
+  const a = document.activeElement;
+  const input = document.querySelector('input[type="datetime-local"]');
+  const pop = input && input.parentElement;
+  if (pop && a && pop.contains(a)) return a.tagName === 'INPUT' ? 'input' : a.textContent.trim();
+  return `OUT:${a ? a.tagName : 'none'}`;
 }
 
 async function main() {
@@ -160,7 +177,9 @@ async function main() {
           await page.locator('input[type="datetime-local"]').waitFor({ state: 'attached', timeout: 15000 });
           await page.waitForTimeout(150);
           const v = await page.evaluate(visibility);
-          check(`${label} (${tag}): the popover is visible where it opened -- centre, input, Save, Cancel and corners hit the popover, no scrolling`, v.ok, v);
+          // ...and it does not cover the control that opened it (the operator can still see and reach it).
+          v.openerVisible = await opener.evaluate((a) => { const b = a.getBoundingClientRect(); const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!hit && (hit === a || a.contains(hit)); });
+          check(`${label} (${tag}): the popover is visible where it opened -- centre, input, Save, Cancel and corners hit the popover, no scrolling -- and does not cover its opener`, v.ok && v.openerVisible, v);
           const w0 = counters.writes.length;
           if (v.ok) await page.mouse.click(v.cancel[0], v.cancel[1]);
           else await page.getByRole('button', { name: 'Cancel', exact: true }).click({ force: true });
@@ -168,11 +187,97 @@ async function main() {
           check(`${label} (${tag}): Cancel at its visible point closes it and sends no write`, counters.writes.length === w0, counters.writes.slice(w0));
         };
 
+        /* Bones REVISE P2-1: the popover is reachable and usable by keyboard. */
+        const keyboardCheck = async (label, opener, expected) => {
+          const w0 = counters.writes.length;
+          await opener.focus();
+          await page.keyboard.press('Enter');
+          await page.locator('input[type="datetime-local"]').waitFor({ state: 'attached', timeout: 15000 });
+          await page.waitForTimeout(150);
+          check(`${label} (${tag}) keyboard: Enter on the control opens the popover with focus inside it`, (await page.evaluate(focusSpot)) === 'input', await page.evaluate(focusSpot));
+          // Chromium's datetime-local keeps focus while Tab walks its own segments (month, day, year, hour, minute,
+          // AM/PM): step past those first (capped), then record the popover's controls and the stop after them.
+          let segments = 0;
+          while ((await page.evaluate(focusSpot)) === 'input' && segments < 12) { await page.keyboard.press('Tab'); segments += 1; }
+          const seq = [await page.evaluate(focusSpot)];
+          for (let i = 1; i < expected.length + 1; i++) { await page.keyboard.press('Tab'); seq.push(await page.evaluate(focusSpot)); }
+          check(`${label} (${tag}) keyboard: Tab reaches every popover control in order (${expected.join(', ')})`, JSON.stringify(seq.slice(0, expected.length)) === JSON.stringify(expected), seq);
+          const after = await opener.evaluate((a) => { const f = document.activeElement; return !!f && f !== document.body && f !== a && !!(a.compareDocumentPosition(f) & Node.DOCUMENT_POSITION_FOLLOWING); });
+          check(`${label} (${tag}) keyboard: Tab past the last control continues to the control after the opener (not the page top, not lost)`, seq[expected.length].startsWith('OUT:') && after, { seq, after });
+          await page.locator('input[type="datetime-local"]').focus();
+          await page.keyboard.press('Shift+Tab');
+          check(`${label} (${tag}) keyboard: Shift+Tab from the first control returns to the opener`, await opener.evaluate((a) => document.activeElement === a));
+          await page.getByRole('button', { name: 'Cancel', exact: true }).focus();
+          await page.keyboard.press('Enter');
+          await page.locator('input[type="datetime-local"]').waitFor({ state: 'detached', timeout: 15000 });
+          check(`${label} (${tag}) keyboard: Enter on Cancel closes it and focus returns to the opener`, await opener.evaluate((a) => document.activeElement === a));
+          check(`${label} (${tag}) keyboard: no write`, counters.writes.length === w0, counters.writes.slice(w0));
+        };
+        /* Bones REVISE P2-2: a save error grows the popover; the grown popover stays fully visible. The save is refused
+           by the offline interceptor (409, nothing sent), which is a callback-stage failure: the popover stays open. */
+        const errorCheck = async (label, opener) => {
+          const w0 = counters.writes.length;
+          await opener.click();
+          await page.locator('input[type="datetime-local"]').waitFor({ state: 'attached', timeout: 15000 });
+          await page.waitForTimeout(150);
+          await page.getByRole('button', { name: 'Save', exact: true }).click({ force: true });
+          await page.waitForFunction(() => { const i = document.querySelector('input[type="datetime-local"]'); return !!i &&
+            [...i.parentElement.querySelectorAll('div')].some((d) => getComputedStyle(d).color === 'rgb(248, 113, 113)' && d.textContent.trim()); }, null, { timeout: 15000 });
+          await page.waitForTimeout(200);
+          const v = await page.evaluate(visibility);
+          check(`${label} (${tag}) after a refused Save: the grown popover, including its error line, is fully visible`, v.ok && !!v.error, v);
+          if (v.ok) await page.mouse.click(v.cancel[0], v.cancel[1]); else await page.getByRole('button', { name: 'Cancel', exact: true }).click({ force: true });
+          await page.locator('input[type="datetime-local"]').waitFor({ state: 'detached', timeout: 15000 });
+          const mine = counters.writes.slice(w0);
+          expectedWrites += mine.length;
+          check(`${label} (${tag}) after a refused Save: exactly one write was attempted (the callback), refused offline, nothing sent; Cancel closes`, mine.length === 1 && /callback/i.test(mine[0]), mine);
+        };
+
+        /* P2-2 at the edge: the opener sits so the popover JUST fits below it (fewer than 20 px to spare above the
+           window's bottom margin). The error line (about 20 px) then cannot fit unless the popover is placed again. The
+           precondition is asserted so this case cannot silently stop testing what it claims. */
+        const edgeErrorCheck = async (label, opener) => {
+          const h0 = 86, spare = 10;   // the popover's measured height without an error line; the slack left below it
+          const target = vp.height - 8 - 4 - h0 - spare;
+          await opener.scrollIntoViewIfNeeded();
+          const want = async () => (await opener.boundingBox()).y + (await opener.boundingBox()).height - target;
+          await page.evaluate((d) => window.scrollBy(0, d), await want());
+          let d = await want();
+          if (Math.abs(d) > 1) await opener.evaluate((el, dy) => { let p = el.parentElement; while (p && !(p.scrollHeight > p.clientHeight && /auto|scroll/.test(getComputedStyle(p).overflowY))) p = p.parentElement; if (p) p.scrollTop += dy; }, d);
+          d = await want();
+          const w0 = counters.writes.length;
+          await opener.click({ noWaitAfter: true, trial: false, force: true });
+          await page.locator('input[type="datetime-local"]').waitFor({ state: 'attached', timeout: 15000 });
+          await page.waitForTimeout(150);
+          const pre = await opener.evaluate((a) => { const i = document.querySelector('input[type="datetime-local"]'); const r = i.parentElement.getBoundingClientRect(); const b = a.getBoundingClientRect();
+            return { below: r.top >= b.bottom, spareBelow: Math.round(innerHeight - r.bottom), h: Math.round(r.height) }; });
+          check(`${label} (${tag}) edge precondition: the popover opened BELOW its opener with under 20 px to spare (so an error line cannot fit as placed)`, Math.abs(d) <= 1 && pre.below && pre.spareBelow >= 0 && pre.spareBelow < 8 + 20, { d, pre });
+          await page.getByRole('button', { name: 'Save', exact: true }).click({ force: true });
+          await page.waitForFunction(() => { const i = document.querySelector('input[type="datetime-local"]'); return !!i &&
+            [...i.parentElement.querySelectorAll('div')].some((x) => getComputedStyle(x).color === 'rgb(248, 113, 113)' && x.textContent.trim()); }, null, { timeout: 15000 });
+          await page.waitForTimeout(200);
+          const v = await page.evaluate(visibility);
+          check(`${label} (${tag}) edge: after a refused Save the grown popover, including its error line, is fully visible`, v.ok && !!v.error, v);
+          if (v.ok) await page.mouse.click(v.cancel[0], v.cancel[1]); else await page.getByRole('button', { name: 'Cancel', exact: true }).click({ force: true });
+          await page.locator('input[type="datetime-local"]').waitFor({ state: 'detached', timeout: 15000 });
+          const mine = counters.writes.slice(w0);
+          expectedWrites += mine.length;
+          check(`${label} (${tag}) edge: exactly one write was attempted (the callback), refused offline, nothing sent; Cancel closes`, mine.length === 1 && /callback/i.test(mine[0]), mine);
+        };
+
         const queueIcons = page.locator('button[title="Schedule a callback"]');
         const n = await queueIcons.count();
         check(`Lead Queue (${tag}) lists every fictional queue contact with a calendar icon`, n === queueCount, { n, queueCount });
         await openAndCheck('Lead Queue first row', queueIcons.first());
         if (queueCount > 1) await openAndCheck('Lead Queue last row', queueIcons.last());
+        const reschedule = page.getByRole('button', { name: 'Reschedule', exact: true }).first();
+        if (vp.width === 1360) {
+          await keyboardCheck('Lead Queue first row', queueIcons.first(), ['Save', 'Cancel']);
+          if (queueCount === 1) await keyboardCheck('Callbacks Overdue (Reschedule)', reschedule, ['Save', 'Clear', 'Cancel']);
+        }
+        await errorCheck(queueCount === 1 ? 'Lead Queue first row' : 'Lead Queue last row', queueCount === 1 ? queueIcons.first() : queueIcons.last());
+        if (vp.width === 1360 && queueCount === 1) await errorCheck('Callbacks Overdue (Reschedule)', reschedule);
+        if (queueCount > 1) await edgeErrorCheck('Lead Queue row placed at the edge', queueIcons.nth(9));
         if (vp.width === 1360) {
           await openAndCheck('Callbacks Overdue (Reschedule)', page.getByRole('button', { name: 'Reschedule', exact: true }).first());
           if (queueCount === 1) {
@@ -187,9 +292,9 @@ async function main() {
         await context.close();
       }
     }
-    check('no write, no external request, no unmodelled read and no page error in the whole run',
-      counters.writes.length === 0 && counters.blocked.length === 0 && counters.unmodelled.length === 0 && pageErrors.length === 0,
-      { counters, pageErrors });
+    check('no write except the refused-Save cases (each refused offline, nothing sent), no external request, no unmodelled read and no page error in the whole run',
+      counters.writes.length === expectedWrites && expectedWrites === 7 && counters.blocked.length === 0 && counters.unmodelled.length === 0 && pageErrors.length === 0,
+      { expectedWrites, counters, pageErrors });
   } catch (e) {
     failures += 1; console.error('FAIL  run aborted: ' + (e && e.stack || e));
   }

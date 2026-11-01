@@ -338,7 +338,7 @@ jobs:
         run: node app/scripts/test-wholesaler-net-proceeds.cjs
       - name: Count labels and accounting (INV-128, B15-19)
         run: node app/scripts/test-b15-19-count-accounting.cjs
-      - name: Dashboard callback popover is visible where it opens -- Lead Queue (short and long queue, first and last row), Callbacks Overdue and Contact page, two viewports; no write; real pages, fictional data — 25 checks
+      - name: Dashboard callback popover is visible where it opens and usable by keyboard -- Lead Queue (short and long queue, first, last and edge row), Callbacks Overdue and Contact page, two viewports; a save error stays visible; Tab/Shift+Tab/focus return; real pages, fictional data — 59 checks
         run: node app/scripts/test-dashboard-callback-popover.cjs
       - name: Contacts stage and last call attempt columns (INV-129, B15-20)
         run: node app/scripts/test-b15-20-contacts-columns.cjs
