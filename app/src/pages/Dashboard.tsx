@@ -13,6 +13,7 @@ import { explicitCallbackClient,
 } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
 import { CallbackPopover } from "../components/CallbackPopover";
+import { AnchoredPopover } from "../components/AnchoredPopover";
 import { readOverrides, effectiveDisposition, type StorageLike } from "../lib/dispositionOverride";
 import { callLogPlacement, type CallLogPlacement } from "../lib/call-log-queue";
 import { isCallSuppressed } from "../lib/dnc";
@@ -348,6 +349,8 @@ export default function Dashboard() {
   // Waiting on Me) triggered it.
   const [callbackOverride, setCallbackOverride] = useState<Record<string, string | null>>({});
   const [callbackPopoverId, setCallbackPopoverId] = useState<string | null>(null);
+  // The control that opened the callback popover: AnchoredPopover places it there, outside any clipping cell.
+  const [callbackAnchor, setCallbackAnchor] = useState<HTMLElement | null>(null);
   const [callbackSaving, setCallbackSaving]     = useState(false);
   const [callbackError, setCallbackError]       = useState<string | null>(null);
 
@@ -1080,7 +1083,7 @@ export default function Dashboard() {
                 </span>
                 <div style={{ position: "relative", marginLeft: "auto" }}>
                   <button
-                    onClick={() => { setCallbackPopoverId((v) => (v === c.id ? null : c.id)); setCallbackError(null); }}
+                    onClick={(e) => { setCallbackAnchor(e.currentTarget); setCallbackPopoverId((v) => (v === c.id ? null : c.id)); setCallbackError(null); }}
                     style={{
                       fontSize: "12px", fontWeight: 700, padding: "7px 12px", borderRadius: "7px",
                       border: "1px solid rgba(30,200,255,0.35)", background: "rgba(30,200,255,0.12)", color: "#1EC8FF", cursor: "pointer",
@@ -1089,12 +1092,12 @@ export default function Dashboard() {
                     Reschedule
                   </button>
                   {callbackPopoverId === c.id && (
-                    <CallbackPopover
+                    <AnchoredPopover anchor={callbackAnchor}><CallbackPopover
                       current={cb} saving={callbackSaving} error={callbackError}
                       onSave={(iso) => handleSaveCallback(c.id, iso)}
                       onClear={() => handleSaveCallback(c.id, null)}
                       onClose={() => setCallbackPopoverId(null)}
-                    />
+                    /></AnchoredPopover>
                   )}
                 </div>
               </Card>
@@ -1112,7 +1115,7 @@ export default function Dashboard() {
                 </span>
                 <div style={{ position: "relative", marginLeft: "auto" }}>
                   <button
-                    onClick={() => { setCallbackPopoverId((v) => (v === c.id ? null : c.id)); setCallbackError(null); }}
+                    onClick={(e) => { setCallbackAnchor(e.currentTarget); setCallbackPopoverId((v) => (v === c.id ? null : c.id)); setCallbackError(null); }}
                     style={{
                       fontSize: "12px", fontWeight: 700, padding: "7px 12px", borderRadius: "7px",
                       border: "1px solid rgba(30,200,255,0.35)", background: "rgba(30,200,255,0.12)", color: "#1EC8FF", cursor: "pointer",
@@ -1121,12 +1124,12 @@ export default function Dashboard() {
                     Reschedule
                   </button>
                   {callbackPopoverId === c.id && (
-                    <CallbackPopover
+                    <AnchoredPopover anchor={callbackAnchor}><CallbackPopover
                       current={cb} saving={callbackSaving} error={callbackError}
                       onSave={(iso) => handleSaveCallback(c.id, iso)}
                       onClear={() => handleSaveCallback(c.id, null)}
                       onClose={() => setCallbackPopoverId(null)}
-                    />
+                    /></AnchoredPopover>
                   )}
                 </div>
               </Card>
@@ -1397,6 +1400,7 @@ export default function Dashboard() {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
+                                setCallbackAnchor(e.currentTarget);
                                 setCallbackPopoverId((v) => (v === c.id ? null : c.id));
                                 setCallbackError(null);
                               }}
@@ -1411,12 +1415,12 @@ export default function Dashboard() {
                               <CalendarClock size={15} />
                             </button>
                             {callbackPopoverId === c.id && (
-                              <CallbackPopover
+                              <AnchoredPopover anchor={callbackAnchor}><CallbackPopover
                                 current={cb} saving={callbackSaving} error={callbackError}
                                 onSave={(iso) => handleSaveCallback(c.id, iso)}
                                 onClear={() => handleSaveCallback(c.id, null)}
                                 onClose={() => setCallbackPopoverId(null)}
-                              />
+                              /></AnchoredPopover>
                             )}
                           </div>
                         </div>
