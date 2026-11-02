@@ -91,7 +91,9 @@ Object.assign(process.env, {
 });
 const OPERATOR = 'operator@example.invalid';
 const EDGE = 'https://edge.example.invalid'; const EDGE_SITE = 'edge-site'; const SIGNED = 'https://signed.example.invalid';
-let vOffset = 0; const realNow = Date.now; Date.now = () => realNow() + vOffset;
+// realFrozen (B15-26 DL4d reliability): when set, the real-time part of the virtual clock stops, so a boundary check sees
+// exactly the scripted virtual latency (epsilon = 0) instead of depending on how much real time happens to elapse.
+let vOffset = 0; let realFrozen = null; const realNow = Date.now; Date.now = () => (realFrozen === null ? realNow() : realFrozen) + vOffset;
 
 // ----------------------------------------------------------------- fake ---
 /** Rule: { cls, method?, kind?, nth?, body?(regex), status?, etag?:false, v?(virtual ms), delay?(real ms), hang?:'headers'|'body', hide? } */
@@ -296,8 +298,11 @@ async function main() {
     { fake.reset(); const fx = fixture(); fake.rule({ cls: 'ghl', kind: 'oppGet', v: 4_900 }, { cls: 'ghl', kind: 'contactGet', v: 4_900 }); const tm = timerMark(); const m = mark(); const { r, b } = await run(fx, 60_000);
       const stage = timersSince(tm).filter((x) => /repair-approval-integration/.test(x.top)).map((x) => x.ms);
       check('DL4c accounting: the Opportunity stage makes 2 GETs, each with its own 5 000 ms timer; a ~9.8 s stage still clears the admission floor -> verified', stage.length === 2 && stage.every((ms) => ms === 5_000) && cls(m, 'ghl', 'GET').length >= 2 && r.statusCode === 200 && b.outcome === 'verified', [stage, b.outcome]); }
-    { fake.reset(); const fx = fixture(); fake.rule({ cls: 'edge', v: 4_000 }); const m = mark(); const { r, b } = await run(fx, 60_000);
-      check('DL4d the read floor counts both GETs (46 s): a 4 s claim (simulated overrun) leaves ~46 s - ε -> 503 deadline_before_start; 0 GHL requests', r.statusCode === 503 && b.code === 'deadline_before_start' && cls(m, 'ghl').length === 0 && cls(m, 'edge').length === 1, b); }
+    // DL4d was zero-margin: a 4 000 ms claim left 46 000 - ε against `left() < 46 000`, so it passed only if >= 1 ms of real
+    // time elapsed (failed CI run 41480962275). Now the claim overruns the boundary by exactly 1 ms with real time frozen:
+    // 50 000 - 4 001 = 45 999 < 46 000, deterministically, and a read floor weakened by even 1 ms is still caught.
+    { fake.reset(); const fx = fixture(); fake.rule({ cls: 'edge', v: 4_001 }); const m = mark(); realFrozen = realNow(); let out; try { out = await run(fx, 60_000); } finally { realFrozen = null; } const { r, b } = out;
+      check('DL4d the read floor counts both GETs (46 s): a 4 001 ms claim (simulated overrun, real time frozen) leaves exactly 45 999 ms < 46 000 -> 503 deadline_before_start; 0 GHL requests', r.statusCode === 503 && b.code === 'deadline_before_start' && cls(m, 'ghl').length === 0 && cls(m, 'edge').length === 1, b); }
     useR();
     useV({ floorsMs: { admission: 52_000 } });
     { fake.reset(); const fx = fixture(); const m = mark(); const { r, b } = await run(fx, 60_000);
