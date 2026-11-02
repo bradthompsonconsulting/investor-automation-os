@@ -374,9 +374,11 @@ async function main() {
       check('DL11a verified, then 11.5 s < 12 s left (a2 simulated overrun) -> blocked deadline_before_close; 0 CLOSE requests; never verified', a.r.statusCode === 409 && a.b.code === 'deadline_before_close' && !fake.log.slice(m.l).some((x) => /COMPLETED/.test(x.body)) && authorityState(fx) === 'ADMITTED', a.b);
       fake.reset(); const fx2 = fixture(); fake.rule({ cls: 'signed', method: 'GET', nth: 6, v: 3_000 }); const m2 = mark(); const c = await run(fx2, 60_000);
       check('DL11c control: the same 3 s CLOSE read with time to spare -> 200 verified only after the CLOSE CAS committed (COMPLETED stored)', c.r.statusCode === 200 && c.b.outcome === 'verified' && authorityState(fx2) === 'COMPLETED' && fake.log.slice(m2.l).some((x) => /COMPLETED/.test(x.body)), c.b);
-      // CLOSE starts with ~13 s left; its read (the 6th signed GET) takes 3 s, so the CAS (10 s) no longer fits.
-      fake.reset(); const fx3 = fixture(); fake.rule({ cls: 'ghl', kind: 'noteGet', v: 37_000 }, { cls: 'signed', method: 'GET', nth: 6, v: 3_000 }); const m3 = mark(); const d = await run(fx3, 60_000);
-      check('DL11b CLOSE read sent, then < 10 s left -> the CAS is not sent -> blocked close_not_sent; never verified', d.r.statusCode === 409 && d.b.code === 'close_not_sent' && !fake.log.slice(m3.l).some((x) => /COMPLETED/.test(x.body)) && authorityState(fx3) === 'ADMITTED', d.b);
+      // CLOSE starts with 13 s left; its read (the 6th signed GET) takes 3 001 ms, so the CAS (a write: 2 x 5 000 ms cap) no longer fits.
+      // Was zero-margin (B15-26 DL11b reliability, as DL4d): a 3 000 ms read left exactly 10 000 - e against `left >= 10 000`, so the
+      // CAS was withheld only if >= 1 ms of real time elapsed. Now 1 ms past the boundary with real time frozen: 9 999 < 10 000, every run.
+      fake.reset(); const fx3 = fixture(); fake.rule({ cls: 'ghl', kind: 'noteGet', v: 37_000 }, { cls: 'signed', method: 'GET', nth: 6, v: 3_001 }); const m3 = mark(); realFrozen = realNow(); let d; try { d = await run(fx3, 60_000); } finally { realFrozen = null; }
+      check('DL11b CLOSE read sent, then 9 999 ms < 10 000 left (3 001 ms read, real time frozen) -> the CAS is not sent -> blocked close_not_sent; never verified', d.r.statusCode === 409 && d.b.code === 'close_not_sent' && !fake.log.slice(m3.l).some((x) => /COMPLETED/.test(x.body)) && authorityState(fx3) === 'ADMITTED', d.b);
       useR();
       const closeCase = async (label, rule, want, state) => { fake.reset(); const f = fixture(); fake.rule(rule); const x = await within(4000, run(f, 600));
         check(`DL11${label}`, (want === 'verified' ? x.r.statusCode === 200 && x.b.outcome === 'verified' : x.b.code === want) && authorityState(f) === state, [x.b, authorityState(f)]); };
