@@ -524,8 +524,12 @@ async function main() {
       const main = document.querySelector('main');
       main.scrollTop = Math.round(main.scrollHeight / 3);
       const m = main.getBoundingClientRect();
-      const f = [...document.querySelector('.seller-call-shell__main').querySelectorAll(sel)].filter((e) => !e.disabled && e.checkVisibility({ visibilityProperty: true }) && !e.closest('[data-testid="seller-call-sticky-bar"]'));
-      const target = f.find((e) => { const r = e.getBoundingClientRect(); return r.top > m.top + 10 && r.top < m.top + 80; }) || f[Math.floor(f.length / 2)];
+      // B15-03: the guided Seller conversation above the panels made the page taller, which moved the 1/3 point into it
+      // and left this check vacuous (nokeep no longer caught). Its controls are excluded, and the chosen workspace
+      // control is scrolled into the top band, so the re-stuck bar would cover it unless the keep logic moves it.
+      const f = [...document.querySelector('.seller-call-shell__main').querySelectorAll(sel)].filter((e) => !e.disabled && e.checkVisibility({ visibilityProperty: true }) && !e.closest('[data-testid="seller-call-sticky-bar"]') && !e.closest('[data-testid="seller-conversation"]'));
+      let target = f.find((e) => { const r = e.getBoundingClientRect(); return r.top > m.top + 10 && r.top < m.top + 80; });
+      if (!target) { target = f[Math.floor(f.length / 2)]; main.scrollTop += target.getBoundingClientRect().top - (m.top + 40); }
       const i = f.indexOf(target);
       f[Math.max(0, i - 1)].focus({ preventScroll: true });
       return target.getAttribute('data-testid') || target.tagName;
@@ -546,7 +550,8 @@ async function main() {
       s === 'sticky' && v.inShell && !v.inBar && v.label === focusedBefore.label && v.barPts === 0 && v.fullyVisible, JSON.stringify({ mode: s, before: focusedBefore, v }));
     /* A pointer click places focus without any page scroll. */
     await page.evaluate(() => { window.__scrollLog = []; });
-    const clickTarget = page.locator('.seller-call-shell__main input:not([disabled]), .seller-call-shell__main textarea:not([disabled])').nth(2);
+    // B15-03: only visible fields count (the Seller conversation added fields before a collapsed panel's hidden input).
+    const clickTarget = page.locator('.seller-call-shell__main input:not([disabled]), .seller-call-shell__main textarea:not([disabled])').filter({ visible: true }).nth(2);
     await clickTarget.scrollIntoViewIfNeeded();
     await page.evaluate(() => { window.__scrollLog = []; });
     await clickTarget.click();
