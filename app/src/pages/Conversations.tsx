@@ -321,28 +321,9 @@ export default function Conversations() {
             <span style={{ flexShrink: 0, fontSize: "11px", color: "#475569", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "999px", padding: "2px 8px" }}>Read-only</span>
           </div>
           {selected && (
-            <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
             <span style={{ minWidth: 0, fontSize: "22px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {selected.contactName}
             </span>
-            {/* B15-23: the contact's property address under the name (R-C1 rule; see lib/conversation-property). */}
-            {selected.contactId && (() => {
-              const property = conversationPropertyLine(contactRead, selected.contactId);
-              const isAddress = property.kind === "native" || property.kind === "field";
-              return (
-                <div data-testid="conv-property-context" data-property-state={property.kind}
-                  title={property.kind === "unavailable" && contactRead?.kind === "failed" ? contactRead.detail : undefined}
-                  style={{ minWidth: 0, marginTop: "2px", fontSize: "12px", lineHeight: 1.35, color: isAddress ? "#94A3B8" : "#64748B", fontStyle: isAddress ? "normal" : "italic" }}>
-                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{property.text}</div>
-                  {property.note && (
-                    <div data-testid="conv-property-note" style={{ fontSize: "11px", color: "#64748B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {property.note}
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-            </div>
           )}
         </div>
         {/* RIGHT — thread actions (only with a selected thread): Workspace deep-link +
@@ -382,6 +363,27 @@ export default function Conversations() {
             </a>
           </div>
         )}
+        {/* B15-23: the contact's property address (R-C1 rule; see lib/conversation-property), on its own
+            full-width banner row, indented under the name. It WRAPS and is never cut: the address and the
+            whole qualifier stay readable at every width (Bones REVISE on 1b12955: at 1100px the side-by-side
+            column truncated the address and hid the qualifier). The full text is also the row's tooltip. */}
+        {selected && selected.contactId && (() => {
+          const property = conversationPropertyLine(contactRead, selected.contactId);
+          const isAddress = property.kind === "native" || property.kind === "field";
+          const full = property.note ? `${property.text} — ${property.note}` : property.text;
+          return (
+            <div data-testid="conv-property-context" data-property-state={property.kind}
+              title={property.kind === "unavailable" && contactRead?.kind === "failed" ? contactRead.detail : full}
+              style={{ flexBasis: "100%", minWidth: 0, paddingLeft: `${NAME_INDENT}px`, marginTop: "-10px", fontSize: "12px", lineHeight: 1.35, color: isAddress ? "#94A3B8" : "#64748B", fontStyle: isAddress ? "normal" : "italic" }}>
+              <div style={{ whiteSpace: "normal", overflowWrap: "anywhere" }}>{property.text}</div>
+              {property.note && (
+                <div data-testid="conv-property-note" style={{ fontSize: "11px", color: "#64748B", whiteSpace: "normal", overflowWrap: "anywhere" }}>
+                  {property.note}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       <div style={{ display: "flex", gap: `${PANE_GAP}px`, flex: 1, minHeight: 0 }}>

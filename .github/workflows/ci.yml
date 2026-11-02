@@ -372,6 +372,8 @@ jobs:
         run: node app/scripts/test-b15-shell-labels.cjs
       - name: Conversations property context on the real page, stale thread results (INV-132, B15-23) — 12 checks
         run: node app/scripts/test-conversation-property-rendered.cjs
+      - name: Conversations property context with the app's real styles at 1100px and 1280px (INV-132, B15-23 r2) — 12 checks
+        run: node app/scripts/test-conversation-property-styled.cjs
       - name: /map and /settings redirect to the Dashboard inside the read gate, real App (B15-18)
         run: node app/scripts/test-b15-18-map-settings-redirect.cjs
       - name: Deal Calculator itemized repairs, both Clears and transfer-once, real page (INV-100, B15-01)
