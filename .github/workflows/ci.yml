@@ -273,6 +273,8 @@ jobs:
 
       - name: Call log, call-outcome wording, queue placement, contact isolation and Do Not Call wiring — 84 offline checks
         run: node app/scripts/test-call-outcome-copy.cjs
+      - name: Callback popover proposes a time inside calling hours (9:00 AM - 7:00 PM, America/Chicago), across day/month/year ends, leap day and both DST changes; existing value and Save unchanged (B15-20, INV-129) — 25 checks
+        run: node app/scripts/test-callback-default.cjs
 
       - name: Pipeline stage display list covers every configured stage — 10 offline checks
         run: node app/scripts/test-pipeline-stage-display.cjs
