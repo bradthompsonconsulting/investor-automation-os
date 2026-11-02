@@ -8,6 +8,7 @@ import { ghl, ghlContactDetailUrl, type ThreadRow, type ConvMessageRow } from ".
 import { NO_MESSAGE_TEXT, isAutomatedDocumentEmail } from "../lib/operator-display";
 import { splitMessageLinks } from "../lib/message-links";
 import { NoteBody } from "../components/NoteBody";
+import { conversationPropertyLine, type ConversationContactRead } from "../lib/conversation-property";
 
 /**
  * Conversations — READ-ONLY inbox (Coverage Roadmap surface #3). Two-pane:
@@ -229,6 +230,9 @@ export default function Conversations() {
   const [notes, setNotes]               = useState<NoteRow[] | null>(null);
   const [notesError, setNotesError]     = useState<string | null>(null);
 
+  // B15-23: the selected contact's record, read once per selection for its property address.
+  const [contactRead, setContactRead]   = useState<ConversationContactRead | null>(null);
+
   /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
   const readRecovered = useReadRecovered();
   useEffect(() => {
@@ -240,20 +244,33 @@ export default function Conversations() {
 
   // Load the selected thread's messages (scoped by explicit contactId; never
   // listAll, so §11 lag/drop doesn't apply). Read-only GET.
+  // B15-23: only the CURRENT selection's reads may change the thread pane. The
+  // cleanup marks them stale when the selection changes (or the reads re-run),
+  // so a late answer for an earlier thread never shows under this one.
   useEffect(() => {
     if (!selected) return;
+    let current = true;
+    const contactId = selected.contactId;
     setMessages(null);
     setMessagesError(null);
     setNotes(null);
     setNotesError(null);
-    ghl.conversations.forContact(selected.contactId)
-      .then((res) => setMessages(res.messages))
-      .catch((e: Error) => setMessagesError(e.message));
+    setContactRead(contactId ? { contactId, kind: "loading" } : null);
+    ghl.conversations.forContact(contactId)
+      .then((res) => { if (current) setMessages(res.messages); })
+      .catch((e: Error) => { if (current) setMessagesError(e.message); });
     // Notes come from the notes endpoint (§8.6), NOT the conversation feed —
     // read-only GET (ghl.notes.list), zero writes. Sorted oldest→newest below.
-    ghl.notes.list(selected.contactId)
-      .then((res) => setNotes(res.notes ?? []))
-      .catch((e: Error) => setNotesError(e.message));
+    ghl.notes.list(contactId)
+      .then((res) => { if (current) setNotes(res.notes ?? []); })
+      .catch((e: Error) => { if (current) setNotesError(e.message); });
+    // B15-23 (R-C3): ONE read-only contact read per selection, for the property address only.
+    if (contactId) {
+      ghl.contacts.getOne(contactId)
+        .then((c) => { if (current) setContactRead({ contactId, kind: "loaded", contact: c }); })
+        .catch((e: Error) => { if (current) setContactRead({ contactId, kind: "failed", detail: e.message }); });
+    }
+    return () => { current = false; };
   }, [selected, readRecovered]);
 
   // Displayable messages: the endpoint returns the complete transcript incl.
@@ -304,9 +321,28 @@ export default function Conversations() {
             <span style={{ flexShrink: 0, fontSize: "11px", color: "#475569", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "999px", padding: "2px 8px" }}>Read-only</span>
           </div>
           {selected && (
+            <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
             <span style={{ minWidth: 0, fontSize: "22px", fontWeight: 600, color: "#F1F5F9", fontFamily: "Space Grotesk, sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {selected.contactName}
             </span>
+            {/* B15-23: the contact's property address under the name (R-C1 rule; see lib/conversation-property). */}
+            {selected.contactId && (() => {
+              const property = conversationPropertyLine(contactRead, selected.contactId);
+              const isAddress = property.kind === "native" || property.kind === "field";
+              return (
+                <div data-testid="conv-property-context" data-property-state={property.kind}
+                  title={property.kind === "unavailable" && contactRead?.kind === "failed" ? contactRead.detail : undefined}
+                  style={{ minWidth: 0, marginTop: "2px", fontSize: "12px", lineHeight: 1.35, color: isAddress ? "#94A3B8" : "#64748B", fontStyle: isAddress ? "normal" : "italic" }}>
+                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{property.text}</div>
+                  {property.note && (
+                    <div data-testid="conv-property-note" style={{ fontSize: "11px", color: "#64748B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {property.note}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+            </div>
           )}
         </div>
         {/* RIGHT — thread actions (only with a selected thread): Workspace deep-link +
