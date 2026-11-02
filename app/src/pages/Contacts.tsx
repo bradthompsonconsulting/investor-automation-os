@@ -7,6 +7,7 @@ import { startCurrentRead } from "../lib/current-read";
 import { displayGridName, indexDealContactNames, indexDealStages, lastCallAttemptText, stageCell, type DealStageSource } from "../lib/contacts-columns";
 import { formatPhone } from "../lib/format";
 import { phoneQueryDigits } from "../lib/operator-display";
+import { contactPropertyAddress, NATIVE_ADDRESS_QUALIFIER } from "../lib/pipeline-property";
 
 // ── Date formatting ────────────────────────────────────────────────────────────
 // Date Added column: gridRows() passes the ISO string (or null); render a short
@@ -77,11 +78,21 @@ const COLUMNS: ColumnDef[] = [
   },
   {
     label: "Property Address",
-    render: (r) => (
-      <span style={{ color: "#94A3B8", fontSize: "13px" }}>
-        {r.propertyAddress || <span style={{ color: "#334155" }}>—</span>}
-      </span>
-    ),
+    /* R-C1 (Jess, 2026-10-31): the native address first, else the Property
+       Address field. A native value is qualified, never shown as confirmed. */
+    render: (r) => {
+      const address = contactPropertyAddress(r);
+      return (
+        <span data-testid={`contacts-address-${r.id}`} data-address-source={address.source} style={{ color: "#94A3B8", fontSize: "13px" }}>
+          {address.text || <span style={{ color: "#334155" }}>—</span>}
+          {address.source === "native" && (
+            <span data-testid={`contacts-address-note-${r.id}`} style={{ display: "block", fontSize: "11px", color: "#64748B", marginTop: "1px" }}>
+              {NATIVE_ADDRESS_QUALIFIER}
+            </span>
+          )}
+        </span>
+      );
+    },
   },
   {
     /* B15-20 (F17): every loaded Seller Leads deal's stage; see lib/contacts-columns. */
@@ -236,12 +247,16 @@ export default function Contacts() {
   // when its displayed Property Address contains the typed query,
   // case-insensitive, so a house number or street name finds the contact. A
   // blank address never matches. Same value the column shows; no other read.
+  // R-C1 (Jess, 2026-10-31): that value is the native address first, else the
+  // Property Address field -- never the qualifying note, never a mailing field.
   const filtered = useMemo(() => {
     const q = search.trim();
     if (!q) return ordered;
     const lc = q.toLowerCase();
-    const addressMatches = (r: ContactGridRow) =>
-      r.propertyAddress !== "" && r.propertyAddress.toLowerCase().includes(lc);
+    const addressMatches = (r: ContactGridRow) => {
+      const address = contactPropertyAddress(r).text;
+      return address !== "" && address.toLowerCase().includes(lc);
+    };
     const phoneDigits = phoneQueryDigits(q);
     if (phoneDigits !== null) {
       return ordered.filter((r) => r.phone.replace(/\D/g, "").includes(phoneDigits) || addressMatches(r));

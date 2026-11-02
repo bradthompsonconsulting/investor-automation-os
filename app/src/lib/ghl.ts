@@ -242,6 +242,13 @@ export interface ContactGridRow {
   phone:           string;
   email:           string;
   propertyAddress: string;      // contact.property_address; "" when absent
+  /* R-C1 (Jess, 2026-10-31): the native address parts, carried as read so the
+     grid shows and searches the native address first, else propertyAddress
+     (lib/pipeline-property contactPropertyAddress). */
+  address1:        string;
+  city:            string;
+  state:           string;
+  postalCode:      string;
   dateAdded:       string | null;
   /* B15-20 (F17): the existing last_call_attempt carrier, both forms, for the
      Last call attempt column (precise TEXT first, DATE fallback). */
@@ -691,6 +698,10 @@ export const ghl = {
         phone:           c.phone,
         email:           c.email,
         propertyAddress: c.propertyAddress,
+        address1:        c.address1,
+        city:            c.city,
+        state:           c.state,
+        postalCode:      c.postalCode,
         dateAdded:       c.dateAdded,
         lastCallAttemptPrecise: c.lastCallAttemptPrecise,
         lastCallAttempt:        c.lastCallAttempt,
