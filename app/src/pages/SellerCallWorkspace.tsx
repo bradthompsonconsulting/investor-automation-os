@@ -27,6 +27,9 @@ import { computeOfferReadiness, CATEGORY_LABEL, type ReadinessResult, type Mater
 import { computeNextBestQuestion, computeQuestionQueue, computeOperatorChecklist, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { FullScriptDrawer } from "../components/FullScriptDrawer";
 import { SellerCallNotesPanel } from "../components/SellerCallNotesPanel";
+import { SellerConversation } from "../components/SellerConversation";
+import { onRecordFor, recommendedQuestion, type OnRecordInput } from "../lib/seller-conversation";
+import { OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS } from "../lib/ghl";
 import { useRailClearance } from "../lib/rail-clearance";
 import { SellerCallVoiceControls } from "../components/SellerCallVoiceControls";
 import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
@@ -1818,6 +1821,35 @@ export default function SellerCallWorkspace() {
     return latestOutcomeNoteForOpportunity(notes, screen.opportunity.id);
   }, [notes, screen]);
 
+  /* B15-03 / INV-103 (Rev 6 slices 1-2) -- what the guided conversation shows
+     as already on record. READ-ONLY: every value is one this page has already
+     read and parsed above (contact detail, the deal's ledgers, the resolved
+     known facts); nothing new is fetched and nothing is written. */
+  const conversationOnRecord = useMemo(() => {
+    if (!contact || contact.id !== contactId || !(screen.state === "resolved" || screen.state === "unresolved")) return {};
+    const rawOcc = contact.customFields.find((f) => f.id === OCCUPANCY_STATUS_ID)?.value;
+    const occRaw = Array.isArray(rawOcc) ? rawOcc[0] : rawOcc;
+    const occupancy: OnRecordInput["occupancy"] = occRaw == null || occRaw === ""
+      ? { kind: "empty" }
+      : (OCCUPANCY_OPTIONS as readonly string[]).includes(String(occRaw))
+        ? { kind: "value", value: String(occRaw) }
+        : { kind: "unrecognised", raw: String(occRaw) };
+    const address = formatAddress(contact);
+    return onRecordFor({
+      address: address === "—" ? null : address,
+      identityConfirmedAt: propertyIdentityConfirmation?.at ?? null,
+      occupancy,
+      transaction: transactionAssumptionsLatest,
+      sellerPrice: sellerPricePositionRecord,
+      askingPrice: screen.known.askingPrice,
+      repairs: screen.known.repairs === null ? null : {
+        amount: screen.known.repairs,
+        provenance: pipeline.repairsSourceIsApprovalGated ? "Approved repairs" : "On file, not verified as operator-approved",
+      },
+      outcome: latestOutcome ? { kind: latestOutcome.kind, at: latestOutcome.at, followUpAt: latestOutcome.followUpAt } : null,
+    });
+  }, [contact, contactId, screen, propertyIdentityConfirmation, transactionAssumptionsLatest, sellerPricePositionRecord, pipeline.repairsSourceIsApprovalGated, latestOutcome]);
+
   /* Board 14-13 autosave: the record a save may reach right now. Only when the
      page shows THIS route's contact, with its own data loaded, and the
      selected opportunity belongs to it -- never while a newly selected
@@ -2659,6 +2691,20 @@ export default function SellerCallWorkspace() {
               </div>
             </div>
           </div>
+
+          {/* B15-03 / INV-103 (Rev 6 slices 1-2) -- the guided seller conversation.
+              Draft-only: it never saves, and its controls are not part of the
+              autosaved sections below. Keyed to the loaded deal (writeTarget is
+              null while a seller is loading, and then no control shows). */}
+          <SellerConversation
+            dealKey={writeTarget && !sellerLoading ? `${writeTarget.contactId}|${writeTarget.opportunityId}` : null}
+            firstName={contact?.id === contactId ? contact.firstName : null}
+            street={contact?.id === contactId ? contact.address1 : null}
+            onRecord={conversationOnRecord}
+            readiness={readiness}
+            recommended={recommendedQuestion(nextBestQuestion)}
+            staleRead={refreshReadError !== null}
+          />
 
           {/* B8-13 / INV-68 — Offer Ready's OWN human approval/override,
               distinct from the negotiation above-Max override further

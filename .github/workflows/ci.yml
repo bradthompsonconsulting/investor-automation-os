@@ -242,6 +242,8 @@ jobs:
 
       - name: Board 15 B3 Seller Call content (Pass 1 F29-F37, F41, F43, F55) — 20 offline checks
         run: node app/scripts/test-b15-seller-call.cjs
+      - name: Seller conversation script data, navigation and on-record projection (INV-103, B15-03 Rev 6 slices 1-2) — 54 offline checks
+        run: node app/scripts/test-seller-conversation.cjs
 
       - name: Current Offer save coordinator — serialized per deal, unresolved block, protected Accept (PR 126) — 67 offline checks
         run: node app/scripts/test-current-offer-save-coordinator.cjs
@@ -386,6 +388,8 @@ jobs:
         run: node app/scripts/test-b15-rail-focus.cjs
       - name: Seller Call keyboard focus never lands under the stuck deal bar (1440x900 first; laptop, tablet, 480; script/Notes/details open; fallback and return; cleanup and Contact handover; a stuck-bar control scrolled into view by pointer/assistive technology moves nothing) and the read-only Notes panel (closed at start, focus, isolation), real App (B15-06); direct real-keyboard entry into the stuck bar — 205 checks
         run: node app/scripts/test-b15-06-seller-call-focus.cjs
+      - name: Seller conversation on the real Seller Call page -- openings, never-blocking navigation, drafts, on-record sources, readiness levels, isolation, layout; zero writes (INV-103, B15-03) — 65 checks
+        run: node app/scripts/test-seller-conversation-rendered.cjs
       - name: B1 repair approval ENABLED path on the real page, offline (committed switch on for Test; legacy viewer served the switch-off capability) (INV-134) — 81 checks
         run: node app/scripts/test-repair-approval-browser.cjs
       # Both Production negotiation settings against the real write scope and barrier rules; floor 105
