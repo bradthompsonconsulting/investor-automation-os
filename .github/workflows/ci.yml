@@ -338,8 +338,6 @@ jobs:
         run: node app/scripts/test-wholesaler-net-proceeds.cjs
       - name: Count labels and accounting (INV-128, B15-19)
         run: node app/scripts/test-b15-19-count-accounting.cjs
-      - name: Dashboard callback popover is visible where it opens and usable by keyboard -- Lead Queue (short and long queue, first, last and edge row), Callbacks Overdue and Contact page, two viewports; a save error stays visible; Tab/Shift+Tab/focus return; real pages, fictional data — 59 checks
-        run: node app/scripts/test-dashboard-callback-popover.cjs
       - name: Contacts stage and last call attempt columns (INV-129, B15-20)
         run: node app/scripts/test-b15-20-contacts-columns.cjs
       - name: Contract Workspace display, combined invariants and checked-in slice provenance (B15-21)
@@ -368,6 +366,8 @@ jobs:
         run: node app/scripts/test-pipeline-requests.cjs
       - name: Mailers No Address empty state on the real page (INV-110, B15-12)
         run: node app/scripts/test-mailers-empty-state.cjs
+      - name: Dashboard callback popover is visible where it opens and usable by keyboard -- Lead Queue (short and long queue, first, last and edge row), Callbacks Overdue and Contact page, two viewports; a save error stays visible; Tab/Shift+Tab/focus return; real pages, fictional data — 59 checks
+        run: node app/scripts/test-dashboard-callback-popover.cjs
       - name: Shell labels on the real page -- no Phase A badge, Conversations heading (INV-126, B15-17)
         run: node app/scripts/test-b15-shell-labels.cjs
       - name: /map and /settings redirect to the Dashboard inside the read gate, real App (B15-18)
