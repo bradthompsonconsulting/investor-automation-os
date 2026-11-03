@@ -186,9 +186,9 @@ export function buildSavePlan(input: SavePlanInput): SavePlan {
     const changed = !sameField(desired.transactionStructure, rec.transactionStructure) || !sameField(desired.closingPossession, rec.closingPossession) || !sameField(desired.titleComplications, rec.titleComplications);
     if (problem && (changed || timing !== "")) items.push(item("timing", "not_saved", `Not saved: ${problem}`));
     else if (changed) {
-      const keep = (k: keyof TaFields, name: string) => (sameField(desired[k], rec[k]) ? `${name} ${fieldText(desired[k])} (unchanged)` : `${name} → ${fieldText(desired[k])}`);
+      const keep = (next: TransactionAssumptionDraftField, was: TransactionAssumptionDraftField, name: string) => (sameField(next, was) ? `${name} ${fieldText(next)} (unchanged)` : `${name} → ${fieldText(next)}`);
       items.push(withResult(item("timing", "write",
-        `New Transaction assumptions record: ${keep("closingPossession", "closing/possession")}; ${keep("transactionStructure", "structure")}; ${keep("titleComplications", "title")}.`,
+        `New Transaction assumptions record: ${keep(desired.closingPossession, rec.closingPossession, "closing/possession")}; ${keep(desired.transactionStructure, rec.transactionStructure, "structure")}; ${keep(desired.titleComplications, rec.titleComplications, "title")}.`,
         JSON.stringify(desired), { kind: "note", body: (at) => formatTransactionAssumptionsNoteV2({ opportunityId: opp, at, operator: null, ...desired }) }), input.results.timing));
     } else if (timing !== "") items.push(item("timing", "none", "Matches what is on record: nothing to save."));
   }
