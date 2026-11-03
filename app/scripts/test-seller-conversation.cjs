@@ -27,7 +27,7 @@ require('./harness/ts-loader.cjs');
 const APP = path.resolve(__dirname, '..');
 const C = require(path.join(APP, 'src/lib/seller-conversation.ts'));
 
-const FLOOR = 54;
+const FLOOR = 61;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -157,6 +157,23 @@ const partial = C.onRecordFor({ ...empty, transaction: { at: '2026-09-30T15:02:0
 check('on record: a v2 "not yet answered" item is not shown as an answer', Object.keys(partial).length === 0, partial);
 const unrec = C.onRecordFor({ ...empty, occupancy: { kind: 'unrecognised', raw: 'Squatters' } });
 check('on record: an unrecognised occupancy value is shown as unrecognised, never mapped', unrec.occupancy[0].value === 'Unrecognised value "Squatters"');
+
+/* ---------- Summary recap (Bones P2-2) ---------- */
+let r = C.withField(C.EMPTY_CONVERSATION, 'price', 'amount', ' 410000 ');
+r = C.withField(r, 'ownership', 'owners', 'Ready and a sibling');
+r = C.withMark(r, 'asis', 'seller_doesnt_know');
+const recap = C.recapFor(r, full);
+const row = (id) => recap.find((x) => x.id === id);
+check('recap: one row per question between the opening and the summary, in order',
+  JSON.stringify(recap.map((x) => x.id)) === JSON.stringify(ORDER.filter((id) => id !== 'opening' && id !== 'summary')));
+check('recap: a recorded answer keeps its source and is not mixed with the draft',
+  row('price').saved.length === 2 && row('price').saved.every((s) => s.source) && row('price').draft.length === 1 && row('price').draft[0].value === '410000');
+check('recap: the seller\'s draft price is shown verbatim, never formatted or merged into the asking price',
+  row('price').draft[0].label === "Seller's stated price ($)" && row('price').saved.find((s) => s.label === 'Asking price').value === '$450,000');
+check('recap: a draft-only question shows its draft and nothing saved', row('ownership').draft[0].value === 'Ready and a sibling' && row('ownership').status === 'draft');
+check('recap: a mark is carried, with no invented answer', row('asis').mark === 'seller_doesnt_know' && row('asis').saved.length === 0 && row('asis').draft.length === 0);
+check('recap: an untouched question with no record is empty (Unanswered), not filled in', row('reason').status === 'unanswered' && row('reason').saved.length === 0 && row('reason').draft.length === 0 && row('reason').mark === null);
+check('recap: whitespace-only drafts are not listed', C.recapFor(C.withField(C.EMPTY_CONVERSATION, 'reason', 'reason', '   '), {}).find((x) => x.id === 'reason').draft.length === 0);
 
 if (checks !== FLOOR) { console.error(`FAILED: expected exactly ${FLOOR} checks, ran ${checks}.`); process.exit(2); }
 console.log(`\nchecksRun=${checks} failures=${failures} floor=${FLOOR} ${failures === 0 ? 'OK' : 'FAILED'}`);

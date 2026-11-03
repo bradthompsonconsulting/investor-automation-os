@@ -5,6 +5,10 @@
  *   requireanswer -- an answer is required before Next  -> a "B: Next is enabled" check fails
  *   writeonnext   -- moving sends a GHL write           -> "H: zero GHL writes" fails
  *   dropdrafts    -- moving discards typed drafts       -> "D: four typed draft answers survive" fails
+ *   sharedkey     -- drafts in one shared store/key      -> "I: B's price draft field is empty" fails (Bones P2-3)
+ *   stalesource   -- the page applies a late old read    -> "I: after A's late reads land" fails (Bones P2-3)
+ *   sametab       -- the repair estimate replaces the page -> "P2-1: it opens in a new tab" fails
+ *   recapsaved    -- recap labels drafts as saved        -> "P2-2: Price lists the saved" fails
  *
  * Not a CI step (same as the B15-06 focus mutation runner): each mutation
  * re-runs the whole rendered suite. Run it for review evidence.
@@ -18,6 +22,10 @@ const EXPECT = {
   requireanswer: /^FAIL {2}B: Next is enabled on /m,
   writeonnext: /^FAIL {2}H: zero GHL writes/m,
   dropdrafts: /^FAIL {2}D: four typed draft answers survive/m,
+  sharedkey: /^FAIL {2}I: B's price draft field is empty/m,
+  stalesource: /^FAIL {2}I: after A's late reads land/m,
+  sametab: /^FAIL {2}P2-1: it opens in a new tab/m,
+  recapsaved: /^FAIL {2}P2-2: Price lists the saved/m,
 };
 let failures = 0;
 for (const [name, mustFail] of Object.entries(EXPECT)) {

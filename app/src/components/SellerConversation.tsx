@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
   OPENINGS, OPENING_THEN, QUESTIONS, SOURCE_LABEL, STATUS_LABEL, EMPTY_CONVERSATION,
-  fillLine, withField, withMark, moveTo, questionStatus, nextOpenQuestion,
+  fillLine, withField, withMark, moveTo, questionStatus, nextOpenQuestion, recapFor,
   type AnswerStatus, type ConversationDraft, type OnRecord, type QuestionId, type AnswerField,
 } from "../lib/seller-conversation";
 import { CATEGORY_LABEL, type ReadinessResult } from "../lib/underwriting/offer-readiness";
@@ -30,7 +30,7 @@ const STATUS_CLASS: Record<AnswerStatus, string> = {
 };
 const READINESS_TEXT = { NOT_READY: "Not ready", REVIEW_NEEDED: "Review needed", OFFER_READY: "Offer ready (evidence)" } as const;
 
-export function SellerConversation({ dealKey, firstName, street, onRecord, readiness, recommended, staleRead }: {
+export function SellerConversation({ dealKey, firstName, street, onRecord, readiness, recommended, staleRead, repairsHref }: {
   dealKey: string | null;
   firstName: string | null;
   street: string | null;
@@ -38,6 +38,8 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
   readiness: ReadinessResult | null;
   recommended: QuestionId | null;
   staleRead: boolean;
+  /** The existing Underwriting page for this contact (repair estimator); opened in a NEW TAB so this page and its drafts stay. */
+  repairsHref: string | null;
 }) {
   const [drafts, setDrafts] = useState<Record<string, ConversationDraft>>({});
   if (!dealKey) {
@@ -66,7 +68,7 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
   const mark = (m: "skipped" | "seller_doesnt_know") => update((p) => moveTo(withMark(p, q.id, m), p.current + 1));
 
   return (
-    <section className="sc-wrap" data-testid="seller-conversation" aria-label="Seller conversation">
+    <section className="sc-wrap" data-testid="seller-conversation" data-deal={key} aria-label="Seller conversation">
       <div className="sc-grid">
         <nav className="sc-nav" aria-label="Conversation questions" data-testid="sc-nav">
           <div className="sc-heading">Conversation</div>
@@ -119,6 +121,41 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
             )}
             {staleRead ? <div className="sc-warn" data-testid="sc-stale">The latest refresh failed; this is what was last read.</div> : null}
           </div>
+
+          {q.id === "condition" && repairsHref ? (
+            /* Bones P2-1: the existing repair estimator, unchanged, in a new tab -- this page and its drafts stay open. */
+            <a className="sc-link" data-testid="sc-repairs-link" href={repairsHref} target="_blank" rel="noopener noreferrer">
+              Estimate repairs in Underwriting (opens in a new tab)
+            </a>
+          ) : null}
+
+          {q.id === "summary" ? (
+            /* Bones P2-2: read-only recap of what is saved and what is only drafted. Nothing inferred or combined. */
+            <div className="sc-recap" data-testid="sc-recap">
+              <div className="sc-label">Recap — read back, don't add to it</div>
+              <ul>
+                {recapFor(d, onRecord).map((row) => (
+                  <li key={row.id} data-testid={`sc-recap-${row.id}`} data-status={row.status}>
+                    <strong>{row.title}:</strong>{" "}
+                    {row.saved.length === 0 && row.draft.length === 0 && !row.mark ? <span className="sc-muted">Unanswered</span> : null}
+                    {row.saved.map((s, i) => (
+                      <div key={`s${i}`} className="sc-recap-saved" data-testid="sc-recap-saved">
+                        <span className="sc-chip sc-chip-record">Saved</span> {s.label}: {s.value} <span className="sc-muted">— {s.source}</span>
+                      </div>
+                    ))}
+                    {row.draft.map((x, i) => (
+                      <div key={`d${i}`} className="sc-recap-draft" data-testid="sc-recap-draft">
+                        <span className="sc-chip sc-chip-draft">Draft — not saved</span> {x.label}: {x.value}
+                      </div>
+                    ))}
+                    {row.mark ? (
+                      <div className="sc-recap-mark" data-testid="sc-recap-mark"><span className="sc-chip sc-chip-skip">{STATUS_LABEL[row.mark]}</span></div>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           <div className="sc-fields">
             {q.fields.map((f) => (

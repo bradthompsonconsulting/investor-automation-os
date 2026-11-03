@@ -2704,6 +2704,7 @@ export default function SellerCallWorkspace() {
             readiness={readiness}
             recommended={recommendedQuestion(nextBestQuestion)}
             staleRead={refreshReadError !== null}
+            repairsHref={`/contacts/${contactId}/underwriting`}
           />
 
           {/* B8-13 / INV-68 — Offer Ready's OWN human approval/override,

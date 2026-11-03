@@ -66,3 +66,8 @@ textarea.sc-input { resize: vertical; }
 .sc-level-preliminary { color: #FCD34D; }
 .sc-level-unknown { color: #FCA5A5; }
 .sc-notes textarea { width: 100%; box-sizing: border-box; background: #0A1530; color: #E2E8F0; border: 1px solid rgba(148, 163, 184, 0.35); border-radius: 6px; padding: 6px 8px; font-size: 13px; font-family: inherit; resize: vertical; margin-bottom: 4px; }
+/* Bones P2-2: Summary recap. Saved vs Draft is carried by a labelled chip, not colour alone. */
+.sc-recap { border-top: 1px solid rgba(148, 163, 184, 0.12); padding-top: 8px; margin: 8px 0; font-size: 12px; color: #E2E8F0; overflow-wrap: anywhere; }
+.sc-recap ul { list-style: none; margin: 4px 0 0; padding: 0; }
+.sc-recap li { padding: 4px 0; border-bottom: 1px solid rgba(148, 163, 184, 0.08); }
+.sc-recap-saved, .sc-recap-draft, .sc-recap-mark { margin: 3px 0 0 8px; line-height: 1.5; }

@@ -258,6 +258,42 @@ export function nextOpenQuestion(from: number, statuses: readonly AnswerStatus[]
   return null;
 }
 
+/* ---------- Summary recap (read-only; Bones P2-2) ---------- */
+
+export type RecapRow = {
+  id: QuestionId;
+  title: string;
+  status: AnswerStatus;
+  /** What GHL holds for this deal (saved), each with its source. */
+  saved: OnRecordItem[];
+  /** What Brad typed on this page (NOT saved), by field label, verbatim. */
+  draft: { label: string; value: string }[];
+  mark: Mark | null;
+};
+
+/**
+ * One row per question between the opening and the summary, in order. It only
+ * re-presents what `onRecordFor` and the drafts already hold: saved items keep
+ * their sources, draft text is shown verbatim and labelled unsaved, nothing is
+ * inferred, formatted into a number, or merged across sources.
+ */
+export function recapFor(d: ConversationDraft, onRecord: OnRecord): RecapRow[] {
+  return QUESTIONS.filter((q) => q.id !== "opening" && q.id !== "summary").map((q) => {
+    const a = d.answers[q.id];
+    return {
+      id: q.id,
+      title: q.title,
+      status: questionStatus(q.id, d, onRecord),
+      saved: [...(onRecord[q.id] ?? [])],
+      draft: q.fields.flatMap((f) => {
+        const v = a?.fields[f.id];
+        return v !== undefined && v.trim() !== "" ? [{ label: f.label, value: v.trim() }] : [];
+      }),
+      mark: a?.mark ?? null,
+    };
+  });
+}
+
 /* ---------- guidance: the existing engine's pick, mapped (never re-derived) ---------- */
 
 /** Engine category -> the seller question that gathers it. ARV and deal economics are Brad's research, not seller questions. */

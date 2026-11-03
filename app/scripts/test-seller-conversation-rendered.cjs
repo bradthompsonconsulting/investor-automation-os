@@ -28,7 +28,14 @@
  *      and status (fixture: all SUPPORTED / Offer ready); without the seller
  *      price note, Seller price position is UNKNOWN, status Not ready, and the
  *      engine's pick (star) is on Price; the strip never says "approved".
- *   F. Isolation: another contact never shows this deal's drafts.
+ *   P2-1 (Bones). Condition offers the EXISTING repair estimator: this contact's
+ *      /underwriting page, opened in a new tab; this page and its drafts stay.
+ *   P2-2 (Bones). Summary recaps the eight earlier questions read-only: saved
+ *      items with their sources, drafts labelled "Draft — not saved" verbatim,
+ *      untouched questions Unanswered; no input, no offer wording.
+ *   I. (Bones P2-3) Isolation between FULLY LOADED deals: A -> B -> A -> B with
+ *      distinct recorded values and drafts; two deals on one contact (C); and a
+ *      delayed old read (A's reads held, route moves to B, B loads, A released).
  *   G. Layout (real CSS): at 1100x800, 1280x800, 1440x900, and 1440x900 with
  *      Full Script + Notes open, the conversation panel does not overflow
  *      sideways and its spoken line and controls are fully visible.
@@ -48,30 +55,82 @@ const fx = require('./harness/seller-call-offer-ready-fixture.cjs');
 const APP = path.resolve(__dirname, '..');
 const HARNESS = '/scripts/harness/app-routes/index.html';
 const A = fx.CONTACT;
-const B = 'syn-conv-other-contact';
 const { getConfig } = require(path.join(APP, 'shared/ghl-config.ts'));
 const OCC_ID = getConfig('test').fields.occupancyStatus;
+const { formatSellerPricePositionNote, formatTransactionAssumptionsNote, formatPropertyIdentityConfirmationNote } = require(path.join(APP, 'src/lib/seller-call-readiness-carriers.ts'));
+
+/* Bones P2-3: two more FULLY LOADED sellers, with distinct recorded values.
+   B: one deal. C: two deals on the same contact (the page asks which one). */
+const B = 'syn-conv-bella';
+const B_OPP = `${B}-opp`;
+const C = 'syn-conv-cara';
+const C1 = `${C}-opp-one`;
+const C2 = `${C}-opp-two`;
+const EXTRA = {
+  [B]: { firstName: 'Bella', address1: '77 Second St', city: 'Waco', state: 'TX', postalCode: '76701', deals: [[B_OPP, 'Bella deal']] },
+  [C]: { firstName: 'Cara', address1: '9 Third Ave', city: 'Tyler', state: 'TX', postalCode: '75701', deals: [[C1, 'Cara deal one'], [C2, 'Cara deal two']] },
+};
+const displayOf = (x) => [x.address1, [x.city, [x.state, x.postalCode].join(', ')].join(', ')].join(', ');
+const n = (id, body) => ({ id, body, dateAdded: '2026-10-05T15:00:00.000Z' });
+const EXTRA_NOTES = {
+  [B]: [
+    n('b-identity', formatPropertyIdentityConfirmationNote({ opportunityId: B_OPP, at: '2026-10-05T15:01:00.000Z', operator: null, status: 'confirmed', address: displayOf(EXTRA[B]) })),
+    n('b-ta', formatTransactionAssumptionsNote({ opportunityId: B_OPP, at: '2026-10-05T15:02:00.000Z', operator: null,
+      transactionStructure: { kind: 'value', value: 'Bella structure' }, closingPossession: { kind: 'value', value: 'Bella closes in 60 days' }, titleComplications: { kind: 'value', value: 'Bella lien question' } })),
+    n('b-price', formatSellerPricePositionNote({ opportunityId: B_OPP, at: '2026-10-05T15:03:00.000Z', operator: null, kind: 'price', price: 333000 })),
+  ],
+  [C]: [
+    n('c1-price', formatSellerPricePositionNote({ opportunityId: C1, at: '2026-10-05T15:03:00.000Z', operator: null, kind: 'price', price: 210000 })),
+    n('c2-price', formatSellerPricePositionNote({ opportunityId: C2, at: '2026-10-05T15:04:00.000Z', operator: null, kind: 'price', price: 290000 })),
+  ],
+};
+const extraRows = () => Object.entries(EXTRA).flatMap(([cid, x]) => x.deals.map(([id, name]) => ({
+  id, contactId: cid, contactName: x.firstName, opportunityName: name, phone: '', email: '', stageId: 'fixture-stage', customFields: [],
+})));
+function extraAnswer(req) {
+  if (req.kind === 'ghl-opportunities') { const a = fx.answer(req); return { status: a.status, body: { ...a.body, opportunities: [...a.body.opportunities, ...extraRows()] } }; }
+  const x = EXTRA[req.contact];
+  if (req.kind === 'detail' && x) return { status: 200, body: { contact: { id: req.contact, firstName: x.firstName, lastName: 'Synthetic', phone: '+15555550123', address1: x.address1, city: x.city, state: x.state, postalCode: x.postalCode, customFields: [] } } };
+  if (req.kind === 'notes' && x) return { status: 200, body: { notes: EXTRA_NOTES[req.contact].map((y) => ({ ...y })) } };
+  if (req.kind === 'row' && x) return { status: 200, body: { id: req.contact, firstName: x.firstName, lastName: 'Synthetic', phone: '+15555550123', tags: [] } };
+  if (req.kind === 'opp-read' && extraRows().some((o) => o.id === req.target)) return { status: 200, body: { opportunity: { id: req.target, contactId: extraRows().find((o) => o.id === req.target).contactId, customFields: [] } } };
+  return null;
+}
 const json = (status, body) => ({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const watchdog = setTimeout(() => { console.error('FAIL  did not finish within 12 minutes'); process.exit(1); }, 12 * 60_000);
 
-const FLOOR = 66;
+const FLOOR = 103;
 const TARGET = '/src/components/SellerConversation.tsx';
+const PAGE = '/src/pages/SellerCallWorkspace.tsx';
+/* [file, from, to]: each `from` must occur exactly once in its file. */
 const MUTATIONS = {
   // An answer becomes required to advance.
-  requireanswer: [['onClick={() => go(d.current + 1)} disabled={d.current === QUESTIONS.length - 1}',
+  requireanswer: [[TARGET, 'onClick={() => go(d.current + 1)} disabled={d.current === QUESTIONS.length - 1}',
     'onClick={() => go(d.current + 1)} disabled={d.current === QUESTIONS.length - 1 || statuses[d.current] === "unanswered"}']],
   // Moving writes to GHL.
-  writeonnext: [['const go = (i: number) => update((p) => moveTo(p, i));',
+  writeonnext: [[TARGET, 'const go = (i: number) => update((p) => moveTo(p, i));',
     'const go = (i: number) => { void fetch("/.netlify/functions/ghl-write", { method: "POST", body: "{}" }); update((p) => moveTo(p, i)); };']],
   // Moving discards drafts.
-  dropdrafts: [['const go = (i: number) => update((p) => moveTo(p, i));',
+  dropdrafts: [[TARGET, 'const go = (i: number) => update((p) => moveTo(p, i));',
     'const go = (i: number) => update((p) => ({ ...moveTo(p, i), answers: {} }));']],
+  // Bones P2-3 wrong-key control: drafts in one shared store under one key, surviving a remount -- they leak across deals.
+  sharedkey: [[TARGET, 'const [drafts, setDrafts] = useState<Record<string, ConversationDraft>>({});',
+    'const [, force] = useState(0); const G = globalThis as unknown as { __scShared?: Record<string, ConversationDraft> }; const drafts = (G.__scShared ??= {}); const setDrafts = (fn: (all: Record<string, ConversationDraft>) => Record<string, ConversationDraft>) => { G.__scShared = fn(G.__scShared ?? {}); force((n) => n + 1); };'],
+    [TARGET, 'const key = dealKey;', 'const key = "shared";']],
+  // Bones P2-3 stale-source control: the page applies a contact's reads after the route has moved on.
+  stalesource: [[PAGE, '      .then(([c, pipeline, policy, notesResult]) => {\n        if (cancelled) return;\n', '      .then(([c, pipeline, policy, notesResult]) => {\n']],
+  // Bones P2-1: the repair estimate replaces this page instead of opening a new tab.
+  sametab: [[TARGET, 'href={repairsHref} target="_blank" rel="noopener noreferrer"', 'href={repairsHref}']],
+  // Bones P2-2: drafts are presented as saved in the recap.
+  recapsaved: [[TARGET, '<span className="sc-chip sc-chip-draft">Draft — not saved</span>', '<span className="sc-chip sc-chip-record">Saved</span>']],
 };
 const MUTATION = process.env.SC_CONV_MUTATION || '';
 if (MUTATION && !MUTATIONS[MUTATION]) { console.error(`FAIL  unknown SC_CONV_MUTATION ${MUTATION}`); process.exit(2); }
 if (MUTATION) {
-  const srcText = fs.readFileSync(path.join(APP, TARGET), 'utf8').replace(/\r\n/g, '\n');
-  for (const [from] of MUTATIONS[MUTATION]) if (srcText.split(from).length !== 2) { console.error(`FAIL  mutation ${MUTATION}: target not found exactly once`); process.exit(2); }
+  for (const [file, from] of MUTATIONS[MUTATION]) {
+    const srcText = fs.readFileSync(path.join(APP, file), 'utf8').replace(/\r\n/g, '\n');
+    if (srcText.split(from).length !== 2) { console.error(`FAIL  mutation ${MUTATION}: target not found exactly once in ${file}`); process.exit(2); }
+  }
 }
 let mutationApplied = false;
 
@@ -93,9 +152,12 @@ async function main() {
   const mutate = {
     name: 'seller-conversation-mutation', enforce: 'pre',
     transform(code, id) {
-      if (!MUTATION || !id.replace(/\\/g, '/').endsWith(TARGET)) return null;
+      if (!MUTATION) return null;
+      const file = [TARGET, PAGE].find((f) => id.replace(/\\/g, '/').endsWith(f));
+      const mine = file ? MUTATIONS[MUTATION].filter((m) => m[0] === file) : [];
+      if (mine.length === 0) return null;
       let out = code.replace(/\r\n/g, '\n');
-      for (const [from, to] of MUTATIONS[MUTATION]) out = out.replace(from, to);
+      for (const [, from, to] of mine) out = out.replace(from, to);
       if (!mutationApplied) console.log(`NOTE  mutation ${MUTATION} applied`);
       mutationApplied = true;
       return out;
@@ -110,6 +172,9 @@ async function main() {
   const base = server.resolvedUrls.local[0].replace(/\/$/, '');
   const browser = await chromium.launch();
   const log = { writes: [], foreign: [], pageErrors: [], blockedClicks: [] };
+  /* A read hold for one contact (Bones P2-3 delayed-old-read case): its detail/notes reads wait until released. */
+  let hold = null;
+  const holdReads = (contact) => { let release; const released = new Promise((r) => { release = r; }); hold = { contact, released, release, seen: 0 }; return hold; };
 
   async function open(width, height) {
     const context = await browser.newContext({ viewport: { width, height }, timezoneId: 'America/Chicago', locale: 'en-US' });
@@ -124,7 +189,9 @@ async function main() {
       const fn = u.pathname.replace('/.netlify/functions/', '');
       if (r.method() !== 'GET') { log.writes.push(`${r.method()} ${fn}`); return rt.fulfill(json(405, { error: 'offline test refuses every write' })); }
       if (fn === 'app-read-session') return rt.fulfill(json(200, { signedIn: true, expiresAt: new Date(Date.now() + 3600_000).toISOString() }));
-      const a = fx.answer(fx.classify(url, 'GET', null));
+      const req = fx.classify(url, 'GET', null);
+      if (hold && (req.kind === 'detail' || req.kind === 'notes') && req.contact === hold.contact) { hold.seen += 1; await hold.released; }
+      const a = extraAnswer(req) ?? fx.answer(req);
       return rt.fulfill(json(a.status, a.body));
     });
     await page.goto(`${base}${HARNESS}?start=${encodeURIComponent(`/contacts/${A}/seller-call`)}`);
@@ -245,6 +312,46 @@ async function main() {
     check('D: no "Save changes" (nothing unsaved in the page autosave)', (await tid(page, 'seller-call-save-changes').count()) === 0);
     check('D: the card says drafts are not saved to GHL', (await tid(page, 'sc-draft-note').textContent()).includes('Nothing here is saved to GHL'));
 
+    // P2-1. Condition -> the existing repair estimator, in a new tab
+    await press(page, 'sc-nav-condition');
+    const link = tid(page, 'sc-repairs-link');
+    check('P2-1: the Condition question offers the repair estimate link', (await link.count()) === 1);
+    check('P2-1: it points at this contact\'s existing Underwriting page', (await link.getAttribute('href')) === `/contacts/${A}/underwriting`);
+    check('P2-1: it opens in a new tab (target _blank, rel noopener)', (await link.getAttribute('target')) === '_blank' && /noopener/.test((await link.getAttribute('rel')) || ''));
+    const pagesBefore = context.pages().length;
+    const popupP = context.waitForEvent('page', { timeout: 8000 }).catch(() => null);
+    await press(page, 'sc-repairs-link');
+    const popup = await popupP;
+    const popupPath = popup ? new URL(popup.url() === 'about:blank' ? (await popup.waitForURL(/underwriting/, { timeout: 8000 }).then(() => popup.url()).catch(() => 'about:blank')) : popup.url(), 'http://x').pathname : null;
+    if (popup) await popup.close();
+    check('P2-1: clicking it opens a NEW tab on the Underwriting page', popupPath === `/contacts/${A}/underwriting`, { popupPath, pagesBefore });
+    check('P2-1: this page stays on Seller Call with the Condition question open', new URL(page.url()).pathname === `/contacts/${A}/seller-call` && (await cardQ(page)) === 'condition');
+    await press(page, 'sc-nav-price');
+    check('P2-1: drafts are intact after the repair estimate opened', (await tid(page, 'sc-field-price-amount').inputValue()) === '410000' && (await tid(page, 'sc-call-notes').inputValue()) === 'Seller prefers mornings. Dog on site.');
+    await press(page, 'sc-nav-ownership');
+    check('P2-1: no other question offers the repair link', (await tid(page, 'sc-repairs-link').count()) === 0);
+
+    // P2-2. Summary recap: saved vs draft, read-only, nothing inferred
+    await press(page, 'sc-nav-summary');
+    const recapText = (id) => tid(page, `sc-recap-${id}`).textContent();
+    check('P2-2: Summary shows a recap row for each of the eight earlier questions', (await page.locator('[data-testid^="sc-recap-"][data-status]').count()) === 8);
+    const priceRow = await recapText('price');
+    check('P2-2: Price lists the saved seller price position with its source AND the unsaved draft, each labelled',
+      priceRow.includes('Saved') && priceRow.includes('Seller price position: $425,000') && priceRow.includes('Seller price position note')
+      && priceRow.includes('Draft — not saved') && priceRow.includes("Seller's stated price ($): 410000"), priceRow);
+    check('P2-2: the draft price is shown verbatim, not formatted or merged into a saved figure', !priceRow.includes('$410,000') && !/Asking price: \$410/.test(priceRow), priceRow);
+    const ownRow = await recapText('ownership');
+    check('P2-2: Ownership lists the saved title note and the unsaved owners draft', ownRow.includes('Title complications: None (recorded)') && ownRow.includes('Draft — not saved') && ownRow.includes('Ready and a sibling'), ownRow);
+    const reasonRow = await recapText('reason');
+    check('P2-2: Reason is draft only (nothing saved claimed)', reasonRow.includes('Draft — not saved') && !reasonRow.includes('Saved'), reasonRow);
+    const occRow = await recapText('occupancy');
+    check('P2-2: Occupancy shows the draft choice as a draft', occRow.includes('Draft — not saved') && occRow.includes('Tenant Occupied') && !occRow.includes('Saved'), occRow);
+    const asisRow = await recapText('asis');
+    check('P2-2: an untouched question reads Unanswered, with nothing filled in', asisRow.includes('Unanswered') && !asisRow.includes('Saved') && !asisRow.includes('Draft'), asisRow);
+    check('P2-2: every draft line in the recap is labelled "Draft — not saved"', (await page.locator('[data-testid="sc-recap-draft"]').count()) === (await page.locator('[data-testid="sc-recap-draft"]', { hasText: 'Draft — not saved' }).count()) && (await page.locator('[data-testid="sc-recap-draft"]').count()) >= 4);
+    check('P2-2: the recap has no input and no button (read-only)', (await tid(page, 'sc-recap').locator('input,textarea,select,button').count()) === 0);
+    check('P2-2: the recap names no offer or commitment', !/offer|commit|agree/i.test((await tid(page, 'sc-recap').textContent()).replace(/Seller price position/g, '')));
+
     // E. readiness
     const levels = {};
     for (const c of ['property_identity', 'repairs_condition', 'arv', 'deal_economics', 'transaction_assumptions', 'seller_price_position']) levels[c] = await tid(page, `sc-readiness-${c}`).getAttribute('data-level');
@@ -255,16 +362,83 @@ async function main() {
     check('E: an offer-ready deal marks no question with the engine star', (await page.locator('[data-testid^="sc-recommended-"]').count()) === 0);
     check('E: the existing Offer Readiness badge and decision panel are still on the page', (await page.locator('[data-testid="readiness-human-action-panel"],[data-testid="readiness-human-action-panel-loading"]').count()) === 1);
 
-    // F. isolation
+    await context.close();
+  }
+
+  /* ===== I. isolation between fully loaded deals (Bones P2-3) ===== */
+  fx.reset();
+  {
+    const { context, page } = await open(1440, 900);
+    const panelFor = (key) => page.locator(`[data-testid="seller-conversation"][data-deal="${key}"]`).waitFor({ timeout: 60000 }).then(() => true).catch(() => false);
+    const panelText = () => tid(page, 'seller-conversation').textContent();
+    const priceRecord = async () => { await press(page, 'sc-nav-price'); return tid(page, 'sc-on-record').textContent(); };
+    // A: type drafts.
+    await press(page, 'sc-nav-price');
+    await tid(page, 'sc-field-price-amount').fill('A-410000');
+    await tid(page, 'sc-call-notes').fill('A-notes only');
+    // A -> B (fully loaded, its own deal).
     await navigate(page, `/contacts/${B}/seller-call`);
-    await page.waitForTimeout(2500);
-    const bodyB = await page.evaluate(() => document.body.innerText);
-    check('F: another contact never shows this deal\'s drafts or notes', !bodyB.includes('Inherited the house') && !bodyB.includes('Dog on site') && !bodyB.includes('Send numbers Friday'));
+    check('I: B loads its own conversation (deal key B)', await panelFor(`${B}|${B_OPP}`));
+    await press(page, 'sc-nav-opening');
+    check('I: B\'s opening names Bella and her street', (await tid(page, 'sc-say').textContent()).includes('Hey Bella,') && (await tid(page, 'sc-say').textContent()).includes('77 Second St'));
+    const bPrice = await priceRecord();
+    check('I: B shows its own recorded price ($333,000), never A\'s ($425,000)', bPrice.includes('$333,000') && !(await panelText()).includes('$425,000'), bPrice);
+    check('I: B\'s price draft field is empty (A\'s draft does not appear)', (await tid(page, 'sc-field-price-amount').inputValue()) === '');
+    check('I: B\'s Call notes are empty (A\'s notes do not appear)', (await tid(page, 'sc-call-notes').inputValue()) === '');
+    await press(page, 'sc-nav-timing');
+    check('I: B\'s timing record is B\'s own', (await tid(page, 'sc-on-record').textContent()).includes('Bella closes in 60 days'));
+    await press(page, 'sc-nav-price');
+    await tid(page, 'sc-field-price-amount').fill('B-333-draft');
+    await tid(page, 'sc-call-notes').fill('B-notes only');
+    // B -> A: A's drafts and records return, B's do not appear.
     await navigate(page, `/contacts/${A}/seller-call`);
-    await page.getByTestId('sc-card').waitFor({ timeout: 60000 });
+    check('I: back on A (deal key A)', await panelFor(`${A}|${fx.OPP}`));
+    const aPrice = await priceRecord();
+    check('I: A shows its own recorded price, never B\'s', aPrice.includes('$425,000') && !(await panelText()).includes('$333,000'), aPrice);
+    check('I: A\'s own draft is back; B\'s draft is absent', (await tid(page, 'sc-field-price-amount').inputValue()) === 'A-410000');
+    check('I: A\'s own Call notes are back; B\'s are absent', (await tid(page, 'sc-call-notes').inputValue()) === 'A-notes only');
+    // A -> B again: B's drafts are B's.
+    await navigate(page, `/contacts/${B}/seller-call`);
+    await panelFor(`${B}|${B_OPP}`);
+    await press(page, 'sc-nav-price');
+    check('I: returning to B shows B\'s draft and notes only', (await tid(page, 'sc-field-price-amount').inputValue()) === 'B-333-draft' && (await tid(page, 'sc-call-notes').inputValue()) === 'B-notes only');
+
+    // Two deals on one contact (the page asks which deal; it offers no switch once chosen, so each deal is a fresh choice).
+    await navigate(page, `/contacts/${C}/seller-call`);
+    await page.getByRole('button', { name: 'Cara deal one' }).click({ timeout: 30000 }).catch(() => log.blockedClicks.push('choose C1'));
+    check('I: C deal one loads under its own deal key', await panelFor(`${C}|${C1}`));
+    const c1Price = await priceRecord();
+    check('I: C deal one shows its price ($210,000), not deal two\'s ($290,000)', c1Price.includes('$210,000') && !c1Price.includes('$290,000'), c1Price);
+    check('I: C deal one starts with no draft (not B\'s, not A\'s)', (await tid(page, 'sc-field-price-amount').inputValue()) === '' && (await tid(page, 'sc-call-notes').inputValue()) === '');
+    await tid(page, 'sc-field-price-amount').fill('C1-draft');
+    await navigate(page, `/contacts/${C}`);
     await page.waitForTimeout(800);
-    const back = await tid(page, 'sc-call-notes').inputValue().catch(() => '');
-    console.log(`NOTE  F: after returning to the first contact, its in-session Call notes are ${back ? 'still present' : 'not kept (the page remounted)'}; drafts are in-session only by design (reload-durable drafts are slice 5).`);
+    await navigate(page, `/contacts/${C}/seller-call`);
+    await page.getByRole('button', { name: 'Cara deal two' }).click({ timeout: 30000 }).catch(() => log.blockedClicks.push('choose C2'));
+    check('I: C deal two loads under its own deal key', await panelFor(`${C}|${C2}`));
+    const c2Price = await priceRecord();
+    check('I: C deal two shows its price ($290,000), not deal one\'s', c2Price.includes('$290,000') && !c2Price.includes('$210,000'), c2Price);
+    check('I: C deal two does not show deal one\'s draft', (await tid(page, 'sc-field-price-amount').inputValue()) === '');
+
+    // Delayed old read: A's reads are held, the route moves on to B, B loads, then A's reads are released.
+    await navigate(page, `/contacts/${B}/seller-call`);
+    await panelFor(`${B}|${B_OPP}`);
+    const h = holdReads(A);
+    await navigate(page, `/contacts/${A}/seller-call`);
+    await page.waitForFunction(() => true);
+    for (let i = 0; i < 40 && h.seen < 2; i++) await page.waitForTimeout(100);
+    check('I: A\'s reads were in flight (held) when the route moved on', h.seen >= 2, { seen: h.seen });
+    await navigate(page, `/contacts/${B}/seller-call`);
+    check('I: B loads while A\'s reads are still held', await panelFor(`${B}|${B_OPP}`));
+    h.release();
+    hold = null;
+    await page.waitForTimeout(2000);
+    // (Passing through a loading contact unmounts the panel, so B's earlier in-session draft is not expected here; slice 5.)
+    const afterKey = await tid(page, 'seller-conversation').getAttribute('data-deal');
+    const afterPrice = await priceRecord();
+    check('I: after A\'s late reads land, the panel is still B\'s (deal key and B\'s recorded price only)', afterKey === `${B}|${B_OPP}` && afterPrice.includes('$333,000') && !(await panelText()).includes('$425,000'), { afterKey, afterPrice });
+    await press(page, 'sc-nav-opening');
+    check('I: B\'s opening still names Bella, and no A draft or notes appear', (await tid(page, 'sc-say').textContent()).includes('Hey Bella,') && (await tid(page, 'sc-call-notes').inputValue()) !== 'A-notes only');
     await context.close();
   }
 
