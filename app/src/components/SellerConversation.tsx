@@ -101,6 +101,9 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
             <span className={STATUS_CLASS[statuses[d.current]]} data-testid="sc-card-status">{STATUS_LABEL[statuses[d.current]]}</span>
           </div>
           <p className="sc-say" data-testid="sc-say">“{spoken}”</p>
+          {(q.alternates ?? []).map((alt, i) => (
+            <p key={i} className="sc-then" data-testid="sc-alternate">Or: “{alt}”</p>
+          ))}
           {then ? <p className="sc-then" data-testid="sc-then">After listening: “{then}”</p> : null}
           <div className="sc-source" data-testid="sc-source">Suggested — say it your way · {SOURCE_LABEL[lineSource]}</div>
           {q.followUps.length > 0 ? (
@@ -181,46 +184,80 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
             onClick={() => { if (nextOpen !== null) go(nextOpen); }}>
             {nextOpen === null ? "No unanswered or skipped questions left" : `Return to unanswered: ${QUESTIONS[nextOpen].title}`}
           </button>
-        </div>
 
-        <aside className="sc-side" aria-label="Readiness and call notes">
+          {/* Offer Readiness, compact (Captain 2026-11-03: no duplicate prominence). The existing engine's output only. */}
           <div className="sc-readiness" data-testid="sc-readiness">
-            <div className="sc-heading">Offer Readiness</div>
             {readiness ? (
               <>
-                <div className="sc-ready-status" data-testid="sc-readiness-status">{READINESS_TEXT[readiness.effectiveStatus]}</div>
+                <span className="sc-ready-status" data-testid="sc-readiness-status">{READINESS_TEXT[readiness.effectiveStatus]}</span>
                 <ul>
                   {CATEGORY_PRIORITY.map((c) => (
                     <li key={c} data-testid={`sc-readiness-${c}`} data-level={readiness.categories[c]}>
-                      <span>{CATEGORY_LABEL[c]}</span>
+                      <span>{CATEGORY_LABEL[c]}</span>{" "}
                       <span className={`sc-level sc-level-${readiness.categories[c].toLowerCase()}`}>{readiness.categories[c]}</span>
                     </li>
                   ))}
                 </ul>
-                <div className="sc-muted">Supported means the evidence is sufficient, not that an offer is approved. Brad makes any offer with the controls below.</div>
+                <div className="sc-muted">Supported means the evidence is sufficient, not that an offer is approved. Brad makes any offer in Deal tools below.</div>
               </>
             ) : <div className="sc-muted" data-testid="sc-readiness-unavailable">Readiness is not available until this deal's figures load.</div>}
           </div>
-          <div className="sc-notes">
-            <label className="sc-heading" htmlFor="sc-call-notes">Call notes</label>
-            <textarea id="sc-call-notes" data-testid="sc-call-notes" rows={5} value={d.notes}
-              onChange={(e) => { const v = e.target.value; update((p) => ({ ...p, notes: v })); }} />
-            <div className="sc-muted">Kept on this page while it is open, for every question. Not saved to GHL.</div>
-          </div>
+        </div>
+
+        {/* Call notes = the structured conversation note (Captain C8, 2026-11-03): every question in order, its
+            answer underneath, edited in the SAME draft state as the card. Blank stays blank; "Seller doesn't
+            know" is printed as the answer; a heading opens its question. Draft only -- nothing here is saved. */}
+        <aside className="sc-side sc-notes" aria-label="Call notes" data-testid="sc-notes-panel">
+          <div className="sc-heading">Call notes</div>
+          <div className="sc-muted sc-notes-unsaved" data-testid="sc-notes-unsaved">NOT SAVED — kept on this page while it is open.</div>
+          <ol className="sc-note-list">
+            {QUESTIONS.map((item, i) => {
+              const a = d.answers[item.id];
+              return (
+                <li key={item.id} data-testid={`sc-note-${item.id}`}>
+                  <button type="button" className="sc-note-heading" data-testid={`sc-note-heading-${item.id}`}
+                    aria-current={i === d.current ? "step" : undefined} onClick={() => go(i)}>
+                    {i === 0 ? item.title : `${i}. ${item.title}`}
+                  </button>
+                  {a?.mark === "seller_doesnt_know" ? <div className="sc-note-dk" data-testid={`sc-note-dk-${item.id}`}>Seller doesn't know</div> : null}
+                  {item.fields.map((f) => (
+                    <DraftField key={`${key}:note:${item.id}:${f.id}`} prefix="scn" compact qid={item.id} field={f} value={a?.fields[f.id] ?? ""}
+                      onChange={(v) => update((p) => withField(p, item.id, f.id, v))} />
+                  ))}
+                </li>
+              );
+            })}
+            <li data-testid="sc-note-general">
+              <label className="sc-note-heading" htmlFor="sc-call-notes">General notes</label>
+              <textarea id="sc-call-notes" className="sc-input" data-testid="sc-call-notes" rows={3} value={d.notes}
+                onChange={(e) => { const v = e.target.value; update((p) => ({ ...p, notes: v })); }} />
+            </li>
+          </ol>
         </aside>
       </div>
     </section>
   );
 }
 
-function DraftField({ qid, field, value, onChange }: { qid: QuestionId; field: AnswerField; value: string; onChange: (v: string) => void }) {
-  const id = `sc-${qid}-${field.id}`;
-  const common = { id, value, "data-testid": `sc-field-${qid}-${field.id}`, className: "sc-input" };
+/**
+ * One draft control. `prefix` keeps the card ("sc") and the Call notes panel ("scn") ids distinct while both
+ * edit the same draft value. A GHL-backed field names its GHL record and says NOT SAVED (Captain 2026-11-03).
+ */
+function DraftField({ qid, field, value, onChange, prefix = "sc", compact = false }: { qid: QuestionId; field: AnswerField; value: string; onChange: (v: string) => void; prefix?: string; compact?: boolean }) {
+  const id = `${prefix}-${qid}-${field.id}`;
+  const common = { id, value, "data-testid": `${prefix === "sc" ? "sc-field" : "sc-note-field"}-${qid}-${field.id}`, className: field.ghl ? "sc-input sc-input-ghl" : "sc-input" };
   return (
-    <div className="sc-field">
-      <label htmlFor={id}>{field.label}</label>
+    <div className={compact ? "sc-field sc-field-compact" : "sc-field"} data-ghl={field.ghl ? "true" : undefined}>
+      <label htmlFor={id}>
+        {field.label}
+        {field.ghl ? (
+          <span className="sc-ghl" data-testid={`${prefix}-ghl-${qid}-${field.id}`}>
+            <span className="sc-ghl-name" title={`GHL · ${field.ghl}`}>{compact ? "GHL" : `GHL · ${field.ghl}`}</span> <span className="sc-ghl-unsaved">NOT SAVED</span>
+          </span>
+        ) : null}
+      </label>
       {field.kind === "textarea" ? (
-        <textarea {...common} rows={2} onChange={(e) => onChange(e.target.value)} />
+        <textarea {...common} rows={compact ? 1 : 2} onChange={(e) => onChange(e.target.value)} />
       ) : field.kind === "choice" ? (
         <select {...common} onChange={(e) => onChange(e.target.value)}>
           <option value="">Not answered</option>

@@ -387,21 +387,23 @@ function Notice({ tone, title, body }: { tone: "error" | "warn" | "info"; title:
 }
 
 /** Renders exactly what `buildDealBarCells` returns -- no formatting decision is made here. */
-function DealBar({ cells }: { cells: DealBarCell[] }) {
+function DealBar({ cells, compact = false }: { cells: DealBarCell[]; compact?: boolean }) {
+  /* B15-03 slice A (Captain 2026-11-03): `compact` is the thin deal strip -- same cells, labels and values
+     from buildDealBarCells, smaller spacing and type. Nothing is computed or reformatted here. */
   return (
-    <div style={{
-      display: "flex", gap: "24px", flexWrap: "wrap", alignItems: "flex-start",
-      padding: "16px 20px", background: "#0F172A", border: "1px solid #1E293B",
-      borderRadius: "10px", marginBottom: "16px",
+    <div data-testid="seller-call-deal-strip" data-compact={compact ? "true" : undefined} style={{
+      display: "flex", gap: compact ? "6px 16px" : "24px", flexWrap: "wrap", alignItems: "flex-start",
+      padding: compact ? "6px 12px" : "16px 20px", background: "#0F172A", border: "1px solid #1E293B",
+      borderRadius: "10px", marginBottom: compact ? "6px" : "16px",
     }}>
       {cells.map((cell) => (
-        <div key={cell.key} style={{ display: "flex", flexDirection: "column", gap: "3px", minWidth: "128px" }}>
+        <div key={cell.key} style={{ display: "flex", flexDirection: "column", gap: compact ? "1px" : "3px", minWidth: compact ? "96px" : "128px" }}>
           <span style={{ fontSize: "9px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em" }}>
             {cell.label}
           </span>
           {cell.value.kind === "value" ? (
             <span style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-              <span style={{ fontSize: "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#E2E8F0" }}>
+              <span style={{ fontSize: compact ? "13px" : "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#E2E8F0" }}>
                 {cell.value.text}
               </span>
               {/* Board 15 / Pass 1 F31: a recorded Current Offer says whether it is supported. */}
@@ -433,17 +435,18 @@ const READINESS_STYLE: Record<ReadinessResult["effectiveStatus"], { color: strin
  * is explicit that this is not another dollar tile. Renders exactly what
  * B8-04 (`computeOfferReadiness`) returned; no local readiness logic.
  */
-function ReadinessBadge({ readiness }: { readiness: ReadinessResult }) {
+function ReadinessBadge({ readiness, compact = false }: { readiness: ReadinessResult; compact?: boolean }) {
+  /* B15-03 slice A: `compact` is a small chip (Captain: no duplicate NOT READY prominence). Same engine output. */
   const style = READINESS_STYLE[readiness.effectiveStatus];
   const Icon = style.Icon;
   return (
-    <div style={{ marginBottom: "20px" }}>
+    <div data-testid="seller-call-readiness-chip" style={{ marginBottom: compact ? "4px" : "20px", display: compact ? "flex" : undefined, alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
       <div style={{
-        display: "inline-flex", alignItems: "center", gap: "8px", padding: "8px 14px",
-        borderRadius: "8px", background: `${style.color}1A`, border: `1px solid ${style.color}44`,
+        display: "inline-flex", alignItems: "center", gap: compact ? "5px" : "8px", padding: compact ? "2px 8px" : "8px 14px",
+        borderRadius: compact ? "999px" : "8px", background: `${style.color}1A`, border: `1px solid ${style.color}44`,
       }}>
-        <Icon size={16} style={{ color: style.color }} />
-        <span style={{ fontSize: "13px", fontWeight: 700, color: style.color, letterSpacing: "0.02em" }}>
+        <Icon size={compact ? 12 : 16} style={{ color: style.color }} />
+        <span style={{ fontSize: compact ? "11px" : "13px", fontWeight: 700, color: style.color, letterSpacing: "0.02em" }}>
           {style.label}
         </span>
         {readiness.status !== readiness.effectiveStatus ? (
@@ -456,7 +459,7 @@ function ReadinessBadge({ readiness }: { readiness: ReadinessResult }) {
           screen. The badge now gives the count; the items themselves are one
           click away here and listed in full under "What We Still Need". */}
       {readiness.reasons.length > 0 ? (
-        <details data-testid="readiness-reasons" style={{ marginTop: "8px" }}>
+        <details data-testid="readiness-reasons" style={{ marginTop: compact ? 0 : "8px" }}>
           <summary style={{ fontSize: "12px", color: "#94A3B8", cursor: "pointer" }}>
             {readiness.reasons.length} open {readiness.reasons.length === 1 ? "item" : "items"} — details below under What We Still Need
           </summary>
@@ -2512,8 +2515,11 @@ export default function SellerCallWorkspace() {
       ) : null}
     >
       <RefreshReadError message={refreshReadError} />
-      <div style={{ marginBottom: "6px" }}>
-        <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>
+      {/* B15-03 slice A (Captain 2026-11-03): the title block and the calling controls share one row; the
+          controls are compact boxes at the top right (SellerCallVoiceControls, unchanged logic and gates). */}
+      <div className="seller-call-header-row" data-testid="seller-call-header-row">
+      <div style={{ marginBottom: "6px", flex: "1 1 auto", minWidth: 0 }}>
+        <h1 style={{ fontSize: "20px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>
           Seller Call
         </h1>
         <div style={{ fontSize: "13px", color: "#64748B", marginTop: "4px" }}>
@@ -2528,13 +2534,16 @@ export default function SellerCallWorkspace() {
       </div>
 
       {!loading && fetchError === null && contact ? (
-        <SellerCallVoiceControls
-          contactId={contactId}
-          sellerName={contactName(contact)}
-          sellerPhone={contact.phone}
-          compactCallSlot={compactCallSlot}
-        />
+        <div className="seller-call-calltop" data-testid="seller-call-calltop">
+          <SellerCallVoiceControls
+            contactId={contactId}
+            sellerName={contactName(contact)}
+            sellerPhone={contact.phone}
+            compactCallSlot={compactCallSlot}
+          />
+        </div>
       ) : null}
+      </div>
 
       {/* Call context. No call-session carrier exists (see module header):
           this is a one-line framing derived from what is already known,
@@ -2560,24 +2569,8 @@ export default function SellerCallWorkspace() {
         </div>
       ) : null}
 
-      {!loading && fetchError === null ? (
-        <div style={{ fontSize: "12px", color: "#94A3B8", margin: "0 0 18px" }} data-testid="seller-call-next-objective">
-          <strong>Next objective:</strong>{" "}
-          {latestOutcome?.kind === "accept"
-            ? "Move this deal to Contract Ready — see the checklist below."
-            : latestOutcome?.kind === "follow_up" && latestOutcome.followUpAt
-              ? `Follow up by ${new Date(latestOutcome.followUpAt).toLocaleString()}.`
-              : latestOutcome?.kind === "pass"
-                ? "Reconsider on new information, or close out."
-                : nextBestQuestion === null
-                  ? "Underwriting must resolve before an objective can be set."
-                  : nextBestQuestion.kind === "offer_ready"
-                    ? "Offer Ready — move to presenting the offer."
-                    : nextBestQuestion.kind === "operator_only"
-                      ? "Finish your underwriting checklist below — nothing left to ask the seller."
-                      : nextBestQuestion.question}
-        </div>
-      ) : null}
+      {/* B15-03 slice A (Captain 2026-11-03): the separate "Next objective" line is removed as redundant --
+          the conversation's starred question and readiness row carry the same guidance. */}
 
       {loading ? (
         <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#64748B", fontSize: "13px" }}>
@@ -2662,7 +2655,7 @@ export default function SellerCallWorkspace() {
                 without covering anything the bar does not already cover. */}
             <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
               <div style={{ flex: "1 1 auto", minWidth: 0 }}>
-                <DealBar cells={dealBarCells} />
+                <DealBar cells={dealBarCells} compact />
                 {sellerLoading ? (
                   <div role="status" data-testid="seller-call-loading-seller"
                     style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#F59E0B", margin: "-8px 0 10px" }}>
@@ -2670,7 +2663,7 @@ export default function SellerCallWorkspace() {
                     Loading the selected seller. Answers are locked until their details arrive.
                   </div>
                 ) : null}
-                {readiness ? <ReadinessBadge readiness={readiness} /> : null}
+                {readiness ? <ReadinessBadge readiness={readiness} compact /> : null}
               </div>
               <div style={{ flex: "0 0 auto", paddingTop: "10px", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" }}>
                 <div ref={setCompactCallSlot} data-testid="seller-call-compact-call-slot" />
@@ -2706,6 +2699,12 @@ export default function SellerCallWorkspace() {
             staleRead={refreshReadError !== null}
             repairsHref={`/contacts/${contactId}/underwriting`}
           />
+
+          {/* B15-03 slice A (Captain 2026-11-03): every existing Seller Call tool, unchanged, in one collapsible
+              section below the conversation. Open by default so no control or gate is hidden; collapse it to
+              keep the conversation alone on screen. */}
+          <details open className="seller-call-deal-tools" data-testid="seller-call-deal-tools">
+            <summary data-testid="seller-call-deal-tools-summary">Deal tools — readiness decision, negotiation, outcome, contract, underwriting</summary>
 
           {/* B8-13 / INV-68 — Offer Ready's OWN human approval/override,
               distinct from the negotiation above-Max override further
@@ -3765,6 +3764,7 @@ export default function SellerCallWorkspace() {
               )}
             </div>
           </div>
+          </details>
         </>
       ) : null}
     </Shell>

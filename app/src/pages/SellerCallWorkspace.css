@@ -7,3 +7,24 @@
 .seller-call-sticky-bar[data-rail-mode="sticky"] * {
   scroll-margin-top: calc(-1 * var(--rail-clearance, 0px));
 }
+
+/* B15-03 slice A (Captain 2026-11-03): title and calling controls share one row; the controls are compact
+   boxes at the top right. Unavailable controls are greyed (disabled) with no explanatory text; eligibility
+   results, launch errors and the GHL hand-off status still show (they report what a click did). */
+.seller-call-header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.seller-call-calltop { flex: 0 1 auto; max-width: 100%; }
+.seller-call-calltop .seller-call-modes { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+.seller-call-calltop .seller-call-mode { padding: 6px 8px; border-radius: 8px; min-width: 0; max-width: 260px; }
+.seller-call-calltop .seller-call-mode > strong { font-size: 11px; display: flex; align-items: center; gap: 4px; }
+.seller-call-calltop .seller-call-mode__identity { display: none; }
+.seller-call-calltop .seller-call-mode__actions { margin-top: 4px; }
+.seller-call-calltop .seller-call-button { min-height: 30px; padding: 4px 9px; font-size: 12px; }
+.seller-call-calltop [data-testid="airdroid-no-number"],
+.seller-call-calltop [data-testid="ghl-handoff-no-number"],
+.seller-call-calltop [data-unavailable="true"],
+.seller-call-calltop .seller-call-mode__hint[data-state="idle"] { display: none; }
+.seller-call-calltop .seller-call-mode__hint { font-size: 11px; margin-top: 4px; }
+.seller-call-calltop .seller-call-button:disabled { opacity: 0.4; filter: grayscale(1); }
+
+/* Deal tools: every existing Seller Call tool, collapsible, below the conversation. */
+.seller-call-deal-tools > summary { cursor: pointer; font-size: 12px; font-weight: 700; color: #94A3B8; padding: 8px 0; margin-bottom: 8px; border-top: 1px solid rgba(148, 163, 184, 0.15); }

@@ -27,7 +27,7 @@ require('./harness/ts-loader.cjs');
 const APP = path.resolve(__dirname, '..');
 const C = require(path.join(APP, 'src/lib/seller-conversation.ts'));
 
-const FLOOR = 61;
+const FLOOR = 68;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -56,18 +56,41 @@ const say = (id) => C.QUESTIONS.find((q) => q.id === id).say;
 const src = (id) => C.QUESTIONS.find((q) => q.id === id).source;
 const SETTLED = {
   address: 'Just to make sure I’m looking at the right property, can I confirm the address?',
-  ownership: 'Just so I understand the situation, is the property owned in your name, or is anyone else involved in making the decision to sell?',
   occupancy: 'Is anyone living in the property right now, or is it vacant?',
   condition: 'Tell me a little about the house. How would you describe its overall condition?',
-  price: 'What price were you hoping to get for the property?',
   timing: 'If everything worked out the way you’d want, when would you like to have the property sold?',
 };
 for (const [id, text] of Object.entries(SETTLED)) {
   check(`wording: ${id} is the settled Rev 6 line verbatim and is tagged settled`, say(id) === text && src(id) === 'rev6-settled', say(id));
 }
+/* Captain, hosted Test 2026-11-03 (INV-103): exact wording. */
+const CAPTAIN = {
+  ownership: 'Is the property owned in your name, or is anyone else involved in making the decision to sell?',
+  price: 'What price were you hoping to get for the property?',
+  asis: "What if you could sell it exactly as it sits, with no repairs or cleanup, leave behind anything you don't want, and close on a timeline that works for you? Would that take some weight off your shoulders?",
+};
+for (const [id, text] of Object.entries(CAPTAIN)) {
+  check(`wording: ${id} is the Captain's 2026-11-03 line verbatim and is tagged as his`, say(id) === text && src(id) === 'captain-2026-11-03', say(id));
+}
+check('wording: Price offers the Captain\'s alternate line', JSON.stringify(C.QUESTIONS.find((q) => q.id === 'price').alternates) === JSON.stringify(['What would you need to walk away with from the sale for this to make sense?']));
+check('wording: As-is is followed by "Is that something you\'d consider?"', C.QUESTIONS.find((q) => q.id === 'asis').then === "Is that something you'd consider?");
+check('wording: the Reason answer is labelled "Reason for selling"', C.QUESTIONS.find((q) => q.id === 'reason').fields.map((f) => f.label).join('|') === 'Reason for selling');
+/* Captain 2026-11-03: one answer control per question (a specific field plus notes only where he listed it). */
+const CONTROLS = {
+  opening: ['textarea'], address: ['text', 'text', 'text', 'text', 'text'], ownership: ['textarea'], occupancy: ['choice', 'textarea'],
+  reason: ['textarea'], timing: ['text'], price: ['money', 'textarea'], asis: ['textarea'], condition: ['textarea'], summary: ['textarea', 'date'],
+};
+check('controls: each question has exactly the Captain-approved controls', ORDER.every((id) => JSON.stringify(C.QUESTIONS.find((q) => q.id === id).fields.map((f) => f.kind)) === JSON.stringify(CONTROLS[id])),
+  Object.fromEntries(ORDER.map((id) => [id, C.QUESTIONS.find((q) => q.id === id).fields.map((f) => f.kind)])));
+check('controls: the address is street / unit / city / state / ZIP', C.QUESTIONS.find((q) => q.id === 'address').fields.map((f) => f.label).join('|') === 'Street|Unit|City|State|ZIP');
+check('controls: no duplicated narrative box ("Representation / title questions", desired outcome, objections are gone)', !/Representation|Desired outcome|Objections|Flexibility|Repairs \/ updates/.test(JSON.stringify(C.QUESTIONS.map((q) => q.fields))));
+const GHL = Object.fromEntries(C.QUESTIONS.map((q) => [q.id, q.fields.filter((f) => f.ghl).map((f) => `${f.id}=${f.ghl}`)]));
+check('controls: GHL-backed fields name their GHL record (address, occupancy, reason, timing, price) and nothing else does',
+  GHL.address.length === 5 && GHL.occupancy.join() === 'occupancy=Contact · Occupancy Status' && GHL.reason.join() === 'reason=Deal · Seller Reason (Test)'
+  && GHL.timing.join() === 'timing=Transaction assumptions · Closing / possession' && GHL.price.join() === 'amount=Seller price position'
+  && ['opening', 'ownership', 'asis', 'condition', 'summary'].every((id) => GHL[id].length === 0), GHL);
 const CANDIDATE = {
   reason: 'Can you tell me the reason for wanting to move or sell?',
-  asis: 'If you could sell without making repairs, leave behind what you don’t want, and work toward a closing date that fits your plans, is that something you’d consider?',
   summary: 'Let me make sure I’ve got everything right. Did I understand your situation correctly?',
 };
 for (const [id, text] of Object.entries(CANDIDATE)) {

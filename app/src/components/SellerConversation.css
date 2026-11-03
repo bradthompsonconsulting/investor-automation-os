@@ -71,3 +71,28 @@ textarea.sc-input { resize: vertical; }
 .sc-recap ul { list-style: none; margin: 4px 0 0; padding: 0; }
 .sc-recap li { padding: 4px 0; border-bottom: 1px solid rgba(148, 163, 184, 0.08); }
 .sc-recap-saved, .sc-recap-draft, .sc-recap-mark { margin: 3px 0 0 8px; line-height: 1.5; }
+
+/* B15-03 slice A (Captain 2026-11-03). GHL-backed controls are visibly distinct and named; NOT SAVED until
+   end-of-call Save exists. Distinction is carried by text (field name + NOT SAVED), not colour alone. */
+.sc-input-ghl { border-style: dashed; border-color: rgba(30, 200, 255, 0.6); }
+.sc-ghl { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: middle; }
+.sc-ghl-name { font-size: 10px; font-weight: 700; color: #7DD3FC; background: rgba(30, 200, 255, 0.12); border-radius: 4px; padding: 0 5px; }
+.sc-ghl-unsaved { font-size: 10px; font-weight: 700; color: #FCD34D; background: rgba(251, 191, 36, 0.14); border-radius: 4px; padding: 0 5px; }
+
+/* Compact readiness row inside the card. */
+.sc-card .sc-readiness { border: none; border-top: 1px solid rgba(148, 163, 184, 0.12); border-radius: 0; padding: 8px 0 0; margin-top: 10px; background: transparent; }
+.sc-card .sc-readiness ul { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0; }
+.sc-card .sc-readiness li { display: inline; padding: 0; }
+.sc-card .sc-ready-status { font-size: 12px; margin: 0; }
+
+/* Call notes = structured conversation note. */
+.sc-notes { padding: 10px 12px; }
+@container (min-width: 1040px) { .sc-notes { max-height: 78vh; overflow-y: auto; } }
+.sc-note-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.sc-note-list li { border-bottom: 1px solid rgba(148, 163, 184, 0.08); padding-bottom: 6px; }
+.sc-note-heading { display: block; background: none; border: none; padding: 0; margin-bottom: 3px; color: #1EC8FF; font-size: 12px; font-weight: 700; text-align: left; cursor: pointer; }
+.sc-note-heading[aria-current="step"] { text-decoration: underline; }
+.sc-note-dk { font-size: 12px; color: #FCD34D; margin-bottom: 3px; }
+.sc-notes-unsaved { margin-bottom: 8px; color: #FCD34D; }
+.sc-field-compact label { font-size: 11px; }
+.sc-field-compact .sc-input { font-size: 12px; padding: 4px 6px; }

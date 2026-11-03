@@ -114,7 +114,7 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
     && stickyWrapperFull.indexOf('<DealBar') < stickyWrapperFull.indexOf('<ReadinessBadge'),
     true);
   check('ReadinessBadge is a sibling element, not a prop of DealBar (still adjacent, not folded in)',
-    /<DealBar cells=\{dealBarCells\} \/>/.test(stickyWrapperFull), true);
+    /<DealBar cells=\{dealBarCells\}(?: compact)? \/>/.test(stickyWrapperFull), true);
 }
 
 // ============================================================
@@ -621,7 +621,8 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('page does not declare its own latestOutcomeNoteForOpportunity', /\b(function|const)\s+latestOutcomeNoteForOpportunity\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
   check('page does not declare its own attemptRecordOutcome', /\b(function|const)\s+attemptRecordOutcome\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
   check('page renders a dedicated resume-context line', /data-testid="seller-call-resume-context"/.test(sellerCallTsx), true);
-  check('page renders a dedicated next-objective line', /data-testid="seller-call-next-objective"/.test(sellerCallTsx), true);
+  // B15-03 slice A (Captain 2026-11-03): the separate Next objective line was removed as redundant.
+  check('page no longer renders a separate next-objective line (B15-03 slice A)', /data-testid="seller-call-next-objective"/.test(sellerCallTsx), false);
   check('the resume line reads latestOutcome.snapshot fields verbatim, never recomputing Target/Max/Spread from ARV/Repairs itself', /latestOutcome\.snapshot\.targetAcquisitionPrice/.test(sellerCallTsx) && /latestOutcome\.snapshot\.maxSupportedOffer/.test(sellerCallTsx) && /latestOutcome\.snapshot\.expectedSpread/.test(sellerCallTsx), true);
 }
 
@@ -632,7 +633,7 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 // default.
 // ============================================================
 {
-  check('page still renders ReadinessBadge unconditionally on a resolved board8 (Offer Ready untouched by Agreement Reached)', /\{readiness \? <ReadinessBadge readiness=\{readiness\} \/> : null\}/.test(sellerCallTsx), true);
+  check('page still renders ReadinessBadge unconditionally on a resolved board8 (Offer Ready untouched by Agreement Reached)', /\{readiness \? <ReadinessBadge readiness=\{readiness\}(?: compact)? \/> : null\}/.test(sellerCallTsx), true);
   check('page renders a dedicated Agreement Reached banner', /data-testid="agreement-reached-banner"/.test(sellerCallTsx), true);
   check('the Agreement Reached banner is gated on latestOutcome?.kind === "accept", never rendered unconditionally', /latestOutcome\?\.kind === "accept" \?[\s\S]{0,200}data-testid="agreement-reached-banner"/.test(sellerCallTsx), true);
   check('the banner text explicitly distinguishes Agreement Reached from Under Contract', /not yet Under Contract/.test(sellerCallTsx), true);
