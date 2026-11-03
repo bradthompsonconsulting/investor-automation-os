@@ -27,7 +27,7 @@ require('./harness/ts-loader.cjs');
 const APP = path.resolve(__dirname, '..');
 const C = require(path.join(APP, 'src/lib/seller-conversation.ts'));
 
-const FLOOR = 68;
+const FLOOR = 69;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -181,22 +181,26 @@ check('on record: a v2 "not yet answered" item is not shown as an answer', Objec
 const unrec = C.onRecordFor({ ...empty, occupancy: { kind: 'unrecognised', raw: 'Squatters' } });
 check('on record: an unrecognised occupancy value is shown as unrecognised, never mapped', unrec.occupancy[0].value === 'Unrecognised value "Squatters"');
 
-/* ---------- Summary recap (Bones P2-2) ---------- */
-let r = C.withField(C.EMPTY_CONVERSATION, 'price', 'amount', ' 410000 ');
-r = C.withField(r, 'ownership', 'owners', 'Ready and a sibling');
+/* ---------- The structured call note (Captain C8 / plan A7; replaces the superseded P2-2 recap) ---------- */
+let r = C.withField(C.EMPTY_CONVERSATION, 'price', 'amount', '410000');
+r = C.withField(r, 'opening', 'response', 'Open to talking');
+r = C.withField(r, 'summary', 'next', 'Send numbers Friday');
+r = C.withField(r, 'summary', 'followup', '2026-11-10');
 r = C.withMark(r, 'asis', 'seller_doesnt_know');
-const recap = C.recapFor(r, full);
-const row = (id) => recap.find((x) => x.id === id);
-check('recap: one row per question between the opening and the summary, in order',
-  JSON.stringify(recap.map((x) => x.id)) === JSON.stringify(ORDER.filter((id) => id !== 'opening' && id !== 'summary')));
-check('recap: a recorded answer keeps its source and is not mixed with the draft',
-  row('price').saved.length === 2 && row('price').saved.every((s) => s.source) && row('price').draft.length === 1 && row('price').draft[0].value === '410000');
-check('recap: the seller\'s draft price is shown verbatim, never formatted or merged into the asking price',
-  row('price').draft[0].label === "Seller's stated price ($)" && row('price').saved.find((s) => s.label === 'Asking price').value === '$450,000');
-check('recap: a draft-only question shows its draft and nothing saved', row('ownership').draft[0].value === 'Ready and a sibling' && row('ownership').status === 'draft');
-check('recap: a mark is carried, with no invented answer', row('asis').mark === 'seller_doesnt_know' && row('asis').saved.length === 0 && row('asis').draft.length === 0);
-check('recap: an untouched question with no record is empty (Unanswered), not filled in', row('reason').status === 'unanswered' && row('reason').saved.length === 0 && row('reason').draft.length === 0 && row('reason').mark === null);
-check('recap: whitespace-only drafts are not listed', C.recapFor(C.withField(C.EMPTY_CONVERSATION, 'reason', 'reason', '   '), {}).find((x) => x.id === 'reason').draft.length === 0);
+r = { ...r, notes: 'Dog on site' };
+const note = C.noteFor(r);
+const row = (id) => note.find((x) => x.id === id);
+check('note: every question in order -- Opening through Summary -- then General notes',
+  JSON.stringify(note.map((x) => x.id)) === JSON.stringify([...ORDER, 'general']), note.map((x) => x.id));
+check('note: each question row lists every one of its fields, in order', note.filter((x) => x.kind === 'question').every((x) => JSON.stringify(x.answers.map((a) => a.fieldId)) === JSON.stringify(C.QUESTIONS.find((q) => q.id === x.id).fields.map((f) => f.id))));
+check('note: Opening, Summary + follow-up date and General notes carry their drafts',
+  row('opening').answers[0].value === 'Open to talking' && row('summary').answers.map((a) => a.value).join('|') === 'Send numbers Friday|2026-11-10' && row('general').value === 'Dog on site');
+check('note: a blank answer is the empty string (shown blank), never a word like "Unanswered"',
+  row('reason').answers[0].value === '' && !JSON.stringify(note).includes('Unanswered'));
+check('note: "Seller doesn\'t know" is a flag on that question only', row('asis').dontKnow === true && note.filter((x) => x.kind === 'question' && x.dontKnow).length === 1);
+check('note: values are exactly the draft text (no formatting, no recorded GHL value mixed in)', row('price').answers[0].value === '410000' && !note.some((x) => x.kind === 'question' && x.answers.some((a) => a.value.includes('$'))));
+check('note: headings number the questions as the navigator does', row('opening').heading === 'Opening' && row('price').heading === '6. Price expectations' && row('general').heading === 'General notes');
+check('note: the projection is the draft only (EMPTY gives all blanks and no marks)', C.noteFor(C.EMPTY_CONVERSATION).every((x) => x.kind === 'general' ? x.value === '' : (!x.dontKnow && x.answers.every((a) => a.value === ''))));
 
 if (checks !== FLOOR) { console.error(`FAILED: expected exactly ${FLOOR} checks, ran ${checks}.`); process.exit(2); }
 console.log(`\nchecksRun=${checks} failures=${failures} floor=${FLOOR} ${failures === 0 ? 'OK' : 'FAILED'}`);

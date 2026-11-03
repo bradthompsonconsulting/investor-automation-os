@@ -264,40 +264,33 @@ export function nextOpenQuestion(from: number, statuses: readonly AnswerStatus[]
   return null;
 }
 
-/* ---------- Summary recap (read-only; Bones P2-2) ---------- */
+/* ---------- The structured call note (Captain C8, 2026-11-03; plan A7) ---------- */
 
-export type RecapRow = {
-  id: QuestionId;
-  title: string;
-  status: AnswerStatus;
-  /** What GHL holds for this deal (saved), each with its source. */
-  saved: OnRecordItem[];
-  /** What Brad typed on this page (NOT saved), by field label, verbatim. */
-  draft: { label: string; value: string }[];
-  mark: Mark | null;
-};
+export type NoteRow =
+  | { kind: "question"; id: QuestionId; heading: string; dontKnow: boolean; answers: { fieldId: string; label: string; value: string }[] }
+  | { kind: "general"; id: "general"; heading: string; value: string };
 
 /**
- * One row per question between the opening and the summary, in order. It only
- * re-presents what `onRecordFor` and the drafts already hold: saved items keep
- * their sources, draft text is shown verbatim and labelled unsaved, nothing is
- * inferred, formatted into a number, or merged across sources.
+ * THE one projection of this call's note, used by the editable Call notes panel and the read-only Summary
+ * view alike, so the two can never differ. Every question in QUESTIONS order (Opening through Summary and its
+ * follow-up date), then General notes. Values are the draft text exactly as typed ("" when blank -- shown
+ * blank, never "Unanswered"); "Seller doesn't know" is a flag the views print literally. Draft only: nothing
+ * here is saved, and no recorded GHL value is mixed in. (Replaces the earlier Saved/Draft recap, which the
+ * Captain's 2026-11-03 ruling superseded.)
  */
-export function recapFor(d: ConversationDraft, onRecord: OnRecord): RecapRow[] {
-  return QUESTIONS.filter((q) => q.id !== "opening" && q.id !== "summary").map((q) => {
+export function noteFor(d: ConversationDraft): NoteRow[] {
+  const rows: NoteRow[] = QUESTIONS.map((q, i) => {
     const a = d.answers[q.id];
     return {
+      kind: "question" as const,
       id: q.id,
-      title: q.title,
-      status: questionStatus(q.id, d, onRecord),
-      saved: [...(onRecord[q.id] ?? [])],
-      draft: q.fields.flatMap((f) => {
-        const v = a?.fields[f.id];
-        return v !== undefined && v.trim() !== "" ? [{ label: f.label, value: v.trim() }] : [];
-      }),
-      mark: a?.mark ?? null,
+      heading: i === 0 ? q.title : `${i}. ${q.title}`,
+      dontKnow: a?.mark === "seller_doesnt_know",
+      answers: q.fields.map((f) => ({ fieldId: f.id, label: f.label, value: a?.fields[f.id] ?? "" })),
     };
   });
+  rows.push({ kind: "general", id: "general", heading: "General notes", value: d.notes });
+  return rows;
 }
 
 /* ---------- guidance: the existing engine's pick, mapped (never re-derived) ---------- */

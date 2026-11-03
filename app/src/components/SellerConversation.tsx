@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
   OPENINGS, OPENING_THEN, QUESTIONS, SOURCE_LABEL, STATUS_LABEL, EMPTY_CONVERSATION,
-  fillLine, withField, withMark, moveTo, questionStatus, nextOpenQuestion, recapFor,
+  fillLine, withField, withMark, moveTo, questionStatus, nextOpenQuestion, noteFor,
   type AnswerStatus, type ConversationDraft, type OnRecord, type QuestionId, type AnswerField,
 } from "../lib/seller-conversation";
 import { CATEGORY_LABEL, type ReadinessResult } from "../lib/underwriting/offer-readiness";
@@ -63,6 +63,7 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
   const nextOpen = nextOpenQuestion(d.current, statuses);
   const answer = d.answers[q.id];
   const records = onRecord[q.id] ?? [];
+  const note = noteFor(d);
 
   const go = (i: number) => update((p) => moveTo(p, i));
   const mark = (m: "skipped" | "seller_doesnt_know") => update((p) => moveTo(withMark(p, q.id, m), p.current + 1));
@@ -133,30 +134,30 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
           ) : null}
 
           {q.id === "summary" ? (
-            /* Bones P2-2: read-only recap of what is saved and what is only drafted. Nothing inferred or combined. */
-            <div className="sc-recap" data-testid="sc-recap">
-              <div className="sc-label">Recap — read back, don't add to it</div>
-              <ul>
-                {recapFor(d, onRecord).map((row) => (
-                  <li key={row.id} data-testid={`sc-recap-${row.id}`} data-status={row.status}>
-                    <strong>{row.title}:</strong>{" "}
-                    {row.saved.length === 0 && row.draft.length === 0 && !row.mark ? <span className="sc-muted">Unanswered</span> : null}
-                    {row.saved.map((s, i) => (
-                      <div key={`s${i}`} className="sc-recap-saved" data-testid="sc-recap-saved">
-                        <span className="sc-chip sc-chip-record">Saved</span> {s.label}: {s.value} <span className="sc-muted">— {s.source}</span>
-                      </div>
-                    ))}
-                    {row.draft.map((x, i) => (
-                      <div key={`d${i}`} className="sc-recap-draft" data-testid="sc-recap-draft">
-                        <span className="sc-chip sc-chip-draft">Draft — not saved</span> {x.label}: {x.value}
-                      </div>
-                    ))}
-                    {row.mark ? (
-                      <div className="sc-recap-mark" data-testid="sc-recap-mark"><span className="sc-chip sc-chip-skip">{STATUS_LABEL[row.mark]}</span></div>
-                    ) : null}
+            /* Captain C8 / plan A7 (Bones P2, f919d3f): Summary shows the call note itself, READ-ONLY -- the same
+               `noteFor` projection the editable Call notes render. Every question, Opening through Summary and its
+               follow-up date, then General notes. Blank stays blank; "Seller doesn't know" printed. Draft only. */
+            <div className="sc-summary-note" data-testid="sc-summary-note">
+              <div className="sc-label">Call notes — read back (NOT SAVED; edit in the questions or Call notes)</div>
+              <ol>
+                {note.map((row) => (
+                  <li key={row.id} data-testid={`sc-summary-note-${row.id}`}>
+                    <strong>{row.heading}</strong>
+                    {row.kind === "general" ? (
+                      <div className="sc-summary-answer" data-testid="sc-summary-answer">{row.value}</div>
+                    ) : (
+                      <>
+                        {row.dontKnow ? <div className="sc-note-dk" data-testid={`sc-summary-dk-${row.id}`}>Seller doesn't know</div> : null}
+                        {row.answers.map((x) => (
+                          <div key={x.fieldId} className="sc-summary-answer" data-testid="sc-summary-answer" data-field={`${row.id}.${x.fieldId}`}>
+                            <span className="sc-muted">{x.label}:</span> {x.value}
+                          </div>
+                        ))}
+                      </>
+                    )}
                   </li>
                 ))}
-              </ul>
+              </ol>
             </div>
           ) : null}
 
@@ -211,27 +212,25 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
           <div className="sc-heading">Call notes</div>
           <div className="sc-muted sc-notes-unsaved" data-testid="sc-notes-unsaved">NOT SAVED — kept on this page while it is open.</div>
           <ol className="sc-note-list">
-            {QUESTIONS.map((item, i) => {
-              const a = d.answers[item.id];
-              return (
-                <li key={item.id} data-testid={`sc-note-${item.id}`}>
-                  <button type="button" className="sc-note-heading" data-testid={`sc-note-heading-${item.id}`}
-                    aria-current={i === d.current ? "step" : undefined} onClick={() => go(i)}>
-                    {i === 0 ? item.title : `${i}. ${item.title}`}
-                  </button>
-                  {a?.mark === "seller_doesnt_know" ? <div className="sc-note-dk" data-testid={`sc-note-dk-${item.id}`}>Seller doesn't know</div> : null}
-                  {item.fields.map((f) => (
-                    <DraftField key={`${key}:note:${item.id}:${f.id}`} prefix="scn" compact qid={item.id} field={f} value={a?.fields[f.id] ?? ""}
-                      onChange={(v) => update((p) => withField(p, item.id, f.id, v))} />
-                  ))}
-                </li>
-              );
-            })}
-            <li data-testid="sc-note-general">
-              <label className="sc-note-heading" htmlFor="sc-call-notes">General notes</label>
-              <textarea id="sc-call-notes" className="sc-input" data-testid="sc-call-notes" rows={3} value={d.notes}
-                onChange={(e) => { const v = e.target.value; update((p) => ({ ...p, notes: v })); }} />
-            </li>
+            {note.map((row, i) => row.kind === "general" ? (
+              <li key={row.id} data-testid="sc-note-general">
+                <label className="sc-note-heading" htmlFor="sc-call-notes">{row.heading}</label>
+                <textarea id="sc-call-notes" className="sc-input" data-testid="sc-call-notes" rows={3} value={row.value}
+                  onChange={(e) => { const v = e.target.value; update((p) => ({ ...p, notes: v })); }} />
+              </li>
+            ) : (
+              <li key={row.id} data-testid={`sc-note-${row.id}`}>
+                <button type="button" className="sc-note-heading" data-testid={`sc-note-heading-${row.id}`}
+                  aria-current={i === d.current ? "step" : undefined} onClick={() => go(i)}>
+                  {row.heading}
+                </button>
+                {row.dontKnow ? <div className="sc-note-dk" data-testid={`sc-note-dk-${row.id}`}>Seller doesn't know</div> : null}
+                {QUESTIONS[i].fields.map((f, j) => (
+                  <DraftField key={`${key}:note:${row.id}:${f.id}`} prefix="scn" compact qid={row.id} field={f} value={row.answers[j].value}
+                    onChange={(v) => update((p) => withField(p, row.id, f.id, v))} />
+                ))}
+              </li>
+            ))}
           </ol>
         </aside>
       </div>

@@ -30,9 +30,11 @@
  *      engine's pick (star) is on Price; the strip never says "approved".
  *   P2-1 (Bones). Condition offers the EXISTING repair estimator: this contact's
  *      /underwriting page, opened in a new tab; this page and its drafts stay.
- *   P2-2 (Bones). Summary recaps the eight earlier questions read-only: saved
- *      items with their sources, drafts labelled "Draft — not saved" verbatim,
- *      untouched questions Unanswered; no input, no offer wording.
+ *   SUM (Captain C8 / plan A7; Bones P2 on f919d3f). Summary shows the call note
+ *      read-only: every question Opening -> Summary (+ follow-up date) then General
+ *      notes, in order; each answer equals the editable Call notes value; blank
+ *      stays blank (never "Unanswered"); "Seller doesn't know" printed; NOT SAVED.
+ *      (Replaces the superseded P2-2 Saved/Draft recap checks, history at 901b1e9.)
  *   I. (Bones P2-3) Isolation between FULLY LOADED deals: A -> B -> A -> B with
  *      distinct recorded values and drafts; two deals on one contact (C); and a
  *      delayed old read (A's reads held, route moves to B, B loads, A released).
@@ -131,14 +133,20 @@ const MUTATIONS = {
   stalesource: [[PAGE, '      .then(([c, pipeline, policy, notesResult]) => {\n        if (cancelled) return;\n', '      .then(([c, pipeline, policy, notesResult]) => {\n']],
   // Bones P2-1: the repair estimate replaces this page instead of opening a new tab.
   sametab: [[TARGET, 'href={repairsHref} target="_blank" rel="noopener noreferrer"', 'href={repairsHref}']],
-  // Bones P2-2: drafts are presented as saved in the recap.
-  recapsaved: [[TARGET, '<span className="sc-chip sc-chip-draft">Draft — not saved</span>', '<span className="sc-chip sc-chip-record">Saved</span>']],
+  // (recapsaved, the Bones P2-2 control on the old Saved/Draft recap, is retired with that recap: the Captain's
+  //  2026-11-03 C8 ruling replaced it with the read-only call note, covered by the three controls below.)
+  // Slice A P2 (Bones, f919d3f): the Summary leaves General notes out of the call note.
+  summarymissing: [[TARGET, '{note.map((row) => (\n                  <li key={row.id} data-testid={`sc-summary-note-${row.id}`}>', '{note.filter((row) => row.kind !== "general").map((row) => (\n                  <li key={row.id} data-testid={`sc-summary-note-${row.id}`}>']],
+  // Slice A P2: the Summary prints "Unanswered" for a blank answer.
+  summaryunanswered: [[TARGET, '<span className="sc-muted">{x.label}:</span> {x.value}', '<span className="sc-muted">{x.label}:</span> {x.value || "Unanswered"}']],
+  // Slice A P2: the Summary reads a different (empty) copy instead of the shared draft.
+  summarystale: [[TARGET, '  const note = noteFor(d);', '  const note = noteFor(d);\n  const staleNote = noteFor(EMPTY_CONVERSATION);'], [TARGET, '{note.map((row) => (\n                  <li key={row.id} data-testid={`sc-summary-note-${row.id}`}>', '{staleNote.map((row) => (\n                  <li key={row.id} data-testid={`sc-summary-note-${row.id}`}>']],
   // Slice A: the Call notes edit a separate copy (not the card's draft state).
-  notesdiverge: [[TARGET, 'onChange={(v) => update((p) => withField(p, item.id, f.id, v))} />', 'onChange={() => {}} />']],
+  notesdiverge: [[TARGET, 'onChange={(v) => update((p) => withField(p, row.id, f.id, v))} />', 'onChange={() => {}} />']],
   // Slice A: GHL-backed controls stop saying NOT SAVED.
   unsavedlabel: [[TARGET, '<span className="sc-ghl-unsaved">NOT SAVED</span>', '']],
   // Slice A: a Call-notes heading no longer opens its question.
-  headingnav: [[TARGET, 'aria-current={i === d.current ? "step" : undefined} onClick={() => go(i)}>\n                    {i === 0 ? item.title', 'aria-current={i === d.current ? "step" : undefined} onClick={() => {}}>\n                    {i === 0 ? item.title']],
+  headingnav: [[TARGET, 'aria-current={i === d.current ? "step" : undefined} onClick={() => go(i)}>\n                  {row.heading}', 'aria-current={i === d.current ? "step" : undefined} onClick={() => {}}>\n                  {row.heading}']],
 };
 const MUTATION = process.env.SC_CONV_MUTATION || '';
 if (MUTATION && !MUTATIONS[MUTATION]) { console.error(`FAIL  unknown SC_CONV_MUTATION ${MUTATION}`); process.exit(2); }
@@ -347,26 +355,34 @@ async function main() {
     await press(page, 'sc-nav-ownership');
     check('P2-1: no other question offers the repair link', (await tid(page, 'sc-repairs-link').count()) === 0);
 
-    // P2-2. Summary recap: saved vs draft, read-only, nothing inferred
+    // Summary = the call note, read-only (Captain C8 / plan A7; Bones P2 on f919d3f). Replaces the superseded
+    // P2-2 Saved/Draft recap checks (kept in git history at 901b1e9).
+    await press(page, 'sc-nav-opening');
+    await tid(page, 'sc-field-opening-response').fill('Open to talking');
+    await press(page, 'sc-nav-asis');
+    await press(page, 'sc-dont-know');
     await press(page, 'sc-nav-summary');
-    const recapText = (id) => tid(page, `sc-recap-${id}`).textContent();
-    check('P2-2: Summary shows a recap row for each of the eight earlier questions', (await page.locator('[data-testid^="sc-recap-"][data-status]').count()) === 8);
-    const priceRow = await recapText('price');
-    check('P2-2: Price lists the saved seller price position with its source AND the unsaved draft, each labelled',
-      priceRow.includes('Saved') && priceRow.includes('Seller price position: $425,000') && priceRow.includes('Seller price position note')
-      && priceRow.includes('Draft — not saved') && priceRow.includes("Seller's stated price ($): 410000"), priceRow);
-    check('P2-2: the draft price is shown verbatim, not formatted or merged into a saved figure', !priceRow.includes('$410,000') && !/Asking price: \$410/.test(priceRow), priceRow);
-    const ownRow = await recapText('ownership');
-    check('P2-2: Ownership lists the saved title note and the unsaved owners draft', ownRow.includes('Title complications: None (recorded)') && ownRow.includes('Draft — not saved') && ownRow.includes('Ready and a sibling'), ownRow);
-    const reasonRow = await recapText('reason');
-    check('P2-2: Reason is draft only (nothing saved claimed)', reasonRow.includes('Draft — not saved') && !reasonRow.includes('Saved'), reasonRow);
-    const occRow = await recapText('occupancy');
-    check('P2-2: Occupancy shows the draft choice as a draft', occRow.includes('Draft — not saved') && occRow.includes('Tenant Occupied') && !occRow.includes('Saved'), occRow);
-    const asisRow = await recapText('asis');
-    check('P2-2: an untouched question reads Unanswered, with nothing filled in', asisRow.includes('Unanswered') && !asisRow.includes('Saved') && !asisRow.includes('Draft'), asisRow);
-    check('P2-2: every draft line in the recap is labelled "Draft — not saved"', (await page.locator('[data-testid="sc-recap-draft"]').count()) === (await page.locator('[data-testid="sc-recap-draft"]', { hasText: 'Draft — not saved' }).count()) && (await page.locator('[data-testid="sc-recap-draft"]').count()) >= 4);
-    check('P2-2: the recap has no input and no button (read-only)', (await tid(page, 'sc-recap').locator('input,textarea,select,button').count()) === 0);
-    check('P2-2: the recap names no offer or commitment', !/offer|commit|agree/i.test((await tid(page, 'sc-recap').textContent()).replace(/Seller price position/g, '')));
+    await tid(page, 'sc-field-summary-followup').fill('2026-11-10');
+    const sumIds = await page.locator('[data-testid="sc-summary-note"] > ol > li').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+    check('SUM: Summary shows the call note -- every question, Opening through Summary, then General notes, in order',
+      JSON.stringify(sumIds) === JSON.stringify([...ORDER.map((q) => `sc-summary-note-${q}`), 'sc-summary-note-general']), sumIds);
+    const ans = (field) => page.locator(`[data-testid="sc-summary-answer"][data-field="${field}"]`).textContent();
+    check('SUM: Opening, Summary and its follow-up date and General notes appear with this call\'s drafts',
+      (await ans('opening.response')).includes('Open to talking') && (await ans('summary.next')).includes('Send numbers Friday')
+      && (await ans('summary.followup')).includes('2026-11-10') && (await tid(page, 'sc-summary-note-general').textContent()).includes('Seller prefers mornings. Dog on site.'));
+    check('SUM: the seller\'s draft price is shown verbatim (no formatting, no recorded figure mixed in)', (await ans('price.amount')).trim().endsWith('410000') && !(await tid(page, 'sc-summary-note').textContent()).includes('$425,000'));
+    check('SUM: "Seller doesn\'t know" is printed as the As-is answer', (await tid(page, 'sc-summary-dk-asis').textContent({ timeout: 4000 }).catch(() => '')) === "Seller doesn't know");
+    const blankRow = (await ans('condition.overall')).replace(/\s+/g, ' ').trim();
+    check('SUM: a blank answer stays blank (label only), and "Unanswered" appears nowhere in the Summary', blankRow === 'Condition (seller\'s words):' && !(await tid(page, 'sc-summary-note').textContent()).includes('Unanswered'), blankRow);
+    const notesVals = await page.locator('[data-testid="sc-notes-panel"] [data-testid^="sc-note-field-"]').evaluateAll((els) => els.map((e) => [e.getAttribute('data-testid').replace('sc-note-field-', '').replace('-', '.'), e.value]));
+    const sumVals = await page.locator('[data-testid="sc-summary-answer"][data-field]').evaluateAll((els) => els.map((e) => [e.getAttribute('data-field'), e.textContent.replace(/^[^:]*:\s?/, '')]));
+    check('SUM: every Summary answer equals the editable Call notes value for the same field (one draft state)',
+      sumVals.length === notesVals.length && sumVals.every(([f, v], i) => notesVals[i][0] === f && notesVals[i][1] === v), { sumVals, notesVals });
+    check('SUM: the Summary is read-only (no input, select, textarea or button inside it)', (await tid(page, 'sc-summary-note').locator('input,textarea,select,button').count()) === 0);
+    check('SUM: the Summary says NOT SAVED and never claims anything was saved', (await tid(page, 'sc-summary-note').textContent()).includes('NOT SAVED') && !/\bSaved\b/.test(await tid(page, 'sc-summary-note').textContent()));
+    await tid(page, 'sc-note-field-condition-overall').fill('Roof leaks over the garage');
+    check('SUM: an edit in the Call notes appears in the Summary at once', (await ans('condition.overall')).includes('Roof leaks over the garage'));
+    check('SUM: the old recap is gone', (await page.locator('[data-testid="sc-recap"]').count()) === 0);
 
     // E. readiness
     const levels = {};
@@ -560,7 +576,7 @@ async function main() {
     check('SA notes: selecting a note heading opens that question', (await cardQ(page)) === 'timing');
     await press(page, 'sc-note-heading-summary');
     check('SA notes: and another', (await cardQ(page)) === 'summary');
-    check('SA notes: the Summary recap shows the notes-entered draft', (await tid(page, 'sc-recap-reason').textContent({ timeout: 4000 }).catch(() => '')).includes('Relocating for work'));
+    check('SA notes: the Summary call note shows the notes-entered draft', (await page.locator('[data-testid="sc-summary-answer"][data-field="reason.reason"]').textContent({ timeout: 4000 }).catch(() => '')).includes('Relocating for work'));
 
     // Safety
     check('SA safety: no "Save changes" appeared (page autosave untouched)', (await tid(page, 'seller-call-save-changes').count()) === 0);
