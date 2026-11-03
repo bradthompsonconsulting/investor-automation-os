@@ -206,6 +206,19 @@ export interface GhlConfig {
    * Enabling is its own reviewed config-only commit, never a runtime toggle.
    */
   productionSellerCallNegotiation: string;
+  /**
+   * B15-29 (INV-137) one IAOS sign-in. SERVER-SIDE switch, mirrored to the
+   * browser ONLY as `oneLogin: { active: true }` in iaos-runtime-config (absent
+   * otherwise). Only `ONE_LOGIN_ENABLED` turns it on, per environment. When on:
+   * the read session carries a session id (sid); app-write-token issues the
+   * unchanged 900 s saving token from that session; Sign out (app-signout)
+   * records a server-side revocation of the sid, and token issue, every
+   * protected read and every write check it (lib/session-revocation.ts). When
+   * off -- BOTH environments carry `ONE_LOGIN_DISABLED` -- every function and
+   * the browser behave exactly as before (Enable saving popup, cookie DELETE).
+   * Enabling is its own reviewed config-only commit, never a runtime toggle.
+   */
+  oneLogin: string;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -441,6 +454,11 @@ export const PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED = "PRODUCTION_SELLER_CALL_
 export const PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED = "PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED" as const;
 /** B14-13 — the value PRODUCTION carries until the enable commit; TEST carries it as documentation only. */
 export const PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED = "PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED" as const;
+
+/** B15-29 (INV-137) — the ONE value that turns on one IAOS sign-in with server-side Sign out revocation. */
+export const ONE_LOGIN_ENABLED = "ONE_LOGIN_ENABLED" as const;
+/** B15-29 (INV-137) — the value BOTH environments carry until a reviewed enable commit: behaviour exactly as before. */
+export const ONE_LOGIN_DISABLED = "ONE_LOGIN_DISABLED" as const;
 
 /**
  * INV-67 / B9-12 -- the literal placeholder value for a not-yet-provisioned
@@ -794,6 +812,8 @@ const PRODUCTION: GhlConfig = {
   productionSellerCallAutosave: PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED,
   // B14-13: ENABLED — Brad's working Seller Call setup in Production (Seller price position, Current Offer, Accept/Pass/Follow-Up; deliberate readiness override, its invalidation, above-Max acknowledgement; Brad, 2026-10-11). Disable: publish the prior deploy (lock kept), then revert this commit.
   productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED,
+  // B15-29 (INV-137): one IAOS sign-in is OFF. Enabling is a separately reviewed config-only commit.
+  oneLogin: ONE_LOGIN_DISABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -1182,6 +1202,8 @@ const TEST: GhlConfig = {
   productionSellerCallAutosave: PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED,
   // B14-13: documentation-only in TEST; Test writes are never scoped.
   productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED,
+  // B15-29 (INV-137): one IAOS sign-in is OFF. Enabling is a separately reviewed config-only commit.
+  oneLogin: ONE_LOGIN_DISABLED,
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },
@@ -1349,6 +1371,18 @@ export function getConfig(selector: string | undefined): GhlConfig {
   }
 
   return config;
+}
+
+/**
+ * B15-29 (INV-137): whether one IAOS sign-in is on for THIS server's
+ * environment. True ONLY for IAOS_ENV "test" or "production" whose config
+ * carries exactly ONE_LOGIN_ENABLED. Anything else (absent/unknown env, any
+ * other value) is false and never throws, so a caller's existing behaviour is
+ * kept. Read per request, never cached.
+ */
+export function oneLoginActiveFor(environment: unknown): boolean {
+  if (environment !== "test" && environment !== "production") return false;
+  try { return getConfig(environment).oneLogin === ONE_LOGIN_ENABLED; } catch { return false; }
 }
 
 /**

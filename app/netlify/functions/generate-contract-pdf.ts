@@ -32,6 +32,7 @@
  * current authoritative context before any PDF bytes are ever returned.
  */
 import { requireAppWriter } from "./lib/app-write-auth";
+import { sessionWriteRefusal } from "./lib/session-revocation";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { configuredBoundary } from "./lib/ghl-write-boundary";
 import { currentContractContext, generateCurrentContractPdf } from "./lib/write-contract-context";
@@ -82,6 +83,8 @@ export const handler = async (event: any) => {
   } catch {
     return json(403, { error: "Application write origin refused" });
   }
+  const writeRevoked = await sessionWriteRefusal(event);
+  if (writeRevoked) return writeRevoked;
 
   // Cheap, context-free: is this deployment even allowed to attempt PDF
   // generation at all, before any body parsing or GHL access. Production

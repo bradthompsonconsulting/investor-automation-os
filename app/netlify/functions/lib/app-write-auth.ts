@@ -35,6 +35,40 @@ export function requireAppWriter(event: any, env = process.env, now = Date.now()
       claims.exp - claims.iat !== 900 || !config.emails.includes(claims.sub)) throw new Error("Expired or unauthorized application session");
   return claims.sub;
 }
+/**
+ * B15-29 (INV-137), one IAOS sign-in ONLY: the same 900 s iaos-app-write token
+ * as issueAppSession, plus two claims binding it to the signed-in session --
+ * `env` (this IAOS_ENV) and `sid` (the read session's id). requireAppWriter
+ * accepts it unchanged; lib/session-revocation.ts additionally requires both
+ * claims and checks the sid's revocation on every write. Never used while one
+ * IAOS sign-in is off.
+ */
+export function issueBoundAppSession(email: string, binding: { env: "test" | "production"; sid: string; pexp: number }, env = process.env, now = Date.now()) {
+  const config = appAuthConfig(env);
+  if (!config.emails.includes(email)) throw new Error("Operator is not authorized");
+  if ((binding.env !== "test" && binding.env !== "production") || typeof binding.sid !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(binding.sid) ||
+      !Number.isInteger(binding.pexp)) throw new Error("Invalid session binding");
+  const iat = Math.floor(now / 1000);
+  // pexp: the parent read session's expiry. The token keeps its 900 s lifetime; writers ALSO refuse it once pexp passes.
+  const claims = { iss: "iaos", aud: audience, sub: email, iat, exp: iat + 900, env: binding.env, sid: binding.sid, pexp: binding.pexp };
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  const input = `${header}.${payload}`;
+  return { token: `${input}.${createHmac("sha256", config.secret).update(input).digest("base64url")}`, expiresAt: new Date(claims.exp * 1000).toISOString() };
+}
+/**
+ * B15-29: the session binding of a write token that requireAppWriter has
+ * ALREADY accepted (this re-runs requireAppWriter, so it never trusts a
+ * decode alone). `sid`/`env` are null when the token carries none (a token
+ * from the old popup issuer).
+ */
+export function appWriteSessionBinding(event: any, env = process.env, now = Date.now()): { sub: string; sid: string | null; env: string | null; pexp: number | null } {
+  const sub = requireAppWriter(event, env, now);
+  const auth = String(event.headers?.authorization ?? event.headers?.Authorization);
+  const claims = JSON.parse(Buffer.from(auth.slice(7).split(".")[1], "base64url").toString("utf8"));
+  return { sub, sid: typeof claims.sid === "string" ? claims.sid : null, env: typeof claims.env === "string" ? claims.env : null,
+    pexp: Number.isInteger(claims.pexp) ? claims.pexp : null };
+}
 export async function googleAppIdentity(idToken: string, fetcher: typeof fetch = fetch, env = process.env, now = Date.now()) {
   const config = appAuthConfig(env);
   return verifyGoogleIdToken(idToken, config.clientId, config.emails, fetcher, now);

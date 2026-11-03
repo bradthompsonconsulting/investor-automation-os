@@ -44,6 +44,7 @@
 import { connectLambda, getStore } from "@netlify/blobs";
 import { createHash } from "node:crypto";
 import { requireAppWriter } from "./lib/app-write-auth";
+import { sessionWriteRefusal } from "./lib/session-revocation";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { configuredBoundary } from "./lib/ghl-write-boundary";
 import { lockContact } from "./lib/write-receipts";
@@ -231,6 +232,8 @@ export const handler = async (event: any) => {
   let operator: string;
   try { operator = requireAppWriter(event); } catch { return json(401, { error: "Application write sign-in required" }); }
   try { requireAppWriteOrigin(event); } catch { return json(403, { error: "Application write origin refused" }); }
+  const writeRevoked = await sessionWriteRefusal(event);
+  if (writeRevoked) return writeRevoked;
 
   let request: any;
   try {

@@ -8,6 +8,8 @@ import { createContext, useContext } from "react";
  */
 export type ReadView =
   | { kind: "checking" | "unconfigured" | "signed_out" }
+  // B15-29 one IAOS sign-in only (OneLoginAccess): IAOS can't confirm the session / a Sign out was not confirmed.
+  | { kind: "unavailable" | "signout_unconfirmed" }
   | { kind: "signed_in"; expiresAt: number; signOut: () => void };
 
 export const ReadViewReport = createContext<(view: ReadView) => void>(() => {});

@@ -4,12 +4,16 @@ import Sidebar from "./Sidebar";
 import Header from "./Header";
 import AppWriteAccess from "./AppWriteAccess";
 import ReadAccess from "./ReadAccess";
+import OneLoginAccess from "./OneLoginAccess";
 import { ReadViewReport, type ReadView } from "./access-status";
+import { oneLoginActive } from "../lib/one-login";
 
 export default function Layout() {
   // Mirrors what ReadAccess already knows (no request of its own).
   const [read, setRead] = useState<ReadView>({ kind: "checking" });
   const readSignedIn = read.kind === "signed_in";
+  // Decided once per page load by the server's runtime configuration (never by the browser).
+  const [oneLogin] = useState(() => oneLoginActive());
   return (
     <ReadViewReport.Provider value={setRead}>
     <div className="flex h-screen overflow-hidden" style={{ background: "#0A0E1A" }}>
@@ -27,15 +31,24 @@ export default function Layout() {
           <Header />
         </header>
 
-        {/* ONE status line: read status + saving (write) status. Hidden until a read session exists. */}
-        <AppWriteAccess readSignedIn={readSignedIn}>
-          {read.kind === "signed_in" && <span data-testid="read-access-signed-in">
-            Signed in until {new Date(read.expiresAt).toLocaleTimeString()} <button onClick={read.signOut}>Sign out</button> · </span>}
-        </AppWriteAccess>
+        {/* ONE status line: read status + saving (write) status. Hidden until a read session exists.
+            B15-29 one IAOS sign-in (server runtime config only): the one sign-in covers reading and saving,
+            so there is no separate saving control; otherwise exactly as before. */}
+        {oneLogin
+          ? read.kind === "signed_in" && <div role="status" data-testid="session-status" className="text-sm" style={{ padding: "6px 16px", color: "#fff", background: "#14213d" }}>
+              <span data-testid="read-access-signed-in">
+                Signed in until {new Date(read.expiresAt).toLocaleTimeString()} · <button onClick={read.signOut}>Sign out</button></span>
+            </div>
+          : <AppWriteAccess readSignedIn={readSignedIn}>
+              {read.kind === "signed_in" && <span data-testid="read-access-signed-in">
+                Signed in until {new Date(read.expiresAt).toLocaleTimeString()} <button onClick={read.signOut}>Sign out</button> · </span>}
+            </AppWriteAccess>}
         <main className="flex-1 overflow-auto p-6" style={{ background: "#0A0E1A" }}>
-          <ReadAccess>
-            <Outlet />
-          </ReadAccess>
+          {oneLogin
+            ? <OneLoginAccess><Outlet /></OneLoginAccess>
+            : <ReadAccess>
+                <Outlet />
+              </ReadAccess>}
         </main>
       </div>
     </div>

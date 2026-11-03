@@ -16,6 +16,12 @@
  * was copied elsewhere stays valid until its own expiry: there is no
  * server-side revocation list. Rotating IAOS_APP_READ_SESSION_SECRET (with a
  * redeploy) is the only way to invalidate every outstanding read session.
+ *
+ * B15-29 (INV-137): while one IAOS sign-in is ON for this IAOS_ENV (off in
+ * both committed configs), sessions carry a random session id (sid) and Sign
+ * out records a server-side revocation of it (lib/session-revocation.ts),
+ * checked by every protected reader after readAuthRefusal, by token issue and
+ * by every writer. The paragraph above describes the OFF behaviour.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 
@@ -57,18 +63,31 @@ export function appReadConfig(env = process.env): ReadAuthConfig {
 
 function sign(input: string, secret: string) { return createHmac("sha256", secret).update(input).digest(); }
 
-export function issueReadSession(email: string, config: ReadAuthConfig, now = Date.now()) {
+/**
+ * B15-29 (INV-137): a session id is 16 random bytes, base64url (22 characters,
+ * canonical). Present ONLY on sessions issued while one IAOS sign-in is on;
+ * without `sid` the token is byte-for-byte the previous shape.
+ */
+export const SID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+export function isCanonicalSid(value: unknown): value is string {
+  return typeof value === "string" && SID_PATTERN.test(value) && Buffer.from(value, "base64url").length === 16 &&
+    Buffer.from(value, "base64url").toString("base64url") === value;
+}
+
+export function issueReadSession(email: string, config: ReadAuthConfig, now = Date.now(), sid?: string) {
   const sub = email.trim().toLowerCase();
   if (!config.emails.includes(sub)) throw new ReadAuthRefused("Operator is not authorized to read");
+  if (sid !== undefined && !isCanonicalSid(sid)) throw new ReadAuthRefused("Invalid session id");
   const iat = Math.floor(now / 1000);
-  const claims = { iss: "iaos", aud: READ_AUDIENCE, env: config.deployment, sub, iat, exp: iat + READ_SESSION_SECONDS };
+  const base = { iss: "iaos", aud: READ_AUDIENCE, env: config.deployment, sub, iat, exp: iat + READ_SESSION_SECONDS };
+  const claims = sid === undefined ? base : { ...base, sid };
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const input = `${header}.${payload}`;
   return { token: `${input}.${sign(input, config.secret).toString("base64url")}`, expiresAt: new Date(claims.exp * 1000).toISOString() };
 }
 
-export function verifyReadSession(token: string, config: ReadAuthConfig, now = Date.now()): { email: string; expiresAt: string } {
+export function verifyReadSession(token: string, config: ReadAuthConfig, now = Date.now()): { email: string; expiresAt: string; sid?: string } {
   const parts = token.split(".");
   if (parts.length !== 3) throw new ReadAuthRefused("Invalid read session");
   const expected = sign(`${parts[0]}.${parts[1]}`, config.secret);
@@ -86,6 +105,9 @@ export function verifyReadSession(token: string, config: ReadAuthConfig, now = D
       typeof claims.sub !== "string" || !config.emails.includes(claims.sub)) {
     throw new ReadAuthRefused("Expired or unauthorized read session");
   }
+  // B15-29: a present sid must be canonical; a session without one keeps the previous result shape exactly.
+  if ("sid" in claims && !isCanonicalSid(claims.sid)) throw new ReadAuthRefused("Invalid read session");
+  if ("sid" in claims) return { email: claims.sub, expiresAt: new Date(claims.exp * 1000).toISOString(), sid: claims.sid };
   return { email: claims.sub, expiresAt: new Date(claims.exp * 1000).toISOString() };
 }
 

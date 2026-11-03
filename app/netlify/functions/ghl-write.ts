@@ -5,6 +5,7 @@ import { verifyUnderContractStageTransitionReady } from "./lib/write-derived-not
 import { getConfig } from "../../shared/ghl-config";
 import { repairApprovalActiveFor } from "../../shared/repair-approval-config";
 import { requireAppWriter } from "./lib/app-write-auth";
+import { sessionWriteRefusal } from "./lib/session-revocation";
 import { exact, identifier, planWrite, dispositions, routings } from "./lib/write-contracts";
 import { configuredBoundary, fieldValue, WriteUncertain, type DispatchHooks } from "./lib/ghl-write-boundary";
 import { barrierScope, isBarrierOwned, runOwnedWrite, checkNoteReservation, resetSettleBudget, readTrace, reservationFingerprint, NotSent, NotOwned, STEP_OPERATION, RESERVED_OPERATIONS, type BarrierStore } from "./lib/current-offer-barrier";
@@ -90,6 +91,8 @@ export const handler = async (event: any) => {
   try { requireAppWriteOrigin(event); } catch {
     return json(403, { error: "Application write origin refused" });
   }
+  const writeRevoked = await sessionWriteRefusal(event);
+  if (writeRevoked) return writeRevoked;
   let request: any; let plan: ReturnType<typeof planWrite>;
   const config = getConfig(process.env.IAOS_ENV);
   try {

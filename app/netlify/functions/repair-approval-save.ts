@@ -51,6 +51,7 @@ import { getConfig } from "../../shared/ghl-config";
 import { REPAIR_APPROVAL_CONFIG, REPAIR_APPROVAL_DISABLED, repairApprovalActiveFor } from "../../shared/repair-approval-config";
 import { PROVISIONAL_HEADLINE } from "../../src/lib/provisional-repairs";
 import { requireAppWriter } from "./lib/app-write-auth";
+import { sessionWriteRefusal } from "./lib/session-revocation";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import {
   READER_TEXT, abandonUndispatched, closeVerified, createAuthorityClient, createProductionTargetTransport,
@@ -78,6 +79,8 @@ export const handler = async (event: any, context?: unknown) => {
   let operator: string;
   try { operator = requireAppWriter(event); } catch { return json(401, { error: "Application write sign-in required" }); }
   try { requireAppWriteOrigin(event); } catch { return json(403, { error: "Application write origin refused" }); }
+  const writeRevoked = await sessionWriteRefusal(event);
+  if (writeRevoked) return writeRevoked;
 
   const setup = approvalSetup();
   if (setup.kind !== "ready") return json(503, { outcome: "not_sent", code: setup.code, error: NOTHING_SENT });

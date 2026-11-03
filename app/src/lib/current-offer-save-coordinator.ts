@@ -82,6 +82,7 @@ export function classifyOfferWriteError(e: unknown): OfferOutcomeKind {
   const message = String((e as Error)?.message ?? "");
   if (e instanceof AppWriteSignInRequired) return "refused";            // thrown before any request is sent
   if (/^Sign in for application writes/.test(message)) return "refused";  // same, across module copies
+  if (/^Saving paused: /.test(message)) return "refused";                 // same, B15-29 one IAOS sign-in wording
   if (/^setCurrentOffer: /.test(message)) return "refused";          // local validation; nothing sent
   if (/setCurrentOffer PUT → \d{3}:[\s\S]*"outcome":"not_sent"/.test(message)) return "refused"; // the server refused before the GHL call
   return "indeterminate";

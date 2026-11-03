@@ -12,6 +12,7 @@
 
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { sessionReadRefusal } from "./lib/session-revocation";
 import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
@@ -86,6 +87,8 @@ export const handler = async (event: any) => {
   // session answers 401. See lib/app-read-auth.ts.
   const refused = readAuthRefusal(event);
   if (refused) return refused;
+  const revoked = await sessionReadRefusal(event);
+  if (revoked) return revoked;
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: RESPONSE_HEADERS, body: "" };
   if (event.httpMethod !== "GET") return { statusCode: 405, headers: RESPONSE_HEADERS, body: "Method Not Allowed" };
 
