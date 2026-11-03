@@ -2,7 +2,16 @@ import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } 
 import { READ_SESSION_ENDPOINT, READ_SESSION_LOST_EVENT } from "../lib/read-session";
 import { SESSION_UNAVAILABLE_EVENT, SESSION_UNAVAILABLE_MARKER } from "../lib/one-login";
 import { clearAppWriteToken, pauseAppWriteForSignOut, primeAppWriteSession, resumeAppWriteAccess } from "../lib/app-write-session";
-import { ReadRecovered, ReadViewReport } from "./access-status";
+import { ReadRecovered, ReadViewReport, type ReadView } from "./access-status";
+
+/** The ONE status line while one IAOS sign-in is on (Layout renders this instead of AppWriteAccess): no saving control. */
+export function OneLoginStatusLine({ read }: { read: ReadView }) {
+  if (read.kind !== "signed_in") return null;
+  return <div role="status" data-testid="session-status" className="text-sm" style={{ padding: "6px 16px", color: "#fff", background: "#14213d" }}>
+    <span data-testid="read-access-signed-in">
+      Signed in until {new Date(read.expiresAt).toLocaleTimeString()} · <button onClick={read.signOut}>Sign out</button></span>
+  </div>;
+}
 
 export const SIGN_OUT_ENDPOINT = "/.netlify/functions/app-signout";
 /** Client bound on one Sign out attempt (wall clock on this computer; not a server guarantee). */

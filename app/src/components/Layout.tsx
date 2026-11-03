@@ -4,7 +4,7 @@ import Sidebar from "./Sidebar";
 import Header from "./Header";
 import AppWriteAccess from "./AppWriteAccess";
 import ReadAccess from "./ReadAccess";
-import OneLoginAccess from "./OneLoginAccess";
+import OneLoginAccess, { OneLoginStatusLine } from "./OneLoginAccess";
 import { ReadViewReport, type ReadView } from "./access-status";
 import { oneLoginActive } from "../lib/one-login";
 
@@ -35,10 +35,7 @@ export default function Layout() {
             B15-29 one IAOS sign-in (server runtime config only): the one sign-in covers reading and saving,
             so there is no separate saving control; otherwise exactly as before. */}
         {oneLogin
-          ? read.kind === "signed_in" && <div role="status" data-testid="session-status" className="text-sm" style={{ padding: "6px 16px", color: "#fff", background: "#14213d" }}>
-              <span data-testid="read-access-signed-in">
-                Signed in until {new Date(read.expiresAt).toLocaleTimeString()} · <button onClick={read.signOut}>Sign out</button></span>
-            </div>
+          ? <OneLoginStatusLine read={read} />
           : <AppWriteAccess readSignedIn={readSignedIn}>
               {read.kind === "signed_in" && <span data-testid="read-access-signed-in">
                 Signed in until {new Date(read.expiresAt).toLocaleTimeString()} <button onClick={read.signOut}>Sign out</button> · </span>}
