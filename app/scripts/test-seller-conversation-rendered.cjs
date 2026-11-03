@@ -371,7 +371,7 @@ async function main() {
     const { context, page } = await open(1440, 900);
     const panelFor = (key) => page.locator(`[data-testid="seller-conversation"][data-deal="${key}"]`).waitFor({ timeout: 60000 }).then(() => true).catch(() => false);
     const panelText = () => tid(page, 'seller-conversation').textContent();
-    const priceRecord = async () => { await press(page, 'sc-nav-price'); return tid(page, 'sc-on-record').textContent(); };
+    const priceRecord = async () => { await press(page, 'sc-nav-price'); return tid(page, 'sc-on-record').textContent({ timeout: 4000 }).catch(() => ''); };
     // A: type drafts.
     await press(page, 'sc-nav-price');
     await tid(page, 'sc-field-price-amount').fill('A-410000');
