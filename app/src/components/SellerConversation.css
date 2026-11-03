@@ -102,3 +102,23 @@ textarea.sc-input { resize: vertical; }
 .sc-summary-note ol { list-style: none; margin: 4px 0 0; padding: 0; }
 .sc-summary-note li { padding: 4px 0; border-bottom: 1px solid rgba(148, 163, 184, 0.08); }
 .sc-summary-answer { margin: 2px 0 0 8px; line-height: 1.5; white-space: pre-wrap; }
+
+/* B15-03 slice C: Save at Summary. Each plan item names its state in words (Will save / Saved / No change /
+   Not saved / Uncertain), never colour alone. */
+.sc-save { border-top: 1px solid rgba(148, 163, 184, 0.12); padding-top: 8px; margin: 8px 0; font-size: 12px; color: #E2E8F0; overflow-wrap: anywhere; min-width: 0; }
+.sc-save-plan { list-style: none; margin: 6px 0; padding: 0; }
+.sc-save-plan li { padding: 5px 0; border-bottom: 1px solid rgba(148, 163, 184, 0.08); min-width: 0; }
+.sc-save-state { font-size: 10px; font-weight: 700; border-radius: 4px; padding: 0 5px; margin-left: 6px; background: rgba(148, 163, 184, 0.15); color: #CBD5E1; }
+.sc-save-state-write { background: rgba(30, 200, 255, 0.15); color: #7DD3FC; }
+.sc-save-state-done { background: rgba(16, 185, 129, 0.15); color: #6EE7B7; }
+.sc-save-state-not_saved, .sc-save-state-blocked { background: rgba(251, 191, 36, 0.14); color: #FCD34D; }
+.sc-save-text, .sc-save-result { margin: 2px 0 0 8px; line-height: 1.45; }
+.sc-save-result-refused, .sc-save-result-uncertain { color: #FCA5A5; }
+.sc-save-result-confirmed { color: #6EE7B7; }
+.sc-save pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; max-height: 240px; overflow: auto; margin: 4px 0 0; padding: 6px 8px; background: #0A1530; border-radius: 6px; font-size: 11px; color: #CBD5E1; }
+.sc-save-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+.sc-save-button { background: #005CE6; color: #F5F7FA; border: none; border-radius: 6px; padding: 7px 16px; font-size: 13px; font-weight: 700; cursor: pointer; }
+.sc-save-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.sc-save-check { background: #1E3A8A; color: #F1F5F9; border: none; border-radius: 6px; padding: 3px 10px; font-size: 11px; cursor: pointer; margin: 4px 0 0 8px; }
+.sc-save-check:disabled { opacity: 0.5; cursor: not-allowed; }
+.sc-save-notice { font-size: 12px; color: #FCD34D; margin: 4px 0; }

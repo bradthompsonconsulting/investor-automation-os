@@ -27,7 +27,10 @@ import { computeOfferReadiness, CATEGORY_LABEL, type ReadinessResult, type Mater
 import { computeNextBestQuestion, computeQuestionQueue, computeOperatorChecklist, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { FullScriptDrawer } from "../components/FullScriptDrawer";
 import { SellerCallNotesPanel } from "../components/SellerCallNotesPanel";
-import { SellerConversation } from "../components/SellerConversation";
+import { SellerConversation, type ConversationSave } from "../components/SellerConversation";
+import { buildSavePlan, sellerConversationSaveAvailable, SellerConversationSaveCoordinator, type SaveItemId, type SentRecord } from "../lib/seller-conversation-save";
+import { createSellerConversationSaveClient } from "../lib/seller-conversation-save-client";
+import type { ConversationDraft } from "../lib/seller-conversation";
 import { onRecordFor, recommendedQuestion, type OnRecordInput } from "../lib/seller-conversation";
 import { OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS } from "../lib/ghl";
 import { useRailClearance } from "../lib/rail-clearance";
@@ -354,7 +357,7 @@ function Shell({ contactId, children, side }: { contactId: string; children: Rea
  * after a confirmed save this visit; a failure keeps the text and says how to
  * retry; a value that cannot be saved as typed says why.
  */
-function SaveStatusLine({ testid, status, dirty, problem, kept = "Your text is kept." }: { testid: string; status: AutosaveStatus; dirty: boolean; problem: string | null; kept?: string }) {
+function SaveStatusLine({ testid, status, dirty, problem, kept = "Your text is kept.", unsaved = "Not saved yet." }: { testid: string; status: AutosaveStatus; dirty: boolean; problem: string | null; kept?: string; unsaved?: string }) {
   const base: React.CSSProperties = { fontSize: "10px", lineHeight: 1.35 };
   if (status.kind === "saving") return <span data-testid={testid} data-state="saving" style={{ ...base, color: "#94A3B8" }}>Saving…</span>;
   if (problem) return <span data-testid={testid} data-state="invalid" style={{ ...base, color: "#F59E0B" }}>Not saved: {problem}</span>;
@@ -365,10 +368,13 @@ function SaveStatusLine({ testid, status, dirty, problem, kept = "Your text is k
       </span>
     );
   }
-  if (dirty) return <span data-testid={testid} data-state="unsaved" style={{ ...base, color: "#F59E0B" }}>Not saved yet.</span>;
+  if (dirty) return <span data-testid={testid} data-state="unsaved" style={{ ...base, color: "#F59E0B" }}>{unsaved}</span>;
   if (status.kind === "saved") return <span data-testid={testid} data-state="saved" style={{ ...base, color: "#22C55E" }}>Saved</span>;
   return <span data-testid={testid} data-state="idle" style={{ ...base, display: "none" }} />;
 }
+
+/** Slice C: with Save enabled, the Board 14-13 sections are saved with the call, never on their own. */
+const SAVED_AT_SUMMARY = "Not saved yet: saved with the call by Save at Summary & next step.";
 
 function Notice({ tone, title, body }: { tone: "error" | "warn" | "info"; title: string; body?: string }) {
   const color = tone === "error" ? "#EF4444" : tone === "warn" ? "#F59E0B" : "#64748B";
@@ -734,6 +740,14 @@ export default function SellerCallWorkspace() {
      A correction is still simply another append-only entry. */
   const [, setAutosaveTick] = useState(0);
   const autosave = useMemo(() => new AutosaveCoordinator(() => setAutosaveTick((n) => n + 1)), []);
+  /* B15-03 / INV-103 slice C -- Save at Summary. `saveEnabled` is the server-projected capability
+     (runtime config `sellerConversationSave.enabled`; false in both environments in this slice). While it is
+     false the Board 14-13 sections below autosave exactly as before and Save only shows its plan. While it is
+     true those sections stop writing on blur/Enter (their changes join the one Save plan), and Save writes. */
+  const saveEnabled = useMemo(() => sellerConversationSaveAvailable(getRuntimeConfig()), []);
+  const [, setConversationSaveTick] = useState(0);
+  const conversationSaves = useMemo(() => new SellerConversationSaveCoordinator(() => setConversationSaveTick((n) => n + 1)), []);
+  const conversationSaveClient = useMemo(() => createSellerConversationSaveClient(), []);
   /** The contact this page is showing now; a confirmed save for another contact never touches this page's notes. */
   const contactIdRef = useRef(contactId);
   contactIdRef.current = contactId;
@@ -1169,7 +1183,7 @@ export default function SellerCallWorkspace() {
 
   function saveTransactionAssumptions(over: Partial<TransactionDraftInputs> = {}) {
     const t = writeTarget;
-    if (!t) return;
+    if (!t || saveEnabled) return; // slice C: with Save enabled this section joins the Save plan and never writes on its own
     const draft = transactionDraft(over);
     if (draft.problem) return;
     void autosave.request({ ...t, section: "transaction-assumptions" }, draft.signature, async () => {
@@ -1195,7 +1209,7 @@ export default function SellerCallWorkspace() {
 
   function saveSellerPricePosition() {
     const t = writeTarget;
-    if (!t) return;
+    if (!t || saveEnabled) return; // slice C: joins the Save plan
     const draft = sellerPriceDraft();
     if (draft.signature === "refused") { requestSellerPriceRefused(t); return; }
     if (draft.signature === null || draft.price === null) return;
@@ -1217,6 +1231,7 @@ export default function SellerCallWorkspace() {
   }
 
   function requestSellerPriceRefused(t: { contactId: string; opportunityId: string }) {
+    if (saveEnabled) return; // slice C: the refusal joins the Save plan (the field shows it as pending)
     void autosave.request({ ...t, section: "seller-price-position" }, "refused", async () => {
       const at = new Date().toISOString();
       const note = formatSellerPricePositionNote({ opportunityId: t.opportunityId, at, operator: null, kind: "refused" });
@@ -1237,7 +1252,7 @@ export default function SellerCallWorkspace() {
 
   function saveSellerPosition() {
     const t = writeTarget;
-    if (!t) return;
+    if (!t || saveEnabled) return; // slice C: joins the Save plan
     const signature = sellerPositionSignature();
     if (signature === null) return;
     void autosave.request({ ...t, section: "seller-position" }, signature, async () => {
@@ -2120,6 +2135,84 @@ export default function SellerCallWorkspace() {
     if (spDirty) saveSellerPosition();
   }
 
+  /* B15-03 / INV-103 slice C -- Save at Summary for the deal on screen. The plan is built from the
+     conversation draft plus what this page has already read (the latest Transaction assumptions, Seller price
+     position, Seller Position and contact occupancy for THIS deal) and, only while Save is enabled, the three
+     sections as typed. Each write it holds is already bound to this deal's opportunity, and the coordinator sends
+     to the contact bound here, so a save can only reach the record it was planned for. */
+  const recordOccupancy: string | null = useMemo(() => {
+    if (!contact || contact.id !== contactId) return null;
+    const raw = contact.customFields.find((f) => f.id === OCCUPANCY_STATUS_ID)?.value;
+    const v = Array.isArray(raw) ? raw[0] : raw;
+    return v === undefined || v === null || v === "" ? null : String(v);
+  }, [contact, contactId]);
+  const conversationSave: ConversationSave | null = writeTarget && !sellerLoading ? (() => {
+    const t = writeTarget;
+    const key = `${t.contactId}|${t.opportunityId}`;
+    const priceSection = (): "blank" | "invalid" | "price" | "refused" => {
+      if (priceDraftNow.signature === "refused") return "refused";
+      if (priceDraftNow.problem) return "invalid";
+      return priceDraftNow.price === null ? "blank" : "price";
+    };
+    return {
+      enabled: saveEnabled,
+      contactId: t.contactId,
+      coordinator: conversationSaves,
+      client: conversationSaveClient,
+      plan: (draft: ConversationDraft, callId: string) => {
+        const ps = priceSection();
+        return buildSavePlan({
+          opportunityId: t.opportunityId, callId, draft, previewAt: new Date().toISOString(),
+          record: {
+            transaction: transactionAssumptionsLatest ? {
+              transactionStructure: transactionAssumptionsLatest.transactionStructure,
+              closingPossession: transactionAssumptionsLatest.closingPossession,
+              titleComplications: transactionAssumptionsLatest.titleComplications,
+            } : null,
+            sellerPrice: sellerPricePositionRecord ? (sellerPricePositionRecord.kind === "price" ? { kind: "price", price: sellerPricePositionRecord.price } : { kind: "refused" }) : null,
+            sellerPosition: durableSellerPosition,
+            occupancy: recordOccupancy,
+          },
+          sections: saveEnabled ? {
+            ta: { fields: taDraftNow.fields, problem: taDraftNow.problem },
+            price: ps === "price" ? { kind: "price", price: priceDraftNow.price as number }
+              : ps === "invalid" ? { kind: "invalid", reason: priceDraftNow.problem ?? "not a valid price." }
+              : ps === "refused" ? { kind: "refused" } : { kind: "blank" },
+            sellerPosition: sellerPositionParsed.kind === "value" ? { kind: "value", value: sellerPositionParsed.value }
+              : sellerPositionParsed.kind === "invalid" ? { kind: "invalid", reason: sellerPositionParsed.reason } : { kind: "empty" },
+          } : null,
+          results: conversationSaves.results(key),
+        });
+      },
+      onConfirmed: (dealKey: string, item: { id: SaveItemId; signature: string }, sent: SentRecord) => {
+        // Only what was confirmed changes on screen; nothing typed is erased.
+        if (sent.kind === "note") appendSavedNote(sent.contactId, sent.body, sent.at);
+        else if (contactIdRef.current === sent.contactId) {
+          setContact((c) => (c && c.id === sent.contactId
+            ? { ...c, customFields: [...c.customFields.filter((f) => f.id !== OCCUPANCY_STATUS_ID), { id: OCCUPANCY_STATUS_ID, value: [sent.value] }] }
+            : c));
+        }
+        // The integrated sections now show the confirmed value as saved, on the same deal only.
+        if (!saveEnabled || shownDeal.current?.key !== JSON.stringify(dealKey.split("|"))) return;
+        const target = shownDeal.current.target;
+        if (item.id === "timing") {
+          const f = JSON.parse(item.signature) as { transactionStructure: TransactionAssumptionDraftField; closingPossession: TransactionAssumptionDraftField; titleComplications: TransactionAssumptionDraftField };
+          const text = (x: TransactionAssumptionDraftField) => (x.kind === "value" ? x.value : "");
+          setTransactionStructureInput(text(f.transactionStructure)); setTransactionStructureNone(f.transactionStructure.kind === "none");
+          setClosingPossessionInput(text(f.closingPossession)); setClosingPossessionNone(f.closingPossession.kind === "none");
+          setTitleComplicationsInput(text(f.titleComplications)); setTitleComplicationsNone(f.titleComplications.kind === "none");
+          autosave.seed({ ...target, section: "transaction-assumptions" }, item.signature);
+        } else if (item.id === "price") {
+          if (item.signature === "refused") { setSellerPricePositionInput(""); setSellerPriceRefusalPending(true); }
+          else { setSellerPricePositionInput(item.signature.slice("price:".length)); setSellerPriceRefusalPending(false); }
+          autosave.seed({ ...target, section: "seller-price-position" }, item.signature);
+        } else if (item.id === "sellerPosition") {
+          autosave.seed({ ...target, section: "seller-position" }, item.signature);
+        }
+      },
+    };
+  })() : null;
+
 
   /* The facts a recorded outcome captures, taken verbatim from what this
      page has already computed -- no recomputation, no second source. */
@@ -2675,7 +2768,7 @@ export default function SellerCallWorkspace() {
                 </button>
                 {/* Board 14-13 autosave: the one manual fallback for the whole page. Shown only while something is unsaved
                     or a save failed; it saves (or retries) every such section of the deal on screen. */}
-                {pageHasUnsaved || pageSaving ? (
+                {!saveEnabled && (pageHasUnsaved || pageSaving) ? (
                   <button type="button" data-testid="seller-call-save-changes" onClick={saveAllChanges} disabled={pageSaving}
                     style={{ ...COMPACT_BUTTON_STYLE, opacity: pageSaving ? 0.6 : 1, cursor: pageSaving ? "not-allowed" : "pointer" }}>
                     {pageSaving ? "Saving…" : "Save changes"}
@@ -2686,9 +2779,10 @@ export default function SellerCallWorkspace() {
           </div>
 
           {/* B15-03 / INV-103 (Rev 6 slices 1-2) -- the guided seller conversation.
-              Draft-only: it never saves, and its controls are not part of the
-              autosaved sections below. Keyed to the loaded deal (writeTarget is
-              null while a seller is loading, and then no control shows). */}
+              Its controls never write; the one write path is Save at Summary
+              (slice C, `conversationSave` above), disabled in this slice. Keyed
+              to the loaded deal (writeTarget is null while a seller is loading,
+              and then no control shows and nothing can be saved). */}
           <SellerConversation
             dealKey={writeTarget && !sellerLoading ? `${writeTarget.contactId}|${writeTarget.opportunityId}` : null}
             firstName={contact?.id === contactId ? contact.firstName : null}
@@ -2698,6 +2792,7 @@ export default function SellerCallWorkspace() {
             recommended={recommendedQuestion(nextBestQuestion)}
             staleRead={refreshReadError !== null}
             repairsHref={`/contacts/${contactId}/underwriting`}
+            save={conversationSave}
           />
 
           {/* B15-03 slice A (Captain 2026-11-03): every existing Seller Call tool, unchanged, in one collapsible
@@ -2992,7 +3087,7 @@ export default function SellerCallWorkspace() {
                   </span>
                 ) : null}
                 {/* Board 14-13 autosave: Seller Position saves on its own when the field is left or on Enter. */}
-                <SaveStatusLine testid="negotiation-seller-position-save-status" status={spStatus} dirty={spDirty} problem={null} />
+                <SaveStatusLine testid="negotiation-seller-position-save-status" unsaved={saveEnabled ? SAVED_AT_SUMMARY : undefined} status={spStatus} dirty={spDirty} problem={null} />
               </label>
               <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "11px", color: "#64748B" }}>
                 Current Offer
@@ -3618,7 +3713,7 @@ export default function SellerCallWorkspace() {
                         onChange={(e) => { setTitleComplicationsNone(e.target.checked); saveTransactionAssumptions({ titleNone: e.target.checked }); }} /> None known
                     </label>
                   </div>
-                <SaveStatusLine testid="transaction-assumptions-save-status" status={taStatus} dirty={taDirty} problem={taDraftNow.problem} />
+                <SaveStatusLine testid="transaction-assumptions-save-status" unsaved={saveEnabled ? SAVED_AT_SUMMARY : undefined} status={taStatus} dirty={taDirty} problem={taDraftNow.problem} />
               </div>
             </div>
 
@@ -3662,7 +3757,7 @@ export default function SellerCallWorkspace() {
                     Seller declined to give a price
                   </button>
                 </div>
-                <SaveStatusLine testid="seller-price-position-save-status" status={priceStatus} dirty={priceDirty} problem={priceDraftNow.problem}
+                <SaveStatusLine testid="seller-price-position-save-status" unsaved={saveEnabled ? SAVED_AT_SUMMARY : undefined} status={priceStatus} dirty={priceDirty} problem={priceDraftNow.problem}
                   kept={priceDraftNow.signature === "refused" ? "The refusal is kept." : undefined} />
               </div>
             </div>

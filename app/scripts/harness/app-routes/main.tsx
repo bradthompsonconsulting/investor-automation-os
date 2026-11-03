@@ -13,9 +13,18 @@
  */
 import { createRoot } from "react-dom/client";
 import "../../../src/index.css";
-import { getConfig, projectRuntimeConfig, setRuntimeConfig } from "../../../shared/ghl-config";
+import { getConfig, projectRuntimeConfig, setRuntimeConfig, SELLER_CONVERSATION_SAVE_ENABLED } from "../../../shared/ghl-config";
+import { setAppWriteSession } from "../../../src/lib/app-write-session";
 
-setRuntimeConfig(projectRuntimeConfig(getConfig("test")));
+/* B15-03 slice C: a test may ask (via an init script, before this module runs) for the Save-enabled projection --
+   computed by the REAL projectRuntimeConfig from the Test config with only the sentinel switched -- and for a
+   placeholder write session (the test answers ghl-write itself). Without it, nothing here changes. */
+declare global { interface Window { __iaosHarnessOverride?: { sellerConversationSave?: boolean; writeSession?: boolean } } }
+const override = window.__iaosHarnessOverride ?? {};
+setRuntimeConfig(override.sellerConversationSave
+  ? projectRuntimeConfig({ ...getConfig("test"), sellerConversationSave: SELLER_CONVERSATION_SAVE_ENABLED }, "test")
+  : projectRuntimeConfig(getConfig("test")));
+if (override.writeSession) setAppWriteSession({ token: "offline-harness", expiresAt: "2099-01-01T00:00:00.000Z" });
 
 const before = import.meta.glob("./AppBefore.tsx");
 const loadApp = before["./AppBefore.tsx"] ?? (() => import("../../../src/App"));

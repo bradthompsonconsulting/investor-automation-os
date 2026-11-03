@@ -10,6 +10,10 @@ import { parseNegotiationOverrideNote } from "../../../src/lib/seller-call-negot
  *  identifier, opportunity owned by this contact). Production permits it, with Transaction assumptions v2, only through the
  *  Seller Call autosave class in production-write-scope.ts, and only while that class is enabled. */
 import { parseSellerPositionNote } from "../../../src/lib/seller-call-seller-position-note";
+/** B15-03 slice C: the structured seller conversation note (one per call, superseded by call id). Validated here like every
+ *  carrier (operator, identifier, opportunity owned by this contact) plus its own call-id binding below. ghl-write.ts refuses it
+ *  outright while `sellerConversationSave` is disabled; Production refuses it unconditionally (production-write-scope.ts). */
+import { parseSellerConversationNote } from "../../../src/lib/seller-conversation-note";
 import { parseBuyerEntityOverrideNote, parsePartySignerFactsNote, parsePropertyLegalDescriptionFactsNote, parseLeaseDisclosureFactsNote, parseEarnestMoneyOptionFactsNote, parseTitleSurveyFactsNote, parsePropertyConditionFactsNote, parseClosingPossessionFactsNote, parseSettlementExpenseFactsNote, parseRepresentationFactsNote, parseAddendaApplicabilityFactsNote, parseSellerEquitableInterestDisclosureNote, parseAttorneyManualFieldDispositionNote, parseSellerNoticeConfirmationFactsNote, parseBuyerBusinessConfigFactsNote, parseSellerSigningModelNote } from "../../../src/lib/seller-contract-facts-carriers";
 import { parseBradContractAuthorizationNote } from "../../../src/lib/contract-authorization-carriers";
 import { parseDispositionHandoffNote } from "../../../src/lib/contract-disposition-handoff-carriers";
@@ -25,7 +29,7 @@ import { identifier } from "./write-contracts";
 import { fieldValue, type GhlBoundary } from "./ghl-write-boundary";
 import { getConfig } from "../../../shared/ghl-config";
 import { latestOutcomeNoteForOpportunity } from "../../../src/lib/seller-call-outcome";
-const parsers: ((body: string) => any)[] = [parseArvApprovalNote, parseOutcomeNote, parsePropertyIdentityConfirmationNote, parseTransactionAssumptionsNote, parseSellerPricePositionNote, parseSellerPositionNote, parseReadinessHumanActionNote, parseReadinessDecisionInvalidationNote, parseContractReadyChecklistNote, parseNegotiationOverrideNote, parseBuyerEntityOverrideNote, parsePartySignerFactsNote, parsePropertyLegalDescriptionFactsNote, parseLeaseDisclosureFactsNote, parseEarnestMoneyOptionFactsNote, parseTitleSurveyFactsNote, parsePropertyConditionFactsNote, parseClosingPossessionFactsNote, parseSettlementExpenseFactsNote, parseRepresentationFactsNote, parseAddendaApplicabilityFactsNote, parseSellerEquitableInterestDisclosureNote, parseAttorneyManualFieldDispositionNote, parseSellerNoticeConfirmationFactsNote, parseBuyerBusinessConfigFactsNote, parseSellerSigningModelNote, parseBradContractAuthorizationNote, parseDispositionHandoffNote, parseExecutedTermsAttestationNote, parseContractLifecycleNote, parseUnderContractNote, parseContractProjectionSyncNote, parseContractSendNote, parseSignerMappingAttestationNote];
+const parsers: ((body: string) => any)[] = [parseArvApprovalNote, parseOutcomeNote, parsePropertyIdentityConfirmationNote, parseTransactionAssumptionsNote, parseSellerPricePositionNote, parseSellerPositionNote, parseSellerConversationNote, parseReadinessHumanActionNote, parseReadinessDecisionInvalidationNote, parseContractReadyChecklistNote, parseNegotiationOverrideNote, parseBuyerEntityOverrideNote, parsePartySignerFactsNote, parsePropertyLegalDescriptionFactsNote, parseLeaseDisclosureFactsNote, parseEarnestMoneyOptionFactsNote, parseTitleSurveyFactsNote, parsePropertyConditionFactsNote, parseClosingPossessionFactsNote, parseSettlementExpenseFactsNote, parseRepresentationFactsNote, parseAddendaApplicabilityFactsNote, parseSellerEquitableInterestDisclosureNote, parseAttorneyManualFieldDispositionNote, parseSellerNoticeConfirmationFactsNote, parseBuyerBusinessConfigFactsNote, parseSellerSigningModelNote, parseBradContractAuthorizationNote, parseDispositionHandoffNote, parseExecutedTermsAttestationNote, parseContractLifecycleNote, parseUnderContractNote, parseContractProjectionSyncNote, parseContractSendNote, parseSignerMappingAttestationNote];
 export async function validateLedgerNote(boundary: GhlBoundary, contactId: string, body: string, operatorEmail: string) {
   const record = parsers.map(parse => parse(body)).find(Boolean);
   if (!record) {
@@ -38,6 +42,12 @@ export async function validateLedgerNote(boundary: GhlBoundary, contactId: strin
   const opportunity = await boundary.opportunity(record.opportunityId);
   if (opportunity.contactId !== contactId) throw new Error("Ledger opportunity belongs to another contact");
   const notes = await boundary.notes(contactId);
+  const conversation = parseSellerConversationNote(body);
+  if (conversation) {
+    // A call id belongs to ONE opportunity: a re-save may supersede it only on the same deal.
+    identifier(conversation.callId);
+    if (notes.some((n) => { const p = parseSellerConversationNote(n.body); return p !== null && p.callId === conversation.callId && p.opportunityId !== conversation.opportunityId; })) throw new Error("Conversation call id belongs to another opportunity");
+  }
   const arv = parseArvApprovalNote(body);
   if (arv && fieldValue(opportunity.customFields, getConfig(process.env.IAOS_ENV).opportunityFacts.arv, "opportunity").value !== arv.approvedArv) throw new Error("ARV approval must match confirmed opportunity ARV");
   const outcome = parseOutcomeNote(body);

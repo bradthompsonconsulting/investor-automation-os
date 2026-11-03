@@ -6,16 +6,46 @@ import {
 } from "../lib/seller-conversation";
 import { CATEGORY_LABEL, type ReadinessResult } from "../lib/underwriting/offer-readiness";
 import { CATEGORY_PRIORITY } from "../lib/underwriting/next-best-question";
+import { type DealResults, type ItemResult, type PlanItem, type SaveAction, type SaveClient, type SavePlan, type SaveItemId, type SentRecord, type SellerConversationSaveCoordinator } from "../lib/seller-conversation-save";
+import { useLeaveGuard } from "../lib/leave-guard";
 import "./SellerConversation.css";
+
+/**
+ * B15-03 slice C -- Save at Summary, wired by the page. `plan` builds this deal's save plan from the draft (the
+ * page adds what is on record and, while Save is enabled, its own sections). With `enabled` false, Save only
+ * shows the plan and says saving is not enabled: it makes no request.
+ */
+export type ConversationSave = {
+  enabled: boolean;
+  contactId: string;
+  plan: (draft: ConversationDraft, callId: string) => SavePlan;
+  coordinator: SellerConversationSaveCoordinator;
+  client: SaveClient;
+  onConfirmed: (dealKey: string, item: { id: SaveItemId; signature: string }, sent: SentRecord) => void;
+};
+const LEAVE_MESSAGE = "This call has unsaved work (the conversation, or answers not yet saved). Leave the Seller Call page anyway? Unsaved answers will be lost.";
+const STATE_WORD: Record<SaveAction, [string, string]> = {
+  write: ["Will save", "Would save"], done: ["Saved", "Saved"], none: ["No change", "No change"], not_saved: ["Not saved", "Not saved"], blocked: ["Uncertain", "Uncertain"],
+};
+const RESULT_WORD: Record<ItemResult["status"], string> = {
+  saving: "Saving…", confirmed: "Confirmed", refused: "Refused", uncertain: "Uncertain", checking: "Checking…", not_found: "Not found",
+};
 
 /**
  * B15-03 / INV-103 -- Revision 6 guided seller conversation, slices 1-2.
  *
- * DRAFT-ONLY. Nothing in this component reads or writes GHL, starts a save, or
- * touches the page's autosave sections: the answer controls here have no blur,
- * Enter or change handler other than updating this component's own state. The
+ * DRAFT UNTIL SAVE. The answer controls here have no blur, Enter or change
+ * handler other than updating this component's own state; moving, typing and
+ * marking never write. The ONLY write path is the one Save button at Summary &
+ * next step (slice C), which hands the page-built plan to the page's save
+ * coordinator -- and only while the server-projected capability is enabled
+ * (disabled in this slice: Save then shows the plan and sends nothing). The
  * page passes in what is already on record (read-only projection) and the
  * existing engines' results; this component never computes readiness.
+ *
+ * LEAVE WARNING (slice C): while the plan has unsaved work, leaving by an in-app
+ * link asks first and reload/close gets the browser prompt (lib/leave-guard.ts,
+ * including its documented limits: Back/Forward are not intercepted).
  *
  * NEVER BLOCKING. Previous, Next, jump, Skip, Seller doesn't know and Return to
  * unanswered never depend on an answer.
@@ -30,7 +60,7 @@ const STATUS_CLASS: Record<AnswerStatus, string> = {
 };
 const READINESS_TEXT = { NOT_READY: "Not ready", REVIEW_NEEDED: "Review needed", OFFER_READY: "Offer ready (evidence)" } as const;
 
-export function SellerConversation({ dealKey, firstName, street, onRecord, readiness, recommended, staleRead, repairsHref }: {
+export function SellerConversation({ dealKey, firstName, street, onRecord, readiness, recommended, staleRead, repairsHref, save = null }: {
   dealKey: string | null;
   firstName: string | null;
   street: string | null;
@@ -40,8 +70,16 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
   staleRead: boolean;
   /** The existing Underwriting page for this contact (repair estimator); opened in a NEW TAB so this page and its drafts stay. */
   repairsHref: string | null;
+  /** Slice C: null while no deal is loaded (then nothing can be saved). */
+  save?: ConversationSave | null;
 }) {
   const [drafts, setDrafts] = useState<Record<string, ConversationDraft>>({});
+  /* Slice C: one call id per deal for this page visit; a re-save of the same call supersedes by it. */
+  const [callIds] = useState(() => new Map<string, string>());
+  const callIdFor = (k: string) => { let id = callIds.get(k); if (!id) { id = crypto.randomUUID(); callIds.set(k, id); } return id; };
+  const [notEnabledShown, setNotEnabledShown] = useState<string | null>(null);
+  const savePlan = dealKey && save ? save.plan(drafts[dealKey] ?? EMPTY_CONVERSATION, callIdFor(dealKey)) : null;
+  useLeaveGuard(!!savePlan && (savePlan.unsaved || !!save?.coordinator.busy()), LEAVE_MESSAGE);
   if (!dealKey) {
     return (
       <section className="sc-wrap" data-testid="seller-conversation" aria-label="Seller conversation">
@@ -166,13 +204,20 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
               <DraftField key={`${key}:${q.id}:${f.id}`} qid={q.id} field={f} value={answer?.fields[f.id] ?? ""}
                 onChange={(v) => update((p) => withField(p, q.id, f.id, v))} />
             ))}
-            <div className="sc-muted" data-testid="sc-draft-note">Draft only: kept on this page while it is open. Nothing here is saved to GHL.</div>
+            <div className="sc-muted" data-testid="sc-draft-note">{save?.enabled
+              ? "Draft: kept on this page while it is open, and saved only when you press Save at Summary & next step."
+              : "Draft only: kept on this page while it is open. Nothing here is saved to GHL."}</div>
           </div>
           {answer?.mark ? (
             <div className="sc-marked" data-testid="sc-mark">
               Marked: {STATUS_LABEL[answer.mark]}{" "}
               <button type="button" className="sc-link" data-testid="sc-clear-mark" onClick={() => update((p) => withMark(p, q.id, null))}>Clear</button>
             </div>
+          ) : null}
+
+          {q.id === "summary" && save && savePlan ? (
+            <SavePanel dealKey={key} save={save} plan={savePlan} results={save.coordinator.results(key)}
+              notEnabledShown={notEnabledShown === key} onNotEnabled={() => setNotEnabledShown(key)} />
           ) : null}
 
           <div className="sc-controls" data-testid="sc-controls">
@@ -267,6 +312,67 @@ function DraftField({ qid, field, value, onChange, prefix = "sc", compact = fals
           onChange={(e) => onChange(e.target.value)} />
       )}
       {field.hint ? <div className="sc-muted">{field.hint}</div> : null}
+    </div>
+  );
+}
+
+/**
+ * Slice C -- Save at Summary. The whole plan, item by item, with what each would write or why it is not saved,
+ * and after a Save each item's own result: confirmed / refused (the server's reason) / uncertain. An uncertain
+ * item offers Check again (a read) and is never re-sent by Save until that read says it is not on record.
+ */
+function SavePanel({ dealKey, save, plan, results, notEnabledShown, onNotEnabled }: {
+  dealKey: string; save: ConversationSave; plan: SavePlan; results: DealResults; notEnabledShown: boolean; onNotEnabled: () => void;
+}) {
+  const busy = save.coordinator.busy();
+  const hooks = { onConfirmed: (item: { id: SaveItemId; signature: string }, sent: SentRecord) => save.onConfirmed(dealKey, item, sent) };
+  const onSave = () => {
+    if (!save.enabled) { onNotEnabled(); return; }
+    void save.coordinator.save(dealKey, save.contactId, plan, save.client, hooks);
+  };
+  const shown: PlanItem[] = plan.items;
+  return (
+    <div className="sc-save" data-testid="sc-save-panel" data-enabled={save.enabled ? "true" : "false"}>
+      <div className="sc-label">Save this call</div>
+      {shown.length === 0 ? <div className="sc-muted" data-testid="sc-save-empty">Nothing to save yet.</div> : (
+        <ol className="sc-save-plan" data-testid="sc-save-plan">
+          {shown.map((i) => {
+            const r = results[i.id];
+            return (
+              <li key={i.id} data-testid={`sc-save-item-${i.id}`} data-action={i.action} data-result={r?.status ?? ""}>
+                <strong>{i.label}</strong>
+                <span className={`sc-save-state sc-save-state-${i.action}`} data-testid={`sc-save-state-${i.id}`}>{STATE_WORD[i.action][save.enabled ? 0 : 1]}</span>
+                {i.text ? <div className="sc-save-text" data-testid={`sc-save-text-${i.id}`}>{i.text}</div> : null}
+                {r && r.status !== "saving" ? (
+                  <div className={`sc-save-result sc-save-result-${r.status}`} data-testid={`sc-save-result-${i.id}`} role={r.status === "refused" || r.status === "uncertain" ? "alert" : undefined}>
+                    {RESULT_WORD[r.status]}{"message" in r && r.message ? `: ${r.message}` : ""}
+                  </div>
+                ) : null}
+                {r && r.status === "uncertain" ? (
+                  <button type="button" className="sc-save-check" data-testid={`sc-save-check-${i.id}`} disabled={busy}
+                    onClick={() => { void save.coordinator.check(dealKey, i.id, save.client, hooks); }}>Check again</button>
+                ) : null}
+                {i.preview ? (
+                  <details data-testid={`sc-save-preview-${i.id}`}>
+                    <summary className="sc-muted">Show the note text</summary>
+                    <pre data-testid="sc-save-note-preview">{i.preview}</pre>
+                  </details>
+                ) : null}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      <div className="sc-save-actions">
+        <button type="button" className="sc-save-button" data-testid="sc-save" disabled={busy} onClick={onSave}>{busy ? "Saving…" : "Save"}</button>
+        {save.enabled && !busy && plan.writes.length === 0 ? <span className="sc-muted" data-testid="sc-save-nothing">Nothing new to send.</span> : null}
+      </div>
+      {!save.enabled ? (
+        notEnabledShown
+          ? <div className="sc-save-notice" role="status" data-testid="sc-save-not-enabled">Saving is not enabled yet. Nothing was sent. The list above is what Save would write.</div>
+          : <div className="sc-muted" data-testid="sc-save-disabled-note">Saving is not enabled yet: Save shows what it would write and sends nothing.</div>
+      ) : null}
+      <div className="sc-muted" data-testid="sc-save-separate">Current Offer, readiness approve/override, Accept / Follow-Up / Pass, contract steps and the call log keep their own buttons; Save never records them.</div>
     </div>
   );
 }

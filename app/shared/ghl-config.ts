@@ -206,6 +206,22 @@ export interface GhlConfig {
    * Enabling is its own reviewed config-only commit, never a runtime toggle.
    */
   productionSellerCallNegotiation: string;
+  /**
+   * B15-03 / INV-103 slice C -- Seller Call "Save at Summary" (Captain
+   * 2026-11-03: one structured conversation note per call, plus the canonical
+   * updates the draft changes). Only `SELLER_CONVERSATION_SAVE_ENABLED` opens it,
+   * and BOTH objects carry `SELLER_CONVERSATION_SAVE_DISABLED` in this slice.
+   * While disabled:
+   *   - ghl-write refuses any "IAOS SELLER CONVERSATION" note (403, not_sent)
+   *     before any Blob or GHL access;
+   *   - the browser projection says disabled, so the Seller Call page shows the
+   *     save plan, makes ZERO write requests, and its Board 14-13 autosaved
+   *     sections keep autosaving exactly as before.
+   * The browser projection (`sellerConversationSave.enabled`) can only be true on a
+   * Test deployment. Production also refuses the carrier unconditionally in
+   * production-write-scope.ts. Enabling is its own reviewed config-only commit.
+   */
+  sellerConversationSave: string;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -441,6 +457,15 @@ export const PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED = "PRODUCTION_SELLER_CALL_
 export const PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED = "PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED" as const;
 /** B14-13 — the value PRODUCTION carries until the enable commit; TEST carries it as documentation only. */
 export const PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED = "PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED" as const;
+
+/** B15-03 slice C -- the ONE value that opens Seller Call "Save at Summary" (see `sellerConversationSave`). */
+export const SELLER_CONVERSATION_SAVE_ENABLED = "SELLER_CONVERSATION_SAVE_ENABLED" as const;
+/** B15-03 slice C -- the value BOTH environments carry until a reviewed enabling commit. */
+export const SELLER_CONVERSATION_SAVE_DISABLED = "SELLER_CONVERSATION_SAVE_DISABLED" as const;
+/** True only for the exact enabling sentinel (server-side decision; never a truthy value). */
+export function sellerConversationSaveEnabled(config: Pick<GhlConfig, "sellerConversationSave">): boolean {
+  return config.sellerConversationSave === SELLER_CONVERSATION_SAVE_ENABLED;
+}
 
 /**
  * INV-67 / B9-12 -- the literal placeholder value for a not-yet-provisioned
@@ -794,6 +819,8 @@ const PRODUCTION: GhlConfig = {
   productionSellerCallAutosave: PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED,
   // B14-13: ENABLED — Brad's working Seller Call setup in Production (Seller price position, Current Offer, Accept/Pass/Follow-Up; deliberate readiness override, its invalidation, above-Max acknowledgement; Brad, 2026-10-11). Disable: publish the prior deploy (lock kept), then revert this commit.
   productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED,
+  // B15-03 slice C: DISABLED. Production also refuses the carrier unconditionally (production-write-scope.ts).
+  sellerConversationSave: SELLER_CONVERSATION_SAVE_DISABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -1182,6 +1209,8 @@ const TEST: GhlConfig = {
   productionSellerCallAutosave: PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED,
   // B14-13: documentation-only in TEST; Test writes are never scoped.
   productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED,
+  // B15-03 slice C: DISABLED pending the Captain's review and a separate enabling commit.
+  sellerConversationSave: SELLER_CONVERSATION_SAVE_DISABLED,
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },
@@ -1338,6 +1367,7 @@ export function getConfig(selector: string | undefined): GhlConfig {
     ),
     ["propertyAnswerEvaluation.enabled", config.propertyAnswerEvaluation.enabled],
     ["supplementalReadBudget.enabled", config.supplementalReadBudget.enabled],
+    ["sellerConversationSave", config.sellerConversationSave],
   ];
 
   const missing = firstIncompleteKey(entries);
@@ -1515,6 +1545,26 @@ export interface RuntimeConfig {
    * and recovery on its own config; this projection only tells the page what to offer.
    */
   propertyAnswerRecovery: RecoveryProjection;
+  /**
+   * B15-03 slice C: whether Seller Call "Save at Summary" may write. Projected true ONLY on a Test
+   * deployment whose `sellerConversationSave` is exactly ENABLED. Absent reads as disabled (fail closed);
+   * present, it must be exactly `{ enabled: <boolean> }` or the browser refuses the payload. The server
+   * refuses the carrier on its own config regardless of what the browser was told.
+   */
+  sellerConversationSave?: { enabled: boolean };
+}
+
+/** The projection for one deployment: true only for "test" with the exact enabling sentinel. */
+export function projectSellerConversationSave(config: GhlConfig, environment: string | undefined): { enabled: boolean } {
+  return { enabled: environment === "test" && sellerConversationSaveEnabled(config) };
+}
+
+function invalidSellerConversationSave(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "sellerConversationSave";
+  const v = value as Record<string, unknown>;
+  if (Object.keys(v).join(",") !== "enabled" || typeof v.enabled !== "boolean") return "sellerConversationSave";
+  return null;
 }
 
 export type RecoveryPair = { contactId: string; opportunityId: string };
@@ -1562,6 +1612,7 @@ export function projectRuntimeConfig(config: GhlConfig, environment?: string): R
     contractDraftRequest: config.contractDraftRequest,
     contractSellerCountField: config.contractSellerCountField,
     propertyAnswerRecovery: projectRecovery(config, environment),
+    sellerConversationSave: projectSellerConversationSave(config, environment),
   };
   for (const [group, keys] of Object.entries(RUNTIME_GROUPS)) {
     const source = config[group as keyof GhlConfig] as Record<string, string>;
@@ -1599,7 +1650,8 @@ let RUNTIME: RuntimeConfig | null = null;
  * incomplete, which is what keeps main.tsx from importing App.
  */
 export function setRuntimeConfig(payload: unknown): RuntimeConfig {
-  const missing = firstIncompleteKey(runtimeEntries(payload)) ?? invalidRecovery((payload as Record<string, unknown> | null)?.propertyAnswerRecovery);
+  const missing = firstIncompleteKey(runtimeEntries(payload)) ?? invalidRecovery((payload as Record<string, unknown> | null)?.propertyAnswerRecovery)
+    ?? invalidSellerConversationSave((payload as Record<string, unknown> | null)?.sellerConversationSave);
   if (missing !== null) {
     throw new Error(
       `[ghl-config] runtime configuration is incomplete: ${missing} is ` +

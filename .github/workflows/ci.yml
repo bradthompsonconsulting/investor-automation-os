@@ -244,6 +244,8 @@ jobs:
         run: node app/scripts/test-b15-seller-call.cjs
       - name: Seller conversation script data, navigation and on-record projection (INV-103, B15-03 Rev 6 slices 1-2) — 61 offline checks
         run: node app/scripts/test-seller-conversation.cjs
+      - name: Seller conversation Save at Summary -- note carrier format/parse, save plan, per-item results, no resend of uncertain or confirmed items, ledger guard, Production refusal, flag DISABLED (INV-103, B15-03 slice C) — 115 offline checks
+        run: node app/scripts/test-seller-conversation-save.cjs
 
       - name: Current Offer save coordinator — serialized per deal, unresolved block, protected Accept (PR 126) — 67 offline checks
         run: node app/scripts/test-current-offer-save-coordinator.cjs
@@ -390,6 +392,8 @@ jobs:
         run: node app/scripts/test-b15-06-seller-call-focus.cjs
       - name: Seller conversation on the real Seller Call page -- openings, never-blocking navigation, drafts, on-record sources, repair-estimate new tab, Summary recap, readiness levels, isolation between loaded deals, layout; zero writes (INV-103, B15-03) — 103 checks
         run: node app/scripts/test-seller-conversation-rendered.cjs
+      - name: Seller conversation Save at Summary on the real Seller Call page -- flag off shows the plan with zero writes; harness-enabled save writes in order and reports confirmed/refused/uncertain per item; drafts kept; no automatic or duplicate resend; Check again; leave warning; autosave sections integrated when on, unchanged when off (INV-103, B15-03 slice C) — 64 checks
+        run: node app/scripts/test-seller-conversation-save-rendered.cjs
       - name: B1 repair approval ENABLED path on the real page, offline (committed switch on for Test; legacy viewer served the switch-off capability) (INV-134) — 81 checks
         run: node app/scripts/test-repair-approval-browser.cjs
       # Both Production negotiation settings against the real write scope and barrier rules; floor 105
