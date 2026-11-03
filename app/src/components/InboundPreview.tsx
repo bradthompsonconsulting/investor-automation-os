@@ -1,4 +1,4 @@
-import type { LatestInbound } from "../../shared/inbound-message";
+import type { InboundUnavailableReason, LatestInbound } from "../../shared/inbound-message";
 
 /**
  * B15-08 (INV-107) -- one display for the latest inbound message, used by the Dashboard's Unanswered Inbound rows and
@@ -8,11 +8,14 @@ import type { LatestInbound } from "../../shared/inbound-message";
  *   unavailable -> that the text could not be shown here, and where to look.
  * "Loading" and "nothing unanswered" stay the screens' own states.
  */
-export const INBOUND_UNAVAILABLE_TEXT: Record<"read_failed" | "no_body" | "not_found" | "not_loaded", string> = {
+export const INBOUND_UNAVAILABLE_TEXT: Record<InboundUnavailableReason, string> = {
   read_failed: "Message text couldn't be read — open the conversation",
+  timed_out: "Message text didn't load in time — open the conversation",
+  rate_limited: "Message text not loaded (GHL is busy) — open the conversation",
+  not_loaded: "Message text not loaded here — open the conversation",
   no_body: "Message text isn't available here — open the conversation",
   not_found: "Latest inbound message not found — open the conversation",
-  not_loaded: "Message text not loaded here — open the conversation",
+  unsupported: "This message type isn't shown here — open the conversation",
 };
 
 export function inboundNoTextLabel(channel: string): string {

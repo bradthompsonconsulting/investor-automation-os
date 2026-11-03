@@ -33,16 +33,18 @@ const BEFORE_FN = path.join(FUNCTIONS, '_b15_08_before_ghl_conversations.ts');
 const APP_BEFORE = path.join(HARNESS_DIR, 'AppBefore.tsx');
 const DASH_BEFORE = path.join(HARNESS_DIR, 'DashboardBefore.tsx');
 const CONV_BEFORE = path.join(HARNESS_DIR, 'ConversationsBefore.tsx');
+const SHARED_BEFORE = path.join(APP, 'shared', '_b15_08_before_inbound.ts');
+const PREVIEW_BEFORE = path.join(HARNESS_DIR, 'InboundPreviewBefore.tsx');
 
-/** Literal check() call sites: P 7 + S 9 + R 6 + X 2 = 24. */
-const FLOOR = 24;
+/** Literal check() call sites: P 13 + S 15 + R 7 + X 3 = 38 (r2 added P8-P13, S10-S15, R7, X3 for Bones P2-1..P2-4). */
+const FLOOR = 38;
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
   console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail).slice(0, 400)}`}`);
 }
 const tryOr = (fn, dflt) => { try { return fn(); } catch { return dflt; } };
-const cleanup = () => [BEFORE_FN, APP_BEFORE, DASH_BEFORE, CONV_BEFORE].forEach((f) => { if (fs.existsSync(f)) fs.rmSync(f); });
+const cleanup = () => [BEFORE_FN, APP_BEFORE, DASH_BEFORE, CONV_BEFORE, SHARED_BEFORE, PREVIEW_BEFORE].forEach((f) => { if (fs.existsSync(f)) fs.rmSync(f); });
 cleanup(); process.on('exit', cleanup);
 const show = (p) => execFileSync('git', ['show', `${BEFORE}:app/${p}`], { cwd: APP, encoding: 'utf8' });
 const src = (p) => (BEFORE ? tryOr(() => show(p), '') : tryOr(() => fs.readFileSync(path.join(APP, p), 'utf8'), '')).replace(/\r\n/g, '\n');
@@ -70,12 +72,14 @@ const msg = (o) => ({ direction: 'inbound', messageType: 'TYPE_SMS', body: '', d
 
 async function main() {
   // ───────────────────────────── P: the pure classifier ─────────────────────────────
-  const IM = BEFORE ? tryOr(() => { throw new Error('absent before'); }, null) : tryOr(() => require('../shared/inbound-message.ts'), null);
+  const sharedBefore = BEFORE ? tryOr(() => show('shared/inbound-message.ts'), null) : null;
+  if (sharedBefore) fs.writeFileSync(SHARED_BEFORE, sharedBefore);
+  const IM = BEFORE ? (sharedBefore ? tryOr(() => require(SHARED_BEFORE), null) : null) : tryOr(() => require('../shared/inbound-message.ts'), null);
   const L = (msgs, scope) => tryOr(() => IM.latestInboundFrom(msgs, scope), null);
   const a1 = L([msg({ body: 'I can sell next month', dateAdded: T(5) }), msg({ direction: 'outbound', body: 'Hi', dateAdded: T(1) })], { conversationId: 'c', contactId: 'k' });
   check('P1 newest inbound SMS with text -> text, SMS, its words and time', a1?.state === 'text' && a1.channel === 'SMS' && a1.text === 'I can sell next month' && a1.at === T(5) && a1.source === 'thread', a1);
-  const a2 = L([msg({ messageType: 'TYPE_EMAIL', body: '<div>Call me <b>after 5</b>&nbsp;pm</div>', dateAdded: T(3) })], {});
-  check('P2 inbound email body -> plain text (tags removed), channel Email', a2?.state === 'text' && a2.channel === 'Email' && a2.text === 'Call me after 5 pm', a2);
+  const a2 = L([msg({ messageType: 'TYPE_EMAIL', contentType: 'text/html', body: '<div>Call me <b>after 5</b>&nbsp;pm</div>', dateAdded: T(3) })], {});
+  check('P2 inbound HTML email (contentType text/html) -> plain text (tags removed, entity decoded), channel Email', a2?.state === 'text' && a2.channel === 'Email' && a2.text === 'Call me after 5 pm', a2);
   const a3 = L([msg({ body: 'older text', dateAdded: T(1) }), msg({ messageType: 'TYPE_CALL', dateAdded: T(9) })], {});
   check('P3 newest inbound is a call (after an older SMS) -> no_text "Call" with the call time; the older SMS is not passed off as latest', a3?.state === 'no_text' && a3.channel === 'Call' && a3.at === T(9), a3);
   const a4 = L([msg({ body: '   ', dateAdded: T(2) })], {});
@@ -88,9 +92,29 @@ async function main() {
   const s1 = tryOr(() => IM.latestInboundFromSummary('  Yes interested ', Date.parse(T(4)), 'read_failed'), null);
   const s2 = tryOr(() => IM.latestInboundFromSummary('', Date.parse(T(4)), 'not_loaded'), null);
   check('P7 summary fallback: text kept (source summary, no channel claimed); empty -> unavailable with the given reason', s1?.state === 'text' && s1.source === 'summary' && s1.channel === '' && s1.text === 'Yes interested' && s2?.state === 'unavailable' && s2.reason === 'not_loaded', [s1, s2]);
+  // -- r2: Bones P2-2 (text kept exactly; HTML only where established) and P2-4 (unknown types) --
+  const LIT = 'I can accept < $250000 > if cash & close <b>fast</b>\nthanks';
+  const b8 = L([msg({ body: '  ' + LIT + ' ', dateAdded: T(5) })], {});
+  check('P8 P2-2 SMS text kept EXACTLY (<, >, &, amounts, tag-like text, line break); only the ends trimmed', b8?.state === 'text' && b8.text === LIT, b8);
+  const b9 = L([msg({ messageType: 'TYPE_EMAIL', contentType: 'text/html', body: '<style>p{x}</style><p>Tom &amp; Sue: &lt;250000&gt;</p><br/>Line&nbsp;two &#36;5 &#x26; more<script>alert(1)</script>', dateAdded: T(5) })], {});
+  const b9e = L([msg({ messageType: 'TYPE_EMAIL', contentType: 'text/html', body: '<p> </p><br>', dateAdded: T(5) })], {});
+  check('P9 P2-2 HTML email (contentType says HTML): tags dropped, entities decoded once, script/style removed; empty HTML -> unavailable no_body', b9?.state === 'text' && b9.text === 'Tom & Sue: <250000> Line two $5 & more' && b9e?.state === 'unavailable' && b9e.reason === 'no_body', [b9, b9e]);
+  const b10 = L([msg({ messageType: 'TYPE_EMAIL', body: 'Offer < 200k? use <this> & that', dateAdded: T(5) })], {});
+  check('P10 P2-2 email whose format is NOT established as HTML is kept literally (no stripping)', b10?.state === 'text' && b10.text === 'Offer < 200k? use <this> & that', b10);
+  const u1 = L([msg({ messageType: 'TYPE_UNRECOGNIZED', body: 'Please call me', dateAdded: T(5) })], {});
+  const u2 = L([msg({ messageType: undefined, body: 'Please call me', dateAdded: T(5) })], {});
+  const u3 = L([msg({ messageType: 'TYPE_UNRECOGNIZED', body: '', dateAdded: T(5) })], {});
+  check('P11 P2-4 unknown or missing type (with or without a body) -> unavailable "unsupported" with NO channel invented; never no_text',
+    [u1, u2, u3].every((x) => x?.state === 'unavailable' && x.reason === 'unsupported' && x.channel === null), [u1, u2, u3]);
+  const k1 = L([msg({ messageType: 'TYPE_CALL', body: 'voicemail transcript?', dateAdded: T(5) })], {});
+  const k2 = L([msg({ messageType: 'TYPE_ACTIVITY_OPPORTUNITY', body: '', dateAdded: T(5) })], {});
+  check('P12 P2-4 a known bodyless kind is no_text only with no body (a call carrying a body -> unsupported, named "Call"); empty activity -> no_text',
+    k1?.state === 'unavailable' && k1.reason === 'unsupported' && k1.channel === 'Call' && k2?.state === 'no_text' && k2.channel === 'Activity Opportunity', [k1, k2]);
+  const s3 = tryOr(() => IM.latestInboundFromSummary('  <b>500</b> & up ', Date.parse(T(4)), 'read_failed'), null);
+  check('P13 P2-2 the search summary (format unknown) is kept literally, never parsed as HTML', s3?.state === 'text' && s3.text === '<b>500</b> & up', s3);
 
   // ───────────────────────────── S: the real ghl-conversations handler ─────────────────────────────
-  if (BEFORE) fs.writeFileSync(BEFORE_FN, show('netlify/functions/ghl-conversations.ts'));
+  if (BEFORE) fs.writeFileSync(BEFORE_FN, show('netlify/functions/ghl-conversations.ts').replace('"../../shared/inbound-message"', sharedBefore ? '"../../shared/_b15_08_before_inbound"' : '"../../shared/inbound-message"'));
   for (const k of Object.keys(require.cache)) if (k.startsWith(FUNCTIONS)) delete require.cache[k];
   const handler = require(BEFORE ? BEFORE_FN : path.join(FUNCTIONS, 'ghl-conversations.ts')).handler;
   let calls = []; let convs = []; let pages = {};
@@ -109,7 +133,7 @@ async function main() {
   pages = {
     c1: [msg({ body: 'Someone else', contactId: 'k-other', conversationId: 'c1', dateAdded: T(59) }), msg({ body: 'Hi is this still open?', contactId: 'k-c1', conversationId: 'c1', dateAdded: T(10) })],
     c2: [msg({ messageType: 'TYPE_CALL', contactId: 'k-c2', conversationId: 'c2', dateAdded: T(20) }), msg({ body: 'earlier sms', contactId: 'k-c2', conversationId: 'c2', dateAdded: T(2) })],
-    c3: [msg({ messageType: 'TYPE_EMAIL', body: '<p>Please send the offer to my email</p>', contactId: 'k-c3', conversationId: 'c3', dateAdded: T(5) })],
+    c3: [msg({ messageType: 'TYPE_EMAIL', contentType: 'text/html', body: '<p>Please send the offer to my email</p>', contactId: 'k-c3', conversationId: 'c3', dateAdded: T(5) })],
     c5: 'fail', c6: 'fail',
   };
   calls = [];
@@ -139,10 +163,66 @@ async function main() {
   calls = [];
   const ra = await run({ scope: 'all' }); const ar = Array.isArray(ra.body) ? ra.body : [];
   check('S9 ?scope=all (Conversations inbox list) unchanged: no message reads, no new field', ra.status === 200 && ar.length === 30 && calls.every((c) => c.path === '/conversations/search') && ar.every((x) => !('latestInbound' in x)), calls.length);
+  // -- r2: Bones P2-1 -- the optional enrichment can never hold the seller queue --
+  const DEADLINE = tryOr(() => require(BEFORE ? BEFORE_FN : path.join(FUNCTIONS, 'ghl-conversations.ts')).LATEST_INBOUND_DEADLINE_MS, undefined);
+  const bound = (DEADLINE ?? 4000) + 2500;
+  const timed = async (q) => { const t0 = Date.now(); const out = await Promise.race([run(q), new Promise((res) => setTimeout(() => res('HUNG'), bound))]); return { out, ms: Date.now() - t0 }; };
+  const searchOnly = (u) => u.pathname === '/conversations/search';
+  const msgCount = () => calls.filter((c) => /\/messages$/.test(c.path)).length;
+  const realFetch = global.fetch; let active = 0; let maxActive = 0; let signals = [];
+  convs = Array.from({ length: 6 }, (_, i) => conv('h' + i, i, 'inbound', i === 0 ? 'held summary' : ''));
+  global.fetch = (url, init = {}) => { const u = new URL(String(url)); if (searchOnly(u)) return realFetch(url, init); calls.push({ method: init.method || 'GET', path: u.pathname }); signals.push(init.signal); return new Promise(() => {}); };
+  calls = []; signals = [];
+  const h1 = await timed();
+  const h1rows = h1.out !== 'HUNG' && Array.isArray(h1.out.body) ? h1.out.body : [];
+  check('S10 held response headers: the response still arrives at the time limit with EVERY base row; reads started = 3; unread rows say timed out (or keep summary text)',
+    h1.out !== 'HUNG' && h1.out.status === 200 && h1rows.length === 6 && msgCount() === 3 &&
+    h1rows[0]?.latestInbound?.source === 'summary' && h1rows.slice(1).every((x) => x.latestInbound?.state === 'unavailable' && x.latestInbound.reason === 'timed_out'), [h1.ms, h1rows.map((x) => x.latestInbound)]);
+  check('S11 every optional read carries an abort signal, and the held reads are aborted at the limit', signals.length === 3 && signals.every((sg) => sg && sg.aborted === true), signals.map((sg) => sg && sg.aborted));
+  global.fetch = (url, init = {}) => { const u = new URL(String(url)); if (searchOnly(u)) return realFetch(url, init); calls.push({ method: init.method || 'GET', path: u.pathname });
+    return Promise.resolve({ ok: true, status: 200, json: () => new Promise(() => {}) }); };
+  calls = [];
+  const h2 = await timed();
+  check('S12 held response BODY (headers arrived, body never ends): the response still arrives at the time limit with every base row',
+    h2.out !== 'HUNG' && h2.out.status === 200 && Array.isArray(h2.out.body) && h2.out.body.length === 6 && h2.out.body.slice(1).every((x) => x.latestInbound?.reason === 'timed_out'), [h2.ms]);
+  convs = Array.from({ length: 12 }, (_, i) => conv('r' + i, i, 'inbound', ''));
+  global.fetch = async (url, init = {}) => { const u = new URL(String(url)); if (searchOnly(u)) return realFetch(url, init); calls.push({ method: init.method || 'GET', path: u.pathname });
+    active++; maxActive = Math.max(maxActive, active); await new Promise((res) => setTimeout(res, 20)); active--; return new Response('{}', { status: 429, headers: { 'Retry-After': '30' } }); };
+  calls = []; active = 0; maxActive = 0;
+  const h3 = await timed();
+  const r429 = msgCount();
+  check('S13 rate-limited (429): enrichment stops -- no further optional reads (<= the 3 already in flight, not 12); rows say GHL is busy; 200 with every row',
+    h3.out !== 'HUNG' && h3.out.status === 200 && r429 <= 3 && h3.out.body.length === 12 && h3.out.body.every((x) => x.latestInbound?.state === 'unavailable' && x.latestInbound.reason === 'rate_limited'), [r429, h3.out && h3.out.body && h3.out.body.map((x) => x.latestInbound && x.latestInbound.reason)]);
+  const budgetMod = require(path.join(FUNCTIONS, 'lib', 'supplemental-read-budget.ts'));
+  const realRead = budgetMod.ghlReadFetch;
+  budgetMod.ghlReadFetch = () => (url, init = {}) => { const u = new URL(String(url)); if (searchOnly(u)) return realFetch(url, init); calls.push({ method: init.method || 'GET', path: u.pathname });
+    return Promise.reject(new budgetMod.SupplementalReadRefused('exhausted (fixture)', 'exhausted')); };
+  calls = [];
+  const h4 = await timed();
+  budgetMod.ghlReadFetch = realRead;
+  const rBudget = msgCount();
+  check('S14 read-budget refusal: enrichment stops (<= 3 attempts, not 12); the queue still answers 200 with every row as unavailable, never a 503',
+    h4.out !== 'HUNG' && h4.out.status === 200 && rBudget <= 3 && h4.out.body.length === 12 && h4.out.body.every((x) => x.latestInbound?.state === 'unavailable' && x.latestInbound.reason === 'read_failed'), [rBudget, h4.out && h4.out.status]);
+  convs = Array.from({ length: 30 }, (_, i) => conv('q' + String(i).padStart(2, '0'), i, 'inbound', ''));
+  global.fetch = async (url, init = {}) => { const u = new URL(String(url)); if (searchOnly(u)) return realFetch(url, init); calls.push({ method: init.method || 'GET', path: u.pathname });
+    active++; maxActive = Math.max(maxActive, active); await new Promise((res) => setTimeout(res, 5)); active--;
+    const id = decodeURIComponent(u.pathname.split('/')[2]); return new Response(JSON.stringify({ messages: { messages: [msg({ body: 't ' + id, conversationId: id, contactId: 'k-' + id, dateAdded: T(1) })] } }), { status: 200 }); };
+  calls = []; active = 0; maxActive = 0;
+  const h5 = await timed();
+  check('S15 limits preserved: 30 rows -> exactly 25 reads, at most 3 at a time, all inside the time limit (thread source)',
+    h5.out !== 'HUNG' && msgCount() === 25 && maxActive === 3 && h5.out.body.slice(0, 25).every((x) => x.latestInbound?.source === 'thread'), [msgCount(), maxActive]);
+  global.fetch = realFetch;
 
   // ───────────────────────────── R: the REAL App, Dashboard and Conversations ─────────────────────────────
   if (BEFORE) {
-    const repoint = (s) => s.replace(/from "\.\.\//g, 'from "../../../src/').replace(/(from|import) "\.\//g, '$1 "../../../src/pages/');
+    const previewBefore = tryOr(() => show('src/components/InboundPreview.tsx'), null);
+    if (previewBefore) fs.writeFileSync(PREVIEW_BEFORE, previewBefore.replace('"../../shared/inbound-message"', sharedBefore ? '"../../../shared/_b15_08_before_inbound"' : '"../../../shared/inbound-message"'));
+    // Generic re-pointing first (as in B15-10's harness), then the reviewed revision's own classifier and display.
+    const repoint = (t) => t
+      .replace(/from "\.\.\//g, 'from "../../../src/')
+      .replace(/(from|import) "\.\//g, '$1 "../../../src/pages/')
+      .replace(/from "\.\.\/\.\.\/\.\.\/src\/components\/InboundPreview"/g, previewBefore ? 'from "./InboundPreviewBefore"' : 'from "../../../src/components/InboundPreview"')
+      .replace(/from "\.\.\/\.\.\/\.\.\/src\/\.\.\/shared\/inbound-message"/g, sharedBefore ? 'from "../../../shared/_b15_08_before_inbound"' : 'from "../../../shared/inbound-message"');
     fs.writeFileSync(DASH_BEFORE, repoint(show('src/pages/Dashboard.tsx')));
     fs.writeFileSync(CONV_BEFORE, repoint(show('src/pages/Conversations.tsx')));
     fs.writeFileSync(APP_BEFORE, fs.readFileSync(path.join(APP, 'src/App.tsx'), 'utf8')
@@ -173,7 +253,13 @@ async function main() {
     unRow('uc', { state: 'unavailable', reason: 'read_failed', channel: null, at: T(5) }),
     unRow('ud', null, ''),
   ];
-  const THREADS = [{ conversationId: 'cv-ub', contactId: 'ub', contactName: 'Fixture UB', phone: '+15555550142', email: '', lastMessageDate: Date.parse(T(4)), lastMessageDirection: 'inbound', preview: '', unreadCount: 1 }];
+  const THREADS = [{ conversationId: 'cv-ub', contactId: 'ub', contactName: 'Fixture UB', phone: '+15555550142', email: '', lastMessageDate: Date.parse(T(4)), lastMessageDirection: 'inbound', preview: '', unreadCount: 1 },
+    { conversationId: 'cv-tw1', contactId: 'tw', contactName: 'Fixture TW', phone: '+15555550142', email: '', lastMessageDate: Date.parse(T(12)), lastMessageDirection: 'inbound', preview: 'tw thread one preview', unreadCount: 1 },
+    { conversationId: 'cv-tw2', contactId: 'tw', contactName: 'Fixture TW', phone: '+15555550142', email: '', lastMessageDate: Date.parse(T(13)), lastMessageDirection: 'inbound', preview: 'tw thread two preview', unreadCount: 1 }];
+  const TW_MESSAGES = [
+    { id: 't1', conversationId: 'cv-tw1', contactId: 'tw', direction: 'inbound', channel: 'SMS', messageType: 'TYPE_SMS', body: 'Words in thread one', dateAdded: T(12) },
+    { id: 't2', conversationId: 'cv-tw2', contactId: 'tw', direction: 'inbound', channel: 'SMS', messageType: 'TYPE_SMS', body: 'Words in thread two', dateAdded: T(13) },
+  ];
   const UB_MESSAGES = [
     { id: 'm1', conversationId: 'cv-ub', contactId: 'ub', direction: 'inbound', channel: 'SMS', messageType: 'TYPE_SMS', body: 'Earlier text from UB', dateAdded: T(1) },
     { id: 'm2', conversationId: 'cv-ub', contactId: 'ub', direction: 'inbound', channel: 'Call', messageType: 'TYPE_CALL', body: '', dateAdded: T(4) },
@@ -196,7 +282,7 @@ async function main() {
       if (fn === 'ghl-mailers') return json({ weekStartCT: '2026-11-01', weekEndCT: '2026-11-07', thisWeekReady: [], thisWeekBusiness: [], overdue: [], noAddress: [], totals: { ready: 0, business: 0, overdue: 0, noAddress: 0, byMailerType: {} } });
       if (fn === 'ghl-opportunities') return json({ pipelineId: 'p', stages: [], opportunities: [] });
       if (fn === 'ghl-conversations') return json(q.get('scope') === 'all' ? THREADS : UNANSWERED);
-      if (fn === 'ghl-contact-conversations') return json({ contactId: q.get('id'), conversationCount: 1, messages: q.get('id') === 'ub' ? UB_MESSAGES : [] });
+      if (fn === 'ghl-contact-conversations') return json({ contactId: q.get('id'), conversationCount: 1, messages: q.get('id') === 'ub' ? UB_MESSAGES : q.get('id') === 'tw' ? TW_MESSAGES : [] });
       if (fn === 'ghl-proxy' && /\/notes$/.test(q.get('path') || '')) return json({ notes: [] });
       if (fn === 'ghl-calendar-events') return json({ events: [] });
       return json({ error: `fixture: ${fn} not answered` }, 404);
@@ -223,6 +309,14 @@ async function main() {
     const tl = await waitText(c, '[data-testid="thread-latest-inbound"]');
     check('R5 Conversations thread names the latest inbound like the Dashboard ("Inbound call — no message text"), not the older SMS, and never another contact\'s message',
       !!tl && /Latest from seller:/.test(tl) && /Inbound call — no message text/.test(tl) && !/NOT UB/.test(tl) && !/Earlier text from UB/.test(tl), tl);
+    // r2 (Bones P2-3): one contact, two conversations -- the strip follows the SELECTED conversation, and a switch updates it.
+    await c.getByText('tw thread one preview').first().click({ timeout: 15000 }).catch(() => {});
+    let w1 = null; { const t0 = Date.now(); while (Date.now() - t0 < 15000) { w1 = await c.evaluate(() => { const e = document.querySelector('[data-testid="thread-latest-inbound"]'); return e ? e.innerText : null; }).catch(() => null); if (w1 && /Words in thread/.test(w1)) break; await c.waitForTimeout(100); } }
+    const w1ok = !!w1 && /Words in thread one/.test(w1) && !/Words in thread two/.test(w1);
+    await c.getByText('tw thread two preview').first().click({ timeout: 15000 }).catch(() => {});
+    let w2 = null; { const t0 = Date.now(); while (Date.now() - t0 < 15000) { w2 = await c.evaluate(() => { const e = document.querySelector('[data-testid="thread-latest-inbound"]'); return e ? e.innerText : null; }).catch(() => null); if (w2 && /Words in thread two/.test(w2)) break; await c.waitForTimeout(100); } }
+    check('R7 P2-3 same contact, two conversations: the strip shows the SELECTED conversation latest inbound (one, then two after switching), never the other',
+      w1ok && !!w2 && /Words in thread two/.test(w2) && !/Words in thread one/.test(w2), [w1, w2]);
     await cc.close();
     check('R6 reads only (GET), nothing left the machine, no page errors', methods.every((m) => m === 'GET') && foreign.length === 0 && pageErrors.length === 0, { methods: [...new Set(methods)], foreign, pageErrors });
   } catch (e) { console.error(`FAIL  rendered: ${e.message}`); failures += 1; }
@@ -230,11 +324,16 @@ async function main() {
   // ───────────────────────────── X: source ─────────────────────────────
   const fn = src('netlify/functions/ghl-conversations.ts'); const dash = src('src/pages/Dashboard.tsx'); const cv = src('src/pages/Conversations.tsx');
   check('X1 one shared classifier (server + thread) and one display (Dashboard + thread); the F51 fallback literal is kept',
-    /from "\.\.\/\.\.\/shared\/inbound-message"/.test(fn) && /latestInboundFrom\(messages, \{ contactId: selected\.contactId \}\)/.test(cv) &&
+    /from "\.\.\/\.\.\/shared\/inbound-message"/.test(fn) && /latestInboundFrom\(messages, \{ contactId: selected\.contactId, conversationId: selected\.conversationId \}\)/.test(cv) &&
     /<InboundPreview li=\{r\.latestInbound\}/.test(dash) && /<InboundPreview li=\{latestInboundFrom/.test(cv) && /\{r\.preview \|\| <em[^>]*>\{NO_MESSAGE_TEXT\}<\/em>\}/.test(dash));
   check('X2 ghl-conversations stays read-only and keeps its rule: no write method, no search type field, same inbound filter and oldest-first sort',
     /c\.lastMessageDirection === "inbound" && !c\.isLastMessageInternalComment/.test(fn) && /\.sort\(\(a, b\) => a\.lastMessageDate - b\.lastMessageDate\)/.test(fn) &&
     !/method:\s*"(POST|PUT|PATCH|DELETE)"/.test(fn) && !/lastMessageType/.test(fn) && /LATEST_INBOUND_CAP = 25/.test(fn));
+
+  const cc2 = src('netlify/functions/ghl-contact-conversations.ts');
+  check('X3 r2: the strip is scoped to the selected conversation; ghl-contact-conversations only passes contentType through; no new GHL write path; the enrichment has a time limit and aborts',
+    /latestInboundFrom\(messages, \{ contactId: selected\.contactId, conversationId: selected\.conversationId \}\)/.test(cv) && /contentType:\s+String\(m\.contentType \?\? ""\)/.test(cc2) &&
+    ![fn, cc2].some((t) => /method:\s*"(POST|PUT|PATCH|DELETE)"/.test(t)) && /LATEST_INBOUND_DEADLINE_MS = \d/.test(fn) && /\.abort\(\)/.test(fn));
 
   console.log(`\nchecksRun=${checks} failures=${failures} floor=${FLOOR}${BEFORE ? ` (negative control vs ${BEFORE})` : ''}`);
   if (checks !== FLOOR) { console.error(`FAILED: expected exactly ${FLOOR} checks, ran ${checks}.`); return exit(2); }

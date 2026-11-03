@@ -356,6 +356,8 @@ export interface ConvMessageRow {
   channel:        string; // friendly label (SMS / Email / Call / …)
   messageType:    string; // raw GHL enum
   body:           string;
+  /** B15-08 (r2): GHL's own body format, when the function supplies it. */
+  contentType?:   string;
   dateAdded:      string; // ISO
 }
 export interface ContactConversations {

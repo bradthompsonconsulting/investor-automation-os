@@ -409,11 +409,12 @@ export default function Conversations() {
                   §8.5 Reply-in-GHL button now live in the top navy banner (see above). */}
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "12px", padding: "12px 14px", minHeight: 0 }}>
                 {/* B15-08: the same "latest inbound" the Dashboard shows, from this contact's full transcript (calls included),
-                    so a call or an email without text is named here too. Only once the messages loaded without error. */}
+                    so a call or an email without text is named here too. Only once the messages loaded without error.
+                    Bones P2-3 (r2): scoped to the SELECTED conversation as well as the contact, as the Dashboard row is. */}
                 {messages !== null && !messagesError ? (
                   <div data-testid="thread-latest-inbound" style={{ fontSize: "12px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
                     <span style={{ color: "#64748B", whiteSpace: "nowrap" }}>Latest from seller:</span>
-                    <InboundPreview li={latestInboundFrom(messages, { contactId: selected.contactId })} testId="thread-latest-inbound-preview" />
+                    <InboundPreview li={latestInboundFrom(messages, { contactId: selected.contactId, conversationId: selected.conversationId })} testId="thread-latest-inbound-preview" />
                   </div>
                 ) : null}
                 {/* Top row — Notes (left) | Text (right), §8.2. §8.3: 60% pane height (Email fills the rest). */}
