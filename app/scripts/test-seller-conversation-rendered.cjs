@@ -487,9 +487,10 @@ async function main() {
     const head = await box('seller-call-header-row');
     const calls = await box('seller-call-calltop');
     check('SA layout: calling controls share the title row, at its right', !!head && !!calls && calls.y < head.y + 40 && calls.x + calls.width > head.x + head.width - 20 && calls.x > head.x + head.width / 3, { head, calls });
-    check('SA layout: AirDroid, GHL Phone and Cell are all there, compact (no seller identity lines shown)',
+    check('SA layout: AirDroid, GHL Phone and Cell are all there, compact (only the AirDroid box names who is dialled)',
       (await page.locator('[data-testid="seller-call-calltop"] [data-testid$="-mode"]').count()) === 3
-      && (await page.locator('[data-testid="seller-call-calltop"] .seller-call-mode__identity:visible').count()) === 0);
+      && (await page.locator('[data-testid="seller-call-calltop"] .seller-call-mode__identity:visible').count()) === 1
+      && (await page.locator('[data-testid="call-with-airdroid-mode"] .seller-call-mode__identity:visible').count()) === 1);
     check('SA layout: no idle explanation text under the calling controls', (await page.locator('[data-testid="seller-call-calltop"] .seller-call-mode__hint:visible').count()) === 0);
     check('SA layout: the deal strip is the thin (compact) strip', (await tid(page, 'seller-call-deal-strip').getAttribute('data-compact')) === 'true' && (await box('seller-call-deal-strip')).height < 80, await box('seller-call-deal-strip'));
     check('SA layout: "Next objective" is gone', (await page.locator('[data-testid="seller-call-next-objective"]').count()) === 0);

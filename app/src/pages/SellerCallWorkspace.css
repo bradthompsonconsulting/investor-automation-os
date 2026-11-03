@@ -16,7 +16,9 @@
 .seller-call-calltop .seller-call-modes { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
 .seller-call-calltop .seller-call-mode { padding: 6px 8px; border-radius: 8px; min-width: 0; max-width: 260px; }
 .seller-call-calltop .seller-call-mode > strong { font-size: 11px; display: flex; align-items: center; gap: 4px; }
+/* The AirDroid box keeps the seller identity (who is dialled) in small type; GHL Phone and Cell stay minimal. */
 .seller-call-calltop .seller-call-mode__identity { display: none; }
+.seller-call-calltop .seller-call-mode--primary .seller-call-mode__identity { display: block; font-size: 10px; margin-top: 2px; }
 .seller-call-calltop .seller-call-mode__actions { margin-top: 4px; }
 .seller-call-calltop .seller-call-button { min-height: 30px; padding: 4px 9px; font-size: 12px; }
 .seller-call-calltop [data-testid="airdroid-no-number"],
