@@ -372,6 +372,8 @@ jobs:
         run: node app/scripts/test-mailers-empty-state.cjs
       - name: Dashboard callback popover is visible where it opens and usable by keyboard -- Lead Queue (short and long queue, first, last and edge row), Callbacks Overdue and Contact page, two viewports; a save error stays visible; Tab/Shift+Tab/focus return; real pages, fictional data — 59 checks
         run: node app/scripts/test-dashboard-callback-popover.cjs
+      - name: Latest inbound seller message shown from the thread source with honest states, Dashboard + Conversations, real App (INV-107, B15-08) — 24 checks
+        run: node app/scripts/test-b15-08-inbound-visibility.cjs
       - name: Shell labels on the real page -- no Phase A badge, Conversations heading (INV-126, B15-17)
         run: node app/scripts/test-b15-shell-labels.cjs
       - name: /map and /settings redirect to the Dashboard inside the read gate, real App (B15-18)
