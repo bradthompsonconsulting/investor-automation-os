@@ -424,6 +424,15 @@ jobs:
       - name: Evaluation close route traffic and recovery, production build (B15-04 close) - 44 checks
         run: node app/scripts/test-evaluation-close-route.cjs
 
+      # B15-29 (INV-137) one IAOS sign-in, OFF in both committed configs. The suites switch it on in their own
+      # process only; the revocation store is an in-memory fake Blob API. Offline; the page suite needs Chromium.
+      - name: One IAOS sign-in, server -- flag-off equivalence, revocation store, token mint, acknowledged Sign out, handle authority, multi-tab, reader/writer inventory (INV-137, B15-29) - 151 checks
+        run: node app/scripts/test-b15-29-one-login-server.cjs
+      - name: One IAOS sign-in, saving module -- 45-minute call renewal, session end and revocation mid-call, never re-sent (INV-137, B15-29) - 19 checks
+        run: node app/scripts/test-b15-29-one-login-client.cjs
+      - name: One IAOS sign-in on the real page -- one sign-in, Sign out stops another tab without any browser channel, unavailable is not signed out, drafts kept (INV-137, B15-29) - 23 checks
+        run: node app/scripts/test-b15-29-one-login-page.cjs
+
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.
       - name: Typecheck root Netlify functions
