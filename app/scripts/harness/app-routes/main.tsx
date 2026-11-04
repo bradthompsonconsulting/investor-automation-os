@@ -36,5 +36,9 @@ const start = new URLSearchParams(window.location.search).get("start");
 if (start) window.history.replaceState(null, "", start);
 window.__iaosHistoryAtMount = window.history.length;
 
-const { default: App } = (await loadApp()) as { default: () => JSX.Element };
+/* B15-03 slice C (Bones C2): the data router, so a test can make a programmatic navigate() (absent in AppBefore). */
+declare global { interface Window { __iaosRouter?: unknown } }
+const appModule = (await loadApp()) as { default: () => JSX.Element; router?: unknown };
+const App = appModule.default;
+window.__iaosRouter = appModule.router;
 createRoot(document.getElementById("root")!).render(<App />);

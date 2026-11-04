@@ -2070,6 +2070,16 @@ export default function SellerCallWorkspace() {
   type DealDrafts = { ta: TransactionDraftInputs | null; price: string | null; priceRefused: boolean; sellerPosition: string | null };
   const dealDrafts = useRef(new Map<string, DealDrafts>());
   const shownDeal = useRef<{ key: string; target: { contactId: string; opportunityId: string } } | null>(null);
+  /* Bones C3 (2026-11-03): the section inputs as of the LATEST render. A Save confirmation can arrive after the
+     operator typed again; it compares these with the inputs its own Save submitted (its render's closure) and
+     never replaces anything typed since. */
+  const sectionInputsNow = useRef({ ts: "", tsNone: false, cp: "", cpNone: false, tc: "", tcNone: false, price: "", priceRefused: false });
+  sectionInputsNow.current = {
+    ts: transactionStructureInput, tsNone: transactionStructureNone,
+    cp: closingPossessionInput, cpNone: closingPossessionNone,
+    tc: titleComplicationsInput, tcNone: titleComplicationsNone,
+    price: sellerPricePositionInput, priceRefused: sellerPriceRefusalPending,
+  };
   useEffect(() => {
     const dealKey = writeTarget ? JSON.stringify([writeTarget.contactId, writeTarget.opportunityId]) : null;
     if (dealKey === (shownDeal.current?.key ?? null)) return;
@@ -2184,6 +2194,8 @@ export default function SellerCallWorkspace() {
           results: conversationSaves.results(key),
         });
       },
+      /* The coordinator calls the onConfirmed of the Save that started the operation (also for a later Check again
+         or a late answer), so this closure holds the inputs exactly as that Save submitted them. */
       onConfirmed: (dealKey: string, item: { id: SaveItemId; signature: string }, sent: SentRecord) => {
         // Only what was confirmed changes on screen; nothing typed is erased.
         if (sent.kind === "note") appendSavedNote(sent.contactId, sent.body, sent.at);
@@ -2195,16 +2207,22 @@ export default function SellerCallWorkspace() {
         // The integrated sections now show the confirmed value as saved, on the same deal only.
         if (!saveEnabled || shownDeal.current?.key !== JSON.stringify(dealKey.split("|"))) return;
         const target = shownDeal.current.target;
+        const now = sectionInputsNow.current;
+        // The saved baseline always moves to what is confirmed on record (autosave.seed); the inputs show it ONLY
+        // where the operator has not typed since this Save was submitted (each item's text + None together), so a
+        // newer edit stays exactly as typed and reads as unsaved against the new baseline (Bones C3).
         if (item.id === "timing") {
           const f = JSON.parse(item.signature) as { transactionStructure: TransactionAssumptionDraftField; closingPossession: TransactionAssumptionDraftField; titleComplications: TransactionAssumptionDraftField };
           const text = (x: TransactionAssumptionDraftField) => (x.kind === "value" ? x.value : "");
-          setTransactionStructureInput(text(f.transactionStructure)); setTransactionStructureNone(f.transactionStructure.kind === "none");
-          setClosingPossessionInput(text(f.closingPossession)); setClosingPossessionNone(f.closingPossession.kind === "none");
-          setTitleComplicationsInput(text(f.titleComplications)); setTitleComplicationsNone(f.titleComplications.kind === "none");
+          if (now.ts === transactionStructureInput && now.tsNone === transactionStructureNone) { setTransactionStructureInput(text(f.transactionStructure)); setTransactionStructureNone(f.transactionStructure.kind === "none"); }
+          if (now.cp === closingPossessionInput && now.cpNone === closingPossessionNone) { setClosingPossessionInput(text(f.closingPossession)); setClosingPossessionNone(f.closingPossession.kind === "none"); }
+          if (now.tc === titleComplicationsInput && now.tcNone === titleComplicationsNone) { setTitleComplicationsInput(text(f.titleComplications)); setTitleComplicationsNone(f.titleComplications.kind === "none"); }
           autosave.seed({ ...target, section: "transaction-assumptions" }, item.signature);
         } else if (item.id === "price") {
-          if (item.signature === "refused") { setSellerPricePositionInput(""); setSellerPriceRefusalPending(true); }
-          else { setSellerPricePositionInput(item.signature.slice("price:".length)); setSellerPriceRefusalPending(false); }
+          if (now.price === sellerPricePositionInput && now.priceRefused === sellerPriceRefusalPending) {
+            if (item.signature === "refused") { setSellerPricePositionInput(""); setSellerPriceRefusalPending(true); }
+            else { setSellerPricePositionInput(item.signature.slice("price:".length)); setSellerPriceRefusalPending(false); }
+          }
           autosave.seed({ ...target, section: "seller-price-position" }, item.signature);
         } else if (item.id === "sellerPosition") {
           autosave.seed({ ...target, section: "seller-position" }, item.signature);

@@ -29,9 +29,16 @@
  *
  * RESULTS are per item: confirmed / refused (the server's reason) / uncertain
  * (network error, timeout, unreadable or indeterminate response). An UNCERTAIN
- * item is never sent again by Save -- it is "blocked" until an explicit Check
- * reads the record: found -> confirmed; not found -> it may be sent again (a
- * fresh request). A confirmed item whose content is unchanged is not re-sent.
+ * item keeps the identity of its operation (its request id and exact content)
+ * and is never sent again by Save (Bones C1, 2026-11-03). It settles ONLY on
+ * definitive evidence about that same operation:
+ *   - Check again finds the exact content on the record -> confirmed;
+ *   - the original request's own answer, arriving after the page stopped
+ *     waiting -> confirmed, or refused when the server says nothing was sent
+ *     (only then may Save send it again, as a new operation).
+ * An empty read proves nothing -- the original request may still land -- so it
+ * leaves the item uncertain and blocked. A confirmed item whose content is
+ * unchanged is not re-sent.
  * Nothing is ever erased by Save: a confirmed item simply stops counting as
  * unsaved; a failed or uncertain one keeps its draft exactly as typed.
  */
@@ -85,12 +92,12 @@ export type SavePlan = { items: PlanItem[]; writes: PlanItem[]; unsaved: boolean
 
 export type SentRecord = { kind: "note"; contactId: string; body: string; at: string } | { kind: "occupancy"; contactId: string; value: OccupancyValue; at: string };
 export type ItemResult =
-  | { status: "saving"; signature: string }
+  | { status: "saving"; signature: string; requestId: string }
   | { status: "confirmed"; signature: string; sent: SentRecord; message: string }
   | { status: "refused"; signature: string; message: string }
-  | { status: "uncertain"; signature: string; sent: SentRecord; message: string }
-  | { status: "checking"; signature: string; sent: SentRecord; message: string }
-  | { status: "not_found"; signature: string; message: string };
+  /* uncertain / checking keep the operation's identity (request id + exact content) until definitive evidence settles it. */
+  | { status: "uncertain"; signature: string; sent: SentRecord; requestId: string; message: string }
+  | { status: "checking"; signature: string; sent: SentRecord; requestId: string; message: string };
 export type DealResults = Partial<Record<SaveItemId, ItemResult>>;
 
 type TaFields = { transactionStructure: TransactionAssumptionDraftField; closingPossession: TransactionAssumptionDraftField; titleComplications: TransactionAssumptionDraftField };
@@ -134,7 +141,7 @@ function item(id: SaveItemId, action: SaveAction, text: string, signature: strin
 function withResult(p: PlanItem, r: ItemResult | undefined): PlanItem {
   if (!r) return p;
   if (r.status === "uncertain" || r.status === "checking" || r.status === "saving") {
-    return { ...p, action: "blocked", text: r.status === "saving" ? "Saving…" : `Uncertain: ${r.message} It is not sent again until Check again reads the record.` };
+    return { ...p, action: "blocked", text: r.status === "saving" ? "Saving…" : `Uncertain: ${r.message} Save will not send it again: only finding it on the record (Check again) or the original request's own answer settles it.` };
   }
   if (p.action !== "write") return p;
   if (r.status === "confirmed" && r.signature === p.signature) return { ...p, action: "done", text: "Saved (confirmed)." };
@@ -305,8 +312,14 @@ export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 /* ---------------- the coordinator ---------------- */
 
 export interface SaveClient {
-  /** One named write, classified. Never throws. */
-  send(operation: "note.create" | "contact.occupancy", targetId: string, args: { body: string } | { value: string }): Promise<SendOutcome>;
+  /**
+   * One named write under `requestId`, classified. Never throws. When the page stops waiting (timeout) while the
+   * request is still open, the answer is "uncertain" and, if that same request answers later, `onLate` receives
+   * its classification (the only late evidence the coordinator accepts for it).
+   */
+  send(operation: "note.create" | "contact.occupancy", targetId: string, args: { body: string } | { value: string }, requestId: string, onLate?: (late: SendOutcome) => void): Promise<SendOutcome>;
+  /** A fresh request id for a NEW operation (falls back to crypto.randomUUID). */
+  requestId?(): string;
   /** Fresh reads for Check again (reads only, never writes). */
   readNotes(contactId: string): Promise<{ body: string }[]>;
   readOccupancy(contactId: string): Promise<string | null>;
@@ -319,8 +332,20 @@ export type SaveHooks = { onConfirmed?: (item: { id: SaveItemId; signature: stri
  * updates the deal it was started for. Defense in depth: even a stale plan cannot re-send an uncertain item
  * or a confirmed identical one.
  */
+function newRequestId(client: SaveClient): string {
+  if (typeof client.requestId === "function") return client.requestId();
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  throw new Error("no request id is available");
+}
+
 export class SellerConversationSaveCoordinator {
   private deals = new Map<string, DealResults>();
+  /** The hooks of the Save that started each item's current operation: a later confirmation (Check again, or the
+   *  original request's late answer) reports through THEM, so the page compares against what that Save submitted. */
+  private itemHooks = new Map<string, SaveHooks>();
+  /** A late answer that arrived before the item was marked uncertain (same tick), applied right after. */
+  private early = new Map<string, SendOutcome>();
   private inflight: string | null = null;
   constructor(private readonly onChange: () => void = () => {}) {}
 
@@ -344,18 +369,26 @@ export class SellerConversationSaveCoordinator {
         if (prev && (prev.status === "uncertain" || prev.status === "checking" || prev.status === "saving")) continue;
         if (prev && prev.status === "confirmed" && prev.signature === p.signature) continue;
         const signature = p.signature;
+        const id = p.id;
         const at = client.now();
         let sent: SentRecord;
         let outcome: SendOutcome;
-        this.set(dealKey, p.id, { status: "saving", signature });
+        let requestId: string;
+        try { requestId = newRequestId(client); } catch (e) {
+          this.set(dealKey, id, { status: "refused", signature, message: `Not sent: ${(e as Error)?.message ?? "the save could not start"}` });
+          continue;
+        }
+        this.itemHooks.set(slot(dealKey, id), hooks);
+        const onLate = (late: SendOutcome) => this.settle(dealKey, id, requestId, late);
+        this.set(dealKey, id, { status: "saving", signature, requestId });
         try {
           if (p.write.kind === "note") {
             const body = p.write.body(at);
             sent = { kind: "note", contactId, body, at };
-            outcome = await client.send("note.create", contactId, { body });
+            outcome = await client.send("note.create", contactId, { body }, requestId, onLate);
           } else {
             sent = { kind: "occupancy", contactId, value: p.write.value, at };
-            outcome = await client.send("contact.occupancy", contactId, { value: p.write.value });
+            outcome = await client.send("contact.occupancy", contactId, { value: p.write.value }, requestId, onLate);
           }
         } catch (e) {
           // The body could not be built, or the client broke its contract: nothing is known to have been sent.
@@ -368,7 +401,9 @@ export class SellerConversationSaveCoordinator {
         } else if (outcome.kind === "refused") {
           this.set(dealKey, p.id, { status: "refused", signature, message: outcome.message });
         } else {
-          this.set(dealKey, p.id, { status: "uncertain", signature, sent, message: outcome.message });
+          this.set(dealKey, p.id, { status: "uncertain", signature, sent, requestId, message: outcome.message });
+          const early = this.early.get(slot(dealKey, id, requestId));
+          if (early) { this.early.delete(slot(dealKey, id, requestId)); this.settle(dealKey, id, requestId, early); }
         }
       }
     } finally {
@@ -379,35 +414,65 @@ export class SellerConversationSaveCoordinator {
   }
 
   /**
-   * Check again: reads the record (never writes). Found exactly -> confirmed. Not found -> "not_found", which
-   * Save may send again as a FRESH request. A failed read leaves it uncertain.
+   * Definitive evidence about ONE operation, identified by its request id: the original request's own answer,
+   * after the page stopped waiting. Confirmed -> confirmed; refused (the server says nothing was sent) -> refused,
+   * which Save may send again as a new operation; still indeterminate -> stays uncertain. Never sends anything.
+   * Ignored when the item now belongs to another operation.
+   */
+  private settle(dealKey: string, id: SaveItemId, requestId: string, late: SendOutcome): void {
+    const r = this.results(dealKey)[id];
+    if (!r || !("requestId" in r) || r.requestId !== requestId) return;
+    if (r.status === "saving") { this.early.set(slot(dealKey, id, requestId), late); return; }
+    const { signature, sent } = r;
+    if (late.kind === "confirmed") {
+      this.set(dealKey, id, { status: "confirmed", signature, sent, message: "Saved (confirmed by the original request's own answer)." });
+      (this.itemHooks.get(slot(dealKey, id)) ?? {}).onConfirmed?.({ id, signature }, sent);
+    } else if (late.kind === "refused") {
+      this.set(dealKey, id, { status: "refused", signature, message: `The original request answered that nothing was saved (${late.message}). Save may send it again.` });
+    } else if (r.status === "uncertain") {
+      this.set(dealKey, id, { ...r, message: `${r.message} The original request then answered without settling it: ${late.message}` });
+    }
+  }
+
+  /**
+   * Check again: reads the record (never writes). Found exactly -> confirmed. NOT found proves nothing -- the
+   * original request may still land -- so the item stays uncertain with the same operation identity and Save
+   * still does not send it (Bones C1). A failed read leaves it uncertain too. If the original request's own
+   * answer settles the item while the read is out, that answer stands.
    */
   async check(dealKey: string, id: SaveItemId, client: SaveClient, hooks: SaveHooks = {}): Promise<void> {
     const r = this.results(dealKey)[id];
     if (!r || r.status !== "uncertain" || this.inflight !== null) return;
-    const { sent, signature } = r;
+    const { sent, signature, requestId } = r;
     this.inflight = dealKey;
-    this.set(dealKey, id, { status: "checking", signature, sent, message: "Checking the record…" });
+    this.set(dealKey, id, { status: "checking", signature, sent, requestId, message: "Checking the record…" });
+    const stillChecking = () => { const n = this.results(dealKey)[id]; return !!n && n.status === "checking" && n.requestId === requestId; };
     try {
       let found: boolean;
       try {
         if (sent.kind === "note") found = (await client.readNotes(sent.contactId)).some((n) => n.body === sent.body);
         else found = (await client.readOccupancy(sent.contactId)) === sent.value;
       } catch (e) {
-        this.set(dealKey, id, { status: "uncertain", signature, sent, message: `${r.message} The check could not read the record (${(e as Error)?.message ?? "read failed"}).` });
+        if (stillChecking()) this.set(dealKey, id, { status: "uncertain", signature, sent, requestId, message: `${r.message} The check could not read the record (${(e as Error)?.message ?? "read failed"}).` });
         return;
       }
+      if (!stillChecking()) return;
       if (found) {
         this.set(dealKey, id, { status: "confirmed", signature, sent, message: "Found on the record (confirmed by Check again)." });
-        hooks.onConfirmed?.({ id, signature }, sent);
+        const started = this.itemHooks.get(slot(dealKey, id));
+        (started && started.onConfirmed ? started : hooks).onConfirmed?.({ id, signature }, sent);
       } else {
-        this.set(dealKey, id, { status: "not_found", signature, message: "Not found on the record. Save sends it again." });
+        this.set(dealKey, id, { status: "uncertain", signature, sent, requestId, message: "Not found on the record yet. That does not show it was not saved: the original request may still land. Save will not send it again; check again later, or look in GHL before entering it again." });
       }
     } finally {
       this.inflight = null;
       this.onChange();
     }
   }
+}
+
+function slot(dealKey: string, id: SaveItemId, requestId?: string): string {
+  return requestId === undefined ? `${dealKey}\u0000${id}` : `${dealKey}\u0000${id}\u0000${requestId}`;
 }
 
 /** The browser capability (runtime config): true only when the server projected exactly { enabled: true }. */

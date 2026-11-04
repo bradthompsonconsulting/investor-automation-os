@@ -29,7 +29,7 @@ const R = require(path.join(APP, 'src/lib/seller-call-readiness-carriers.ts'));
 const SP = require(path.join(APP, 'src/lib/seller-call-seller-position-note.ts'));
 const CFG = require(path.join(APP, 'shared/ghl-config.ts'));
 
-const FLOOR = 115;
+const FLOOR = 130;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -175,8 +175,7 @@ check('B results: an uncertain canonical item stays blocked even when it now rea
 check('B results: a confirmed identical item is done (not re-sent) and not unsaved', (() => { const p = plan(C.withField(C.EMPTY_CONVERSATION, 'occupancy', 'occupancy', 'Vacant'), { results: { occupancy: { status: 'confirmed', signature: 'Vacant', sent, message: '' } } }); return byId(p, 'occupancy').action === 'done' && p.writes.length === 1 && p.writes[0].id === 'note'; })());
 check('B results: a confirmed note is written again only after the call content changes (supersede)', byId(plan(d, { results: { note: { status: 'confirmed', signature: noteSig, sent, message: '' } } }), 'note').action === 'done'
   && byId(plan({ ...d, notes: 'corrected' }, { results: { note: { status: 'confirmed', signature: noteSig, sent, message: '' } } }), 'note').action === 'write');
-check('B results: refused and not-found items may be sent again by an explicit Save', byId(plan(d, { results: { note: { status: 'refused', signature: noteSig, message: 'no' } } }), 'note').action === 'write'
-  && byId(plan(d, { results: { note: { status: 'not_found', signature: noteSig, message: 'nf' } } }), 'note').action === 'write');
+check('B results: a refused item (definitively not sent) may be sent again by an explicit Save', byId(plan(d, { results: { note: { status: 'refused', signature: noteSig, message: 'no' } } }), 'note').action === 'write');
 
 /* ===================== C. classification ===================== */
 const cls = (status, body) => S.classifyWriteResponse(status, typeof body === 'string' ? body : JSON.stringify(body)).kind;
@@ -232,10 +231,10 @@ function fakeClient(script) {
     await co.save(KEY, 'c1', plan(draftAll), cl);
     check('D: not even from a stale plan', cl.log.filter((x) => x.args.body && x.args.body.startsWith('IAOS SELLER PRICE')).length === 1);
     await co.check(KEY, 'price', cl);
-    check('D: Check again with nothing on record -> not found (reads only, sends nothing)', co.results(KEY).price.status === 'not_found' && cl.log.length === 5);
+    check('D: Check again with nothing on record leaves it UNCERTAIN (an empty read proves nothing; reads only, sends nothing)', co.results(KEY).price.status === 'uncertain' && /does not show it was not saved/.test(co.results(KEY).price.message) && cl.log.length === 5);
     await co.save(KEY, 'c1', plan(draftAll, { results: co.results(KEY) }), cl);
     const priceSends = cl.log.filter((x) => x.args.body && x.args.body.startsWith('IAOS SELLER PRICE'));
-    check('D: after a not-found check, Save sends it again as a FRESH request (new body time)', priceSends.length === 2 && priceSends[0].args.body !== priceSends[1].args.body && co.results(KEY).price.status === 'confirmed');
+    check('D: after an empty Check again, Save still does not send the price (blocked)', priceSends.length === 1 && byId(plan(draftAll, { results: co.results(KEY) }), 'price').action === 'blocked');
   }
   {
     const co = new S.SellerConversationSaveCoordinator();
@@ -266,6 +265,99 @@ function fakeClient(script) {
     check('D: one save in flight: a second Save (any deal) is refused as busy and sends nothing', second === 'busy' && co.busy());
     release(); await first;
     check('D: when the first finishes, exactly one write was sent', cl.log.length === 1 && !co.busy());
+  }
+  /* ===== C1 (Bones, 2026-11-03): an empty read never settles an unresolved write ===== */
+  const lateClient = (answers) => {
+    const st = { notes: [], ids: [], sends: 0, lates: [], clock: Date.parse(AT) };
+    st.client = {
+      requestId: () => `req-${st.ids.length + 1}`,
+      async send(op, target, args, requestId, onLate) {
+        st.sends += 1; st.ids.push(requestId); st.lates.push({ onLate, args, requestId });
+        const a = answers.shift() ?? { kind: 'confirmed' };
+        if (a.kind === 'confirmed' && op === 'note.create') st.notes.push({ body: args.body });
+        if (a.racing) { onLate(a.racing); return { kind: 'uncertain', message: 'No answer within 30 seconds; it may have been saved.' }; }
+        return a;
+      },
+      readNotes: async () => (st.readGate ? st.readGate : Promise.resolve()).then(() => st.notes.map((n) => ({ ...n }))),
+      async readOccupancy() { return null; },
+      now() { st.clock += 1000; return new Date(st.clock).toISOString(); },
+    };
+    return st;
+  };
+  const UNC = { kind: 'uncertain', message: 'No answer within 30 seconds; it may have been saved.' };
+  const hi = C.withField(C.EMPTY_CONVERSATION, 'opening', 'response', 'hi');
+  {
+    // Bones's probe sequence: uncertain send -> empty read -> explicit Save -> the ORIGINAL completes.
+    const co = new S.SellerConversationSaveCoordinator();
+    const st = lateClient([UNC]);
+    const confirmed = [];
+    const hooks = { onConfirmed: (i) => confirmed.push(i.id) };
+    await co.save(KEY, 'c1', plan(hi), st.client, hooks);
+    const r0 = co.results(KEY).note;
+    check('C1: a timed-out write is uncertain and keeps its operation identity (request id + exact body)', r0.status === 'uncertain' && r0.requestId === 'req-1' && r0.sent.body === st.lates[0].args.body && st.sends === 1);
+    await co.check(KEY, 'note', st.client);
+    check('C1: an empty read leaves it uncertain with the SAME request id (never "not found, send again")', co.results(KEY).note.status === 'uncertain' && co.results(KEY).note.requestId === 'req-1' && st.sends === 1);
+    await co.save(KEY, 'c1', plan(hi, { results: co.results(KEY) }), st.client, hooks);
+    await co.save(KEY, 'c1', plan(hi), st.client, hooks);
+    check('C1: an explicit Save after the empty read sends nothing (not even from a stale plan)', st.sends === 1);
+    st.notes.push({ body: st.lates[0].args.body });
+    st.lates[0].onLate({ kind: 'confirmed' });
+    check('C1: Bones sequence fixed -- the original\'s own late answer confirms it: sends=1 records=1, onConfirmed once', co.results(KEY).note.status === 'confirmed' && st.sends === 1 && st.notes.length === 1 && same(confirmed, ['note']));
+    st.lates[0].onLate({ kind: 'confirmed' });
+    check('C1: a repeated late answer changes nothing', same(confirmed, ['note']) && co.results(KEY).note.status === 'confirmed');
+  }
+  {
+    // A late definitive "nothing was sent" releases the item; only then does Save send it, as a NEW operation.
+    const co = new S.SellerConversationSaveCoordinator();
+    const st = lateClient([UNC, { kind: 'confirmed' }]);
+    await co.save(KEY, 'c1', plan(hi), st.client);
+    await co.check(KEY, 'note', st.client);
+    st.lates[0].onLate({ kind: 'refused', message: 'Nothing was sent' });
+    check('C1: a late "nothing was sent" from the original request marks it refused (definitive non-delivery)', co.results(KEY).note.status === 'refused' && /nothing was saved/.test(co.results(KEY).note.message));
+    await co.save(KEY, 'c1', plan(hi, { results: co.results(KEY) }), st.client);
+    check('C1: only then does Save send it again, under a NEW request id', st.sends === 2 && st.ids[1] === 'req-2' && co.results(KEY).note.status === 'confirmed');
+    st.lates[0].onLate({ kind: 'confirmed' });
+    check('C1: a late answer for an OLDER operation never touches the newer one', co.results(KEY).note.status === 'confirmed' && /confirmed\)\./.test(co.results(KEY).note.message) && st.sends === 2);
+  }
+  {
+    // A late indeterminate answer keeps it uncertain; a late answer during Check again stands over the read.
+    const co = new S.SellerConversationSaveCoordinator();
+    const st = lateClient([UNC]);
+    await co.save(KEY, 'c1', plan(hi), st.client);
+    st.lates[0].onLate({ kind: 'uncertain', message: 'The save may have reached GHL; it is unresolved.' });
+    check('C1: a late indeterminate answer keeps it uncertain (same request id) and says so', co.results(KEY).note.status === 'uncertain' && co.results(KEY).note.requestId === 'req-1' && /without settling it/.test(co.results(KEY).note.message));
+    let open; st.readGate = new Promise((r) => { open = r; });
+    const pending = co.check(KEY, 'note', st.client);
+    st.notes.push({ body: st.lates[0].args.body });
+    st.lates[0].onLate({ kind: 'confirmed' });
+    st.notes.length = 0; open(); await pending;
+    check('C1: a late confirmation that arrives while Check again reads stands (the read cannot undo it)', co.results(KEY).note.status === 'confirmed' && !co.busy());
+  }
+  {
+    const co = new S.SellerConversationSaveCoordinator();
+    const st = lateClient([{ racing: { kind: 'confirmed' } }]);
+    await co.save(KEY, 'c1', plan(hi), st.client);
+    check('C1: a late answer racing the timeout is applied, not lost', co.results(KEY).note.status === 'confirmed' && st.sends === 1);
+  }
+  {
+    const co = new S.SellerConversationSaveCoordinator();
+    const cl = { ...fakeClient([]) };
+    delete cl.requestId;
+    await co.save(KEY, 'c1', plan(hi), cl);
+    const one = co.results(KEY).note;
+    await co.save(KEY, 'c1', plan(C.withField(hi, 'opening', 'response', 'hi again')), cl);
+    check('C1: each new operation gets its own request id (crypto fallback when the client gives none)', one.status === 'confirmed' && cl.log.length === 2);
+  }
+  {
+    const fs2 = require('node:fs');
+    const LG = require(path.join(APP, 'src/lib/leave-guard.ts'));
+    check('C2: leavesPage -- another path leaves, the same path with another query leaves, a hash-only change stays',
+      LG.leavesPage({ pathname: '/a', search: '' }, { pathname: '/b', search: '' }) && LG.leavesPage({ pathname: '/a', search: '' }, { pathname: '/a', search: '?deal=2' }) && !LG.leavesPage({ pathname: '/a', search: '?x=1' }, { pathname: '/a', search: '?x=1', hash: '#n' }));
+    const click = (href) => ({ defaultPrevented: false, button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, target: { closest: () => ({ getAttribute: (n) => (n === 'href' ? href : null), hasAttribute: () => false }) } });
+    const here = { origin: 'http://h', pathname: '/contacts/c1/seller-call', search: '' };
+    check('C2 fallback: a link to the same path with another query leaves; a hash link stays', LG.leavingHref(click('/contacts/c1/seller-call?deal=2'), here) !== null && LG.leavingHref(click('#notes'), here) === null && LG.leavingHref(click('/contacts/c1'), here) !== null);
+    const app = fs2.readFileSync(path.join(APP, 'src/App.tsx'), 'utf8');
+    check('C2: the App uses a data router (createBrowserRouter + RouterProvider), so useBlocker guards every navigation', /createBrowserRouter\(/.test(app) && /<RouterProvider router=\{router\} \/>/.test(app) && !/<BrowserRouter>/.test(app));
   }
   {
     const r = await S.withTimeout(new Promise(() => {}), 20).then(() => 'resolved', (e) => e);

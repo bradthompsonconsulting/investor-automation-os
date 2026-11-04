@@ -14,6 +14,12 @@
  *   noleaveguard         -- no leave warning                        -> "LEAVE: an in-app link asks first"
  *   uncertainasconfirmed -- an unreadable answer counts as saved    -> "MIX: each item reports its own result"
  *   noinflight           -- a second Save starts while one runs     -> "ONE: while the first write is held, exactly one request is in flight"
+ * Bones review d19f374 (2026-11-03):
+ *   emptyreadresend      -- C1: an empty Check again releases the item -> "MIX: after an empty Check again, Save does NOT send the price again"
+ *   latelost             -- C1: the original's late answer is dropped  -> "LATE-ORIGINAL (C1): the original request's own late answer confirms it"
+ *   fallbackguard        -- C2: link/unload guard only (no blocker)    -> "NAV: browser Back with unsaved work asks first"
+ *   queryexempt          -- C2: same-path query change is exempt       -> "NAV: a query change on the same path"
+ *   confirmoverwrite     -- C3: a confirmation replaces newer input    -> "LATE (C3): the late Timing confirmation keeps the newer closing/possession edit"
  *
  * Not a CI step (like the slice A mutation runner): each mutation re-runs the whole rendered suite.
  *
@@ -35,6 +41,11 @@ const EXPECT = {
   noleaveguard: /^FAIL {2}LEAVE: an in-app link asks first/m,
   uncertainasconfirmed: /^FAIL {2}MIX: each item reports its own result/m,
   noinflight: /^FAIL {2}ONE: while the first write is held, exactly one request is in flight/m,
+  emptyreadresend: /^FAIL {2}MIX: after an empty Check again, Save does NOT send the price again/m,
+  latelost: /^FAIL {2}LATE-ORIGINAL \(C1\): the original request's own late answer confirms it/m,
+  fallbackguard: /^FAIL {2}NAV: browser Back with unsaved work asks first/m,
+  queryexempt: /^FAIL {2}NAV: a query change on the same path/m,
+  confirmoverwrite: /^FAIL {2}LATE \(C3\): the late Timing confirmation keeps the newer closing\/possession edit/m,
 };
 const only = process.argv.slice(2);
 let failures = 0;

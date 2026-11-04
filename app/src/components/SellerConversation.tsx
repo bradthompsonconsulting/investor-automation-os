@@ -7,7 +7,7 @@ import {
 import { CATEGORY_LABEL, type ReadinessResult } from "../lib/underwriting/offer-readiness";
 import { CATEGORY_PRIORITY } from "../lib/underwriting/next-best-question";
 import { type DealResults, type ItemResult, type PlanItem, type SaveAction, type SaveClient, type SavePlan, type SaveItemId, type SentRecord, type SellerConversationSaveCoordinator } from "../lib/seller-conversation-save";
-import { useLeaveGuard } from "../lib/leave-guard";
+import { LeaveGuard } from "../lib/leave-guard";
 import "./SellerConversation.css";
 
 /**
@@ -28,7 +28,7 @@ const STATE_WORD: Record<SaveAction, [string, string]> = {
   write: ["Will save", "Would save"], done: ["Saved", "Saved"], none: ["No change", "No change"], not_saved: ["Not saved", "Not saved"], blocked: ["Uncertain", "Uncertain"],
 };
 const RESULT_WORD: Record<ItemResult["status"], string> = {
-  saving: "Saving…", confirmed: "Confirmed", refused: "Refused", uncertain: "Uncertain", checking: "Checking…", not_found: "Not found",
+  saving: "Saving…", confirmed: "Confirmed", refused: "Refused", uncertain: "Uncertain", checking: "Checking…",
 };
 
 /**
@@ -79,7 +79,7 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
   const callIdFor = (k: string) => { let id = callIds.get(k); if (!id) { id = crypto.randomUUID(); callIds.set(k, id); } return id; };
   const [notEnabledShown, setNotEnabledShown] = useState<string | null>(null);
   const savePlan = dealKey && save ? save.plan(drafts[dealKey] ?? EMPTY_CONVERSATION, callIdFor(dealKey)) : null;
-  useLeaveGuard(!!savePlan && (savePlan.unsaved || !!save?.coordinator.busy()), LEAVE_MESSAGE);
+  const leaveGuarded = !!savePlan && (savePlan.unsaved || !!save?.coordinator.busy());
   if (!dealKey) {
     return (
       <section className="sc-wrap" data-testid="seller-conversation" aria-label="Seller conversation">
@@ -108,6 +108,7 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
 
   return (
     <section className="sc-wrap" data-testid="seller-conversation" data-deal={key} aria-label="Seller conversation">
+      <LeaveGuard active={leaveGuarded} message={LEAVE_MESSAGE} />
       <div className="sc-grid">
         <nav className="sc-nav" aria-label="Conversation questions" data-testid="sc-nav">
           <div className="sc-heading">Conversation</div>
@@ -319,7 +320,8 @@ function DraftField({ qid, field, value, onChange, prefix = "sc", compact = fals
 /**
  * Slice C -- Save at Summary. The whole plan, item by item, with what each would write or why it is not saved,
  * and after a Save each item's own result: confirmed / refused (the server's reason) / uncertain. An uncertain
- * item offers Check again (a read) and is never re-sent by Save until that read says it is not on record.
+ * item offers Check again (a read) and is never re-sent by Save: only finding it on the record, or the original
+ * request's own answer, settles it (an empty read proves nothing; Bones C1).
  */
 function SavePanel({ dealKey, save, plan, results, notEnabledShown, onNotEnabled }: {
   dealKey: string; save: ConversationSave; plan: SavePlan; results: DealResults; notEnabledShown: boolean; onNotEnabled: () => void;

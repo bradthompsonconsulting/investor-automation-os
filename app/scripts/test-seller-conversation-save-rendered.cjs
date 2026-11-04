@@ -52,10 +52,12 @@ const SP = require(path.join(APP, 'src/lib/seller-call-seller-position-note.ts')
 const json = (status, body) => ({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const watchdog = setTimeout(() => { console.error('FAIL  did not finish within 12 minutes'); process.exit(1); }, 12 * 60_000);
 
-const FLOOR = 64;
+const FLOOR = 82;
 const COMP = '/src/components/SellerConversation.tsx';
 const SAVE = '/src/lib/seller-conversation-save.ts';
 const NOTE = '/src/lib/seller-conversation-note.ts';
+const CLIENT = '/src/lib/seller-conversation-save-client.ts';
+const GUARD = '/src/lib/leave-guard.ts';
 const PAGE = '/src/pages/SellerCallWorkspace.tsx';
 /* [file, from, to]: each `from` must occur exactly once in its file. */
 const MUTATIONS = {
@@ -65,7 +67,7 @@ const MUTATIONS = {
   resenduncertain: [[SAVE, 'if (r.status === "uncertain" || r.status === "checking" || r.status === "saving") {\n    return { ...p, action: "blocked"', 'if (r.status === "checking" || r.status === "saving") {\n    return { ...p, action: "blocked"'],
     [SAVE, '        if (prev && (prev.status === "uncertain" || prev.status === "checking" || prev.status === "saving")) continue;\n', '        if (prev && (prev.status === "checking" || prev.status === "saving")) continue;\n']],
   // An uncertain item is retried automatically.
-  autoretry: [[SAVE, '          this.set(dealKey, p.id, { status: "uncertain", signature, sent, message: outcome.message });\n', '          this.set(dealKey, p.id, { status: "uncertain", signature, sent, message: outcome.message });\n          void client.send(sent.kind === "note" ? "note.create" : "contact.occupancy", contactId, sent.kind === "note" ? { body: sent.body } : { value: sent.value });\n']],
+  autoretry: [[SAVE, '          this.set(dealKey, p.id, { status: "uncertain", signature, sent, requestId, message: outcome.message });\n', '          this.set(dealKey, p.id, { status: "uncertain", signature, sent, requestId, message: outcome.message });\n          void client.send(sent.kind === "note" ? "note.create" : "contact.occupancy", contactId, sent.kind === "note" ? { body: sent.body } : { value: sent.value }, requestId);\n']],
   // Drafts are cleared once a failure (refused or uncertain) comes back.
   cleardrafts: [[COMP, 'notEnabledShown={notEnabledShown === key} onNotEnabled={() => setNotEnabledShown(key)} />', 'notEnabledShown={notEnabledShown === key} onNotEnabled={() => { if (save.enabled) setDrafts((all) => ({ ...all, [key]: { ...(all[key] ?? EMPTY_CONVERSATION), answers: {}, notes: "" } })); else setNotEnabledShown(key); }} />'],
     [COMP, '    void save.coordinator.save(dealKey, save.contactId, plan, save.client, hooks);\n', '    void save.coordinator.save(dealKey, save.contactId, plan, save.client, hooks).then(() => { if (Object.values(save.coordinator.results(dealKey)).some((r) => r && (r.status === "refused" || r.status === "uncertain"))) onNotEnabled(); });\n']],
@@ -81,7 +83,18 @@ const MUTATIONS = {
   // With Save disabled, Transaction assumptions stops autosaving.
   autosaveoff: [[PAGE, '    if (!t || saveEnabled) return; // slice C: with Save enabled this section joins the Save plan and never writes on its own', '    if (!t || true) return;']],
   // No leave warning.
-  noleaveguard: [[COMP, '  useLeaveGuard(!!savePlan && (savePlan.unsaved || !!save?.coordinator.busy()), LEAVE_MESSAGE);', '  useLeaveGuard(false, LEAVE_MESSAGE);']],
+  noleaveguard: [[COMP, '  const leaveGuarded = !!savePlan && (savePlan.unsaved || !!save?.coordinator.busy());', '  const leaveGuarded = false;']],
+  // Bones C1: an empty Check again is treated as "not sent" again (the old not-found -> resend behaviour).
+  emptyreadresend: [[SAVE, '{ status: "uncertain", signature, sent, requestId, message: "Not found on the record yet.', '{ status: "refused", signature, sent, requestId, message: "Not found on the record yet.']],
+  // Bones C1: the original request's late answer is dropped (the item could only stay uncertain forever).
+  latelost: [[CLIENT, '          if (onLate) void attempt.then(onLate);\n', '']],
+  // Bones C2: only the old link/unload guard (no router blocker): Back/Forward and navigate() pass unasked.
+  fallbackguard: [[GUARD, '  return createElement(dataRouter ? RouterLeaveGuard : LinkLeaveGuard, props);', '  return createElement(LinkLeaveGuard, props);']],
+  // Bones C2: a same-path query change is exempt again.
+  queryexempt: [[GUARD, '  return from.pathname !== to.pathname || from.search !== to.search;', '  return from.pathname !== to.pathname;']],
+  // Bones C3: a confirmation replaces the inputs whatever was typed since (the old behaviour).
+  confirmoverwrite: [[PAGE, '          if (now.cp === closingPossessionInput && now.cpNone === closingPossessionNone) {', '          if (true) {'],
+    [PAGE, '          if (now.price === sellerPricePositionInput && now.priceRefused === sellerPriceRefusalPending) {', '          if (true) {']],
   // An unreadable/aborted answer is treated as saved.
   uncertainasconfirmed: [[SAVE, '  let body: any;\n  try { body = JSON.parse(text); } catch { return { kind: "uncertain"', '  let body: any;\n  try { body = JSON.parse(text); } catch { return { kind: "confirmed" } as SendOutcome; return { kind: "uncertain"']],
   // A second Save may start while one is in flight: the coordinator's busy check is removed AND the button stays
@@ -115,7 +128,7 @@ async function main() {
     name: 'seller-conversation-save-mutation', enforce: 'pre',
     transform(code, id) {
       if (!MUTATION) return null;
-      const file = [COMP, SAVE, NOTE, PAGE].find((f) => id.replace(/\\/g, '/').split('?')[0].endsWith(f));
+      const file = [COMP, SAVE, NOTE, PAGE, CLIENT, GUARD].find((f) => id.replace(/\\/g, '/').split('?')[0].endsWith(f));
       const mine = file ? MUTATIONS[MUTATION].filter((m) => m[0] === file) : [];
       if (mine.length === 0) return null;
       let out = code.replace(/\r\n/g, '\n');
@@ -390,8 +403,10 @@ async function main() {
     check('MIX: Save again re-sends ONLY the refused item (never the uncertain ones)', writes.length === 5 && writes[4].args.body.startsWith('IAOS TRANSACTION ASSUMPTIONS'), writes.map((w) => w.operation));
     check('MIX: the re-sent item is now confirmed', (await itemAttr(page, 'timing', 'data-result')) === 'confirmed');
     await press(page, 'sc-save-check-price');
-    for (let i = 0; i < 40 && (await itemAttr(page, 'price', 'data-result')) !== 'not_found'; i++) await page.waitForTimeout(100);
-    check('MIX: Check again reads the record: the price note is not there -> "Not found", nothing sent', (await itemAttr(page, 'price', 'data-result')) === 'not_found' && writes.length === 5);
+    for (let i = 0; i < 40 && (await itemAttr(page, 'price', 'data-result')) !== 'uncertain'; i++) await page.waitForTimeout(100);
+    await page.waitForTimeout(200);
+    check('MIX: Check again reads the record: the price note is not there -> it STAYS Uncertain (an empty read proves nothing), nothing sent', (await itemAttr(page, 'price', 'data-result')) === 'uncertain'
+      && /does not show it was not saved/.test(await tid(page, 'sc-save-result-price').textContent().catch(() => '')) && writes.length === 5);
     await press(page, 'sc-save-check-occupancy');
     for (let i = 0; i < 40 && (await itemAttr(page, 'occupancy', 'data-result')) !== 'confirmed'; i++) await page.waitForTimeout(100);
     check('MIX: Check again finds the occupancy that landed -> Confirmed, never re-sent', (await itemAttr(page, 'occupancy', 'data-result')) === 'confirmed' && writes.length === 5);
@@ -399,13 +414,96 @@ async function main() {
     for (let i = 0; i < 40 && writes.length < 6; i++) await page.waitForTimeout(100);
     await waitIdle(page);
     await page.waitForTimeout(300);
-    const resent = writes[5];
-    check('MIX: after "Not found", Save sends the price as a FRESH request (new request id, new time)', writes.length === 6 && !!resent && resent.args.body.startsWith('IAOS SELLER PRICE POSITION')
-      && resent.requestId !== writes[2].requestId && resent.args.body !== writes[2].args.body && (await itemAttr(page, 'price', 'data-result')) === 'confirmed');
-    check('MIX: only address/reason are left (not saved: not enabled); the warning stays for them', (await page.locator('[data-testid="sc-save-plan"] > li[data-action="write"],[data-testid="sc-save-plan"] > li[data-action="blocked"]').count()) === 0 && (await beforeUnloadBlocked(page)));
+    check('MIX: after an empty Check again, Save does NOT send the price again (its operation is still unresolved)', writes.length === 5 && (await itemAttr(page, 'price', 'data-action')) === 'blocked' && (await itemAttr(page, 'price', 'data-result')) === 'uncertain', writes.map((w) => w.operation));
+    check('MIX: the price stays blocked (Uncertain) and the warning stays', (await page.locator('[data-testid="sc-save-plan"] > li[data-action="blocked"]').count()) === 1 && (await beforeUnloadBlocked(page)));
     setDialogPolicy('dismiss');
     await context.close();
     void dialogs;
+  }
+
+  /* ===== NAV (Bones C2): Back/Forward, programmatic navigate() and query changes all ask first ===== */
+  fx.reset();
+  {
+    const { context, page, writes, dialogs, setDialogPolicy } = await open({ session: true });
+    const nav = (to, opts) => page.evaluate(([t, o]) => { window.__iaosRouter.navigate(t, o); }, [to, opts || {}]);
+    const at = () => new URL(page.url());
+    const SC = `/contacts/${A}/seller-call`;
+    await nav(`/contacts/${A}`); await page.waitForTimeout(500);
+    check('NAV: with nothing unsaved, a programmatic navigate() leaves without asking', at().pathname === `/contacts/${A}` && dialogs.length === 0, at().pathname);
+    await nav(SC); await tid(page, 'sc-card').waitFor({ timeout: 30000 }).catch(() => {});
+    await nav(`/contacts/${A}`); await page.waitForTimeout(500);
+    await page.goBack().catch(() => {}); await tid(page, 'sc-card').waitFor({ timeout: 30000 }).catch(() => {}); await page.waitForTimeout(400);
+    await fill(page, 'sc-call-notes', 'Back and Forward notes');
+    setDialogPolicy('dismiss');
+    await page.goBack().catch(() => {}); await page.waitForTimeout(900);
+    check('NAV: browser Back with unsaved work asks first, naming unsaved work', dialogs.length === 1 && dialogs[0].type === 'confirm' && /unsaved/i.test(dialogs[0].message), dialogs);
+    check('NAV: Cancel on Back keeps Seller Call and every draft exactly as typed', at().pathname === SC && (await tid(page, 'sc-call-notes').inputValue().catch(() => '')) === 'Back and Forward notes', at().pathname);
+    await page.goForward().catch(() => {}); await page.waitForTimeout(900);
+    check('NAV: browser Forward with unsaved work asks first; Cancel keeps the page and drafts', dialogs.length === 2 && at().pathname === SC && (await tid(page, 'sc-call-notes').inputValue().catch(() => '')) === 'Back and Forward notes', { n: dialogs.length, p: at().pathname });
+    await nav(`/contacts/${A}`); await page.waitForTimeout(700);
+    check('NAV: a programmatic navigate() with unsaved work asks first; Cancel keeps the page and drafts', dialogs.length === 3 && at().pathname === SC && (await tid(page, 'sc-call-notes').inputValue().catch(() => '')) === 'Back and Forward notes', { n: dialogs.length, p: at().pathname });
+    await nav(`${SC}?deal=other`); await page.waitForTimeout(700);
+    check('NAV: a query change on the same path (it can carry another deal) asks first; Cancel keeps it', dialogs.length === 4 && at().pathname === SC && at().search === '' && (await tid(page, 'sc-call-notes').inputValue().catch(() => '')) === 'Back and Forward notes', { n: dialogs.length, s: at().search });
+    await nav('#notes', { replace: true }); await page.waitForTimeout(500);
+    check('NAV: a hash-only change stays without asking', dialogs.length === 4 && at().pathname === SC && (await tid(page, 'sc-call-notes').inputValue().catch(() => '')) === 'Back and Forward notes', dialogs.length);
+    setDialogPolicy('accept');
+    await page.goBack().catch(() => {});
+    for (let i = 0; i < 50 && dialogs.length < 5; i++) await page.waitForTimeout(100);
+    await page.waitForTimeout(900);
+    check('NAV: OK on Back leaves -- an explicit choice, never silent', at().pathname === `/contacts/${A}` && dialogs.length === 5, { n: dialogs.length, p: at().pathname });
+    check('NAV: zero ghl-write requests (flag off; refused POSTs from other pages are not Seller Call writes)', writes.filter((w) => w.fn === 'ghl-write').length === 0, writes.map((w) => w.fn));
+    await context.close();
+  }
+
+  /* ===== LATE (Bones C3): a late Timing / Price confirmation never overwrites a newer edit ===== */
+  fx.reset();
+  {
+    const gates = {}; const release = {};
+    for (const n of [2, 3]) gates[n] = new Promise((r) => { release[n] = r; });
+    const { context, page, writes } = await open({ enabled: true, respond: async (w, n) => { if (gates[n]) await gates[n]; return land(w); } });
+    await typeCall(page);
+    await press(page, 'sc-nav-summary');
+    await press(page, 'sc-save');
+    for (let i = 0; i < 60 && writes.length < 2; i++) await page.waitForTimeout(100);
+    await fill(page, 'transaction-closing-input', 'Close by April 15');
+    await page.waitForTimeout(300);
+    check('LATE: while the Timing write is held, a newer closing/possession edit is typed', writes.length === 2 && (await tid(page, 'transaction-closing-input').inputValue()) === 'Close by April 15' && (await itemAttr(page, 'timing', 'data-result')) === 'saving', writes.length);
+    release[2]();
+    for (let i = 0; i < 60 && writes.length < 3; i++) await page.waitForTimeout(100);
+    await page.waitForTimeout(400);
+    check('LATE (C3): the late Timing confirmation keeps the newer closing/possession edit exactly as typed', (await tid(page, 'transaction-closing-input').inputValue()) === 'Close by April 15', await tid(page, 'transaction-closing-input').inputValue());
+    check('LATE (C3): Timing reads Confirmed and the newer edit reads as unsaved against it', (await itemAttr(page, 'timing', 'data-result')) === 'confirmed' && (await tid(page, 'transaction-assumptions-save-status').getAttribute('data-state')) === 'unsaved',
+      { r: await itemAttr(page, 'timing', 'data-result'), s: await tid(page, 'transaction-assumptions-save-status').getAttribute('data-state') });
+    const priceFilled = await fill(page, 'seller-price-position-input', '433000');
+    await page.waitForTimeout(200);
+    const priceBefore = { filled: priceFilled, value: await tid(page, 'seller-price-position-input').inputValue().catch(() => null), writes: writes.length, result: await itemAttr(page, 'price', 'data-result') };
+    release[3]();
+    for (let i = 0; i < 60 && writes.length < 4; i++) await page.waitForTimeout(100);
+    await waitIdle(page); await page.waitForTimeout(400);
+    check('LATE (C3): the late price confirmation keeps the newer price edit exactly as typed', (await tid(page, 'seller-price-position-input').inputValue()) === '433000' && (await itemAttr(page, 'price', 'data-result')) === 'confirmed', { after: await tid(page, 'seller-price-position-input').inputValue(), priceBefore });
+    check('LATE: each item was sent once (note, timing, price, occupancy) and nothing was re-sent', JSON.stringify(writes.map((w) => w.operation)) === JSON.stringify(['note.create', 'note.create', 'note.create', 'contact.occupancy']), writes.map((w) => w.operation));
+    await context.close();
+  }
+
+  /* ===== LATE-ORIGINAL (Bones C1): timeout -> empty read -> Save -> the ORIGINAL request answers (real 30 s client timeout) ===== */
+  fx.reset();
+  {
+    const { context, page, writes } = await open({ enabled: true, respond: (w, n) => (n === 1 ? new Promise((r) => setTimeout(() => r(land(w)), 36_000)) : land(w)) });
+    await press(page, 'sc-nav-opening'); await fill(page, 'sc-field-opening-response', 'Open to talking');
+    await press(page, 'sc-nav-summary');
+    await press(page, 'sc-save');
+    for (let i = 0; i < 340 && (await itemAttr(page, 'note', 'data-result')) !== 'uncertain'; i++) await page.waitForTimeout(100);
+    check('LATE-ORIGINAL: after 30 s without an answer the note is Uncertain (its request is still open)', (await itemAttr(page, 'note', 'data-result')) === 'uncertain' && /still open/.test(await tid(page, 'sc-save-result-note').textContent().catch(() => '')) && writes.length === 1);
+    await press(page, 'sc-save-check-note');
+    await page.waitForTimeout(800);
+    check('LATE-ORIGINAL (C1): an empty Check again leaves it Uncertain; nothing sent', (await itemAttr(page, 'note', 'data-result')) === 'uncertain' && writes.length === 1 && fx.state.createdNotes === 0);
+    await press(page, 'sc-save');
+    await page.waitForTimeout(800);
+    check('LATE-ORIGINAL (C1): Save after the empty read sends nothing', writes.length === 1);
+    for (let i = 0; i < 120 && (await itemAttr(page, 'note', 'data-result')) !== 'confirmed'; i++) await page.waitForTimeout(100);
+    check('LATE-ORIGINAL (C1): the original request\'s own late answer confirms it -- one write request, one note on record', (await itemAttr(page, 'note', 'data-result')) === 'confirmed' && writes.length === 1 && fx.state.createdNotes === 1,
+      { r: await itemAttr(page, 'note', 'data-result'), w: writes.length, n: fx.state.createdNotes });
+    await context.close();
   }
 
   /* ===== ONE: one save in flight ===== */
