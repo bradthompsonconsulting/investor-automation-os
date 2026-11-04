@@ -370,6 +370,8 @@ jobs:
         run: node app/scripts/test-pipeline-requests.cjs
       - name: Mailers No Address empty state on the real page (INV-110, B15-12)
         run: node app/scripts/test-mailers-empty-state.cjs
+      - name: Mailers never labels a previous Saturday-Friday week as This Week (open page past Friday midnight Central, sleep, DST, year end), real page (INV-110, B15-12) — 11 checks
+        run: node app/scripts/test-b15-12-mailer-week-ended.cjs
       - name: Dashboard callback popover is visible where it opens and usable by keyboard -- Lead Queue (short and long queue, first, last and edge row), Callbacks Overdue and Contact page, two viewports; a save error stays visible; Tab/Shift+Tab/focus return; real pages, fictional data — 59 checks
         run: node app/scripts/test-dashboard-callback-popover.cjs
       - name: Shell labels on the real page -- no Phase A badge, Conversations heading (INV-126, B15-17)
