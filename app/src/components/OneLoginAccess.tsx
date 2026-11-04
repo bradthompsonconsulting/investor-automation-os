@@ -11,7 +11,8 @@ export function OneLoginStatusLine({ read }: { read: ReadView }) {
   if (read.kind !== "signed_in") return null;
   return <div role="status" data-testid="session-status" className="text-sm" style={{ padding: "6px 16px", color: "#fff", background: "#14213d" }}>
     <span data-testid="read-access-signed-in">
-      Signed in until {new Date(read.expiresAt).toLocaleTimeString()} · <button onClick={read.signOut}>Sign out</button></span>
+      {/* 30-day session: show the END DATE (a time alone read as "ends today"). */}
+      Signed in · session ends {new Date(read.expiresAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} · <button onClick={read.signOut}>Sign out</button></span>
   </div>;
 }
 

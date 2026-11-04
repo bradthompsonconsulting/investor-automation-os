@@ -9,7 +9,7 @@
  * in-memory fake Blob API. The one-sign-in switch is ON only in this process's in-memory config. Nothing leaves
  * the machine.
  *
- *   P1 one sign-in: status line "Signed in until … · Sign out"; no "Enable saving"; a save gets its token silently
+ *   P1 one sign-in: status line "Signed in · session ends <date> · Sign out"; no "Enable saving"; a save gets its token silently
  *   P2 a second tab is signed in by the same session without any sign-in step
  *   P3 Sign out in tab A is confirmed only after the server's verified revocation: "Signed out of IAOS."
  *   P4 tab B -- with NO BroadcastChannel and a localStorage that throws -- cannot save after A's Sign out: its
@@ -189,7 +189,7 @@ async function main() {
       check('P1b no status-request storm after sign-in (30-day expiry timer capped): no further status request within 1.5 s', after === before, { before, after });
     }
     const status = await text(A, 'read-access-signed-in');
-    check('P1 one sign-in: the status line reads "Signed in until … · Sign out"', /^Signed in until .+ · Sign out$/.test(status.trim()), status);
+    check('P1 one sign-in: the status line reads "Signed in · session ends <date> · Sign out" (the 30-day end DATE, not a time)', /^Signed in · session ends [A-Z][a-z]{2} \d{1,2}, \d{4} · Sign out$/.test(status.trim()), status);
     check('P1 no saving control: no "Enable saving", "Turn off saving" or "View only"', !(await has(A, 'Enable saving')) && !(await has(A, 'Turn off saving')) && !(await has(A, 'View only')));
     await A.getByTestId('draft').fill('note from tab A');
     log = [];
