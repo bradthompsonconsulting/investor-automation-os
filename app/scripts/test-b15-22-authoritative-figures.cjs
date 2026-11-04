@@ -136,7 +136,9 @@ check('U13 a waiting ARV carries no approval note', cell(DB.buildDealBarCells({ 
   check('R3 live figure label never claims approval', /approved|recorded/i.test(testId(live, 'underwriting-live-mao-label') || ''), false);
   check('R3 live figure value', testId(live, 'underwriting-live-mao-value'), '$165,000');
   check('R4 live figure says it differs from the approved figure', testId(live, 'underwriting-live-mao-note'), 'Not yet approved — differs from approved $150,000');
-  check('R4 rail and decision-panel labels differ', testId(rail, 'underwriting-rail-recorded-mao-label') !== testId(live, 'underwriting-live-mao-label'), true);
+  check('R4 rail and decision-panel labels differ (the live label carries no part of the recorded label)',
+    testId(rail, 'underwriting-rail-recorded-mao-label') !== testId(live, 'underwriting-live-mao-label')
+      && !(testId(live, 'underwriting-live-mao-label') || '').includes(F.RECORDED_SELLER_MAO_LABEL), true);
   const liveNone = renderToStaticMarkup(h(C.LiveSellerMaoFigure, { text: '$165,000', comparison: none }));
   check('R5 live figure with nothing recorded: not yet approved', testId(liveNone, 'underwriting-live-mao-note'), 'Not yet approved — no approved underwriting recorded yet');
   const arvLine = renderToStaticMarkup(h(C.ArvOnRecordLine, { state: { kind: 'approved', amount: 250000 } }));
@@ -160,7 +162,7 @@ check('U13 a waiting ARV carries no approval note', cell(DB.buildDealBarCells({ 
 
 // ═══ S -- source wiring and unchanged authority ══════════════════════════════
 const read = (rel) => fs.readFileSync(path.join(APP, rel), 'utf8').replace(/\r\n/g, '\n');
-const atBase = (rel) => execFileSync('git', ['show', `${BASE}:app/${rel}`], { cwd: REPO, encoding: 'utf8', maxBuffer: 64 << 20 }).replace(/\r\n/g, '\n');
+const atBase = (rel) => execFileSync('git', ['show', `${BASE}:app/${rel}`], { cwd: REPO, encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] }).replace(/\r\n/g, '\n');
 const fnText = (src, start, end = '\n}\n') => { const i = src.indexOf(start); if (i < 0) return null; const j = src.indexOf(end, i); return j < 0 ? null : src.slice(i, j); };
 const uw = read('src/pages/UnderwritingWorkspace.tsx');
 check('S1 Underwriting rail renders the recorded cell', uw.includes('<RecordedSellerMaoCell comparison={maoComparison} waiting={waiting} />'), true);
@@ -185,7 +187,7 @@ check('S5 Seller Call deal bar gets the ARV approval state from the ledger reads
 check('S5 Seller Call deal bar gets the repairs approval state', sc.includes('repairsApproval: pipeline.repairsSourceIsApprovalGated ? "approved" : "unverified"'), true);
 const ct = read('src/pages/ContractWorkspace.tsx');
 check('S6 disposition preview: ARV / Repairs at acceptance', ct.includes('{DISPOSITION_ARV_LABEL}: {money(pkg.approvedArv.amount)}') && ct.includes('{DISPOSITION_REPAIRS_LABEL}: {money(pkg.approvedRepairs)}'), true);
-check('S6 disposition preview: the old "Approved ARV:/Approved repairs:" labels are gone', /<li>Approved ARV: |<li>Approved repairs: /.test(ct), false);
+check('S6 disposition preview: the old "Approved ARV:/Approved repairs:" labels are gone', /<li[^>]*>Approved ARV: |<li[^>]*>Approved repairs: /.test(ct), false);
 const cw = read('src/pages/ContactWorkspace.tsx');
 check('S7 Contact ARV row says which ARV governs, editor unchanged',
   cw.includes('if (f.id === ARV_ID) return <MonetaryRow f={f} contactId={contactId} save={ghl.contacts.setARV} note={CONTACT_ARV_SEED_NOTE} />;')
