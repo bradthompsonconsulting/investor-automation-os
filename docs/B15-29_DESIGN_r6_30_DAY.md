@@ -35,9 +35,26 @@ Candidate only: `oneLogin` stays DISABLED in both configs; no credential, no liv
   seam refusal answers 403 `reason: "not_authorized"`.
 - **Devices.** Each sign-in is an independent session (own sid, own record). Sign out revokes only that session.
 - **Rollback safety.** The 30-day session shape (the one carrying the store ETags) is accepted only while one
-  sign-in is on for that environment; switching it off invalidates every 30-day session at once.
+  sign-in is on for that environment; switching it off invalidates every 30-day session at once. r4 (Bones R3-1):
+  the same holds for the saving token -- the bound token has its own audience (`iaos-app-write-session`) and exact
+  claim set, and `requireAppWriter` refuses it whenever one sign-in is off (so does `sessionWriteRefusal`, zero
+  I/O); off, any read cookie with a sid / epoch / ETag claim is refused too. Legacy credentials are unchanged.
 - **Page timer.** A 30-day expiry exceeds `setTimeout`'s 2^31-1 ms limit; the page's expiry wait is capped at one
   day and re-armed, so the browser never re-checks in a loop.
+
+## r4 corrections (Bones HOLD on 7262e15)
+
+- **R3-1 rollback boundary** -- see Rollback safety above.
+- **R3-2 re-login isolation.** A deliberate reauthentication discards the cached and pending saving token at once
+  (each mint is bound to the session generation); saving waits until the read gate has the NEW session confirmed.
+  The status answer carries non-secret keyed tags of the operator and the session (`operator`, `session`; no email,
+  no sid). A different session discards the old session's tokens; a different operator also remounts the routed app,
+  clears operator-scoped page data (`app/src/lib/operator-partition.ts`) and shows a neutral notice. Same operator:
+  unsaved work kept. The sign-out handle always comes from the newest status answer.
+- **Delayed status.** Status requests are sequenced; an older answer, or one from an earlier generation, is discarded.
+- **Restore containment (H2).** The anchor carries a required `state` ("open" | "closed"); closed refuses sign-in
+  and every check. Procedure: runbook section 6.
+- **Reminder wording.** "within N days" (whole days left, rounded up) / "within 24 hours": never overstated.
 
 ## Complexity removed
 
