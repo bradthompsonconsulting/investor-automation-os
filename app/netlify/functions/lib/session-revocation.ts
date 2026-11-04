@@ -15,7 +15,11 @@
  *   session record   session/<sha256(env:sid)>
  *                    {"env","epoch","kind":"iaos-session","sidDigest","state":"active"|"revoked","v":1}
  *   authority anchor the one anchor key declared below (the only such literal in the code base)
- *                    {"env","epoch","kind":"iaos-session-revocation-authority","siteID","v":1}
+ *                    {"env","epoch","kind":"iaos-session-revocation-authority","siteID","state":"open"|"closed","v":1}
+ *                    r4 (H2 restore containment): "state" is REQUIRED -- an anchor without it is invalid (sign-in
+ *                    unavailable). "closed" refuses every sign-in (503) and, because its bytes differ from the open
+ *                    bytes every session is bound to, every check (412 -> revoked). Only an operator closes or
+ *                    reopens it (runbook section 6); reopening always installs a NEW epoch.
  *                    OPERATOR-PROVISIONED. No code path creates it, changes its content or deletes it: the only
  *                    requests that name it are one read (sign-in) and `If-Match` re-writes of the SAME canonical
  *                    bytes (they succeed only where those bytes are already current at origin, and then change
@@ -52,10 +56,10 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { connectLambda, getStore } from "@netlify/blobs";
 import { oneLoginActiveFor, SESSION_REVOCATION_SITE_IDS } from "../../../shared/ghl-config";
 import {
-  ONE_LOGIN_SESSION_SECONDS, READ_AUTH_REFUSED, READ_AUTH_UNCONFIGURED, ReadAuthUnconfigured, appReadConfig, isCanonicalEpoch, isCanonicalEtag,
-  isCanonicalSid, readSessionToken, verifyReadSession, type ReadAuthConfig,
+  ONE_LOGIN_SESSION_SECONDS, READ_AUTH_REFUSED, READ_AUTH_UNCONFIGURED, ReadAuthUnconfigured, appReadConfig, cookieHasOneLoginBinding, isCanonicalEpoch,
+  isCanonicalEtag, isCanonicalSid, readSessionToken, verifyReadSession, type ReadAuthConfig,
 } from "./app-read-auth";
-import { appWriteSessionBinding } from "./app-write-auth";
+import { appWriteSessionBinding, bearerHasOneLoginBinding } from "./app-write-auth";
 import { authorize } from "./authorization";
 
 /**
@@ -109,22 +113,32 @@ export function revocationSetup(env: NodeJS.ProcessEnv = process.env): Revocatio
   return { kind: "ready", deployment, siteID: PINNED_REVOCATION_SITES[deployment] };
 }
 
-/** Strict parse of the anchor: exact canonical JSON for THIS env and its pinned site; returns the epoch or null. */
-export function authorityEpoch(text: unknown, deployment: string): string | null {
+export type AnchorState = "open" | "closed";
+/**
+ * Strict parse of the anchor: exact canonical JSON for THIS env and its pinned site, with the REQUIRED state
+ * ("open" | "closed"; r4). Returns the epoch and state, or null for anything else (an anchor without state included).
+ */
+export function parseAuthority(text: unknown, deployment: string): { epoch: string; state: AnchorState } | null {
   if (typeof text !== "string" || text.length > 1024) return null;
   if (deployment !== "test" && deployment !== "production") return null;
   let v: unknown;
   try { v = JSON.parse(text); } catch { return null; }
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const r = v as Record<string, unknown>;
-  if (Object.keys(r).sort().join(",") !== "env,epoch,kind,siteID,v") return null;
+  if (Object.keys(r).sort().join(",") !== "env,epoch,kind,siteID,state,v") return null;
   if (r.v !== 1 || r.kind !== AUTHORITY_KIND || r.env !== deployment || r.siteID !== PINNED_REVOCATION_SITES[deployment]) return null;
+  if (r.state !== "open" && r.state !== "closed") return null;
   if (!isCanonicalEpoch(r.epoch)) return null;
-  return canonicalJson(r) === text ? r.epoch : null;
+  return canonicalJson(r) === text ? { epoch: r.epoch, state: r.state } : null;
 }
-/** The anchor's canonical bytes for this env + epoch (equal to a valid anchor's stored bytes by authorityEpoch). */
+/** The epoch of a valid OPEN anchor, or null (closed, invalid, or without state). */
+export function authorityEpoch(text: unknown, deployment: string): string | null {
+  const a = parseAuthority(text, deployment);
+  return a && a.state === "open" ? a.epoch : null;
+}
+/** The OPEN anchor's canonical bytes for this env + epoch (equal to a valid open anchor's stored bytes). */
 function anchorBytes(deployment: Deployment, epoch: string): string {
-  return canonicalJson({ env: deployment, epoch, kind: AUTHORITY_KIND, siteID: PINNED_REVOCATION_SITES[deployment], v: 1 });
+  return canonicalJson({ env: deployment, epoch, kind: AUTHORITY_KIND, siteID: PINNED_REVOCATION_SITES[deployment], state: "open", v: 1 });
 }
 
 const sidDigest = (deployment: string, sid: string) => createHash("sha256").update(`${deployment}:${sid}`, "utf8").digest("hex");
@@ -232,8 +246,11 @@ export async function beginSession(sid: string, deployment: string, opts: OpOpts
   if (read.status === 404) return { kind: "unavailable", reason: "authority_absent" };
   const text = (read.data as { data?: unknown } | null)?.data;
   if (read.status !== 200 || typeof text !== "string" || !read.etag) return { kind: "unavailable", reason: "authority_unreadable" };
-  const epoch = authorityEpoch(text, deployment);
-  if (!epoch) return { kind: "unavailable", reason: "authority_invalid" };
+  const authority = parseAuthority(text, deployment);
+  if (!authority) return { kind: "unavailable", reason: "authority_invalid" };
+  // r4: a CLOSED anchor (restore containment, runbook section 6) refuses every sign-in.
+  if (authority.state !== "open") return { kind: "unavailable", reason: "authority_closed" };
+  const epoch = authority.epoch;
   // 2. Only a 200 to an If-Match re-write of the identical bytes shows this anchor is current AT ORIGIN.
   const anchor = await confirmAnchor(ctx, epoch, read.etag);
   if (anchor.why || anchor.status !== 200 || !isCanonicalEtag(anchor.etag)) return { kind: "unavailable", reason: anchor.why ?? "authority_unconfirmed" };
@@ -330,6 +347,18 @@ export function verifySignoutHandle(handle: unknown, config: ReadAuthConfig, now
   return { sid: claims.sid, epoch: claims.epoch };
 }
 
+// ------------------------------------------------------- status view tags ---
+
+/**
+ * B15-29 r4 (R3-2): NON-SECRET tags for the status answer, so the page can tell a session replacement and an operator
+ * change apart. Keyed HMACs (the read secret) truncated to 128 bits: equal inputs give equal tags; a tag reveals neither
+ * the email nor the sid and is no credential (nothing accepts it).
+ */
+export function sessionViewTags(email: string, deployment: string, sid: string, config: ReadAuthConfig): { operator: string; session: string } {
+  const tag = (label: string, value: string) => createHmac("sha256", config.secret).update(`${label}\u0000${value}`, "utf8").digest().subarray(0, 16).toString("base64url");
+  return { operator: tag("iaos-operator-tag-v1", email), session: tag("iaos-session-tag-v1", `${deployment}:${sid}`) };
+}
+
 // ------------------------------------------------- same-site request shape ---
 
 export const SESSION_REQUEST_HEADER = "x-iaos-session";
@@ -365,7 +394,9 @@ export function sessionBound(s: { sid?: unknown; epoch?: unknown; aetag?: unknow
  * data: session shape, then AUTHORIZATION (lib/authorization.ts, read), then the store check. Off -> null, no I/O.
  */
 export async function sessionReadRefusal(event: any, env: NodeJS.ProcessEnv = process.env, now = Date.now()) {
-  if (!oneLoginActiveFor(env.IAOS_ENV)) return null;
+  // r4 (R3-1): off, a One-Login session cookie is refused here too (decode only, zero I/O; readAuthRefusal before
+  // this already refuses it); any other cookie -> null, unchanged.
+  if (!oneLoginActiveFor(env.IAOS_ENV)) return cookieHasOneLoginBinding(event) ? respond(401, { error: "Sign in to read IAOS data", by: READ_AUTH_REFUSED }) : null;
   let config: ReadAuthConfig;
   let session: { email: string; sid?: string; epoch?: string; aetag?: string; setag?: string };
   try { config = appReadConfig(env); session = verifyReadSession(readSessionToken(event), config, now); }
@@ -389,8 +420,10 @@ export async function sessionReadRefusal(event: any, env: NodeJS.ProcessEnv = pr
  * Each request is its own authorization unit: no "active" result is cached. Off -> null with no I/O.
  */
 export async function sessionWriteRefusal(event: any, env: NodeJS.ProcessEnv = process.env, now = Date.now()) {
-  if (!oneLoginActiveFor(env.IAOS_ENV)) return null;
   const refused = (reason?: string) => respond(401, { error: "Application write sign-in required", by: "iaos-app-write-auth", ...(reason ? { reason } : {}) });
+  // r4 (R3-1): off (a rollback), a One-Login-bound saving token is refused here as well as by requireAppWriter --
+  // decode only, zero I/O, whatever its expiry, parent expiry, revocation or environment. Legacy tokens -> null.
+  if (!oneLoginActiveFor(env.IAOS_ENV)) return bearerHasOneLoginBinding(event) ? refused("one_login_off") : null;
   let binding: ReturnType<typeof appWriteSessionBinding>;
   try { binding = appWriteSessionBinding(event, env, now); } catch { return refused(); }
   // Sid-less saving tokens (the retired popup issuer), tokens bound to another environment, and tokens without the

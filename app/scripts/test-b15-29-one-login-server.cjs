@@ -123,8 +123,9 @@ const DAY = 24 * 3600;
 const sid = (n) => Buffer.alloc(16, n).toString('base64url');
 const EPOCH = 'fixture-epoch-0001';
 const EPOCH2 = 'fixture-epoch-0002-rotated';
-const anchorText = ({ env = 'test', siteID = SITE, epoch = EPOCH, v = 1, kind = 'iaos-session-revocation-authority', extra = {} } = {}) =>
-  JSON.stringify(Object.fromEntries(Object.entries({ env, epoch, kind, siteID, v, ...extra }).sort()));
+// r4: the anchor carries the REQUIRED state ("open" | "closed"); state: null omits it (the r3 shape, now invalid).
+const anchorText = ({ env = 'test', siteID = SITE, epoch = EPOCH, v = 1, kind = 'iaos-session-revocation-authority', state = 'open', extra = {} } = {}) =>
+  JSON.stringify(Object.fromEntries(Object.entries({ env, epoch, kind, siteID, ...(state === null ? {} : { state }), v, ...extra }).sort()));
 const seedAnchor = (o) => blobs.put('iaos-write-receipts', ANCHOR_KEY, typeof o === 'string' ? o : anchorText(o));
 const dropAnchor = () => blobs.remove('iaos-write-receipts', ANCHOR_KEY);
 const NF = { headers: { 'x-nf-site-id': SITE }, blobs: blobs.lambdaBlobs };   // a minimal Lambda event
@@ -181,12 +182,14 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal(t.statusCode, 404); assert.equal(s.statusCode, 404);
     assert.equal(blobCount() + other.length, 0);
   });
-  await check('F3 off: the reader/writer helpers return null with ZERO I/O, even for a session whose record says revoked', async () => {
+  await check('F3 off: the reader/writer helpers do ZERO I/O -- null for LEGACY credentials; r4: a One-Login cookie or bound saving token is REFUSED (401), never passed', async () => {
     blobs.put('iaos-write-receipts', sKey(sid(1)), rev.sessionRecordText('test', EPOCH, sid(1), 'revoked')); const before = blobCount();
     const c = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now(), sid(1), EPOCH).token;
     const tok = writeAuth.issueBoundAppSession('brad@example.invalid', { env: 'test', sid: sid(1), pexp: Math.floor(Date.now() / 1000) + 3600, epoch: EPOCH, aetag: '"a"', setag: '"s"' }).token;
-    assert.equal(await rev.sessionReadRefusal(ev({ method: 'GET', cookie: c })), null);
-    assert.equal(await rev.sessionWriteRefusal(ev({ bearer: tok })), null);
+    assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: c }))).statusCode, 401);
+    const w = await rev.sessionWriteRefusal(ev({ bearer: tok })); assert.equal(w.statusCode, 401); assert.equal(parse(w).reason, 'one_login_off');
+    assert.equal(await rev.sessionReadRefusal(ev({ method: 'GET', cookie: readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig()).token })), null);
+    assert.equal(await rev.sessionWriteRefusal(ev({ bearer: writeAuth.issueAppSession('brad@example.invalid').token })), null);
     assert.equal(blobCount() - before, 0); assert.equal(other.length, 0);
   });
   await check('F4 off: app-read-session GET/POST/DELETE answer exactly as before (no state/handle; sid-less 8 h cookie, Max-Age=28800; DELETE clears)', async () => {
@@ -228,6 +231,68 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
   await check('F9 off: the flag-off read cookie helper is unchanged (default Max-Age 28800)', async () => {
     assert.equal(readAuth.readSessionCookie('t'), '__Host-iaos_read=t; Path=/; Max-Age=28800; HttpOnly; Secure; SameSite=Strict');
   });
+  // ---- r4 (Bones R3-1): ROLLBACK -- One Login bound saving tokens issued while ON are refused once it is turned OFF.
+  {
+    reset(); flag(true);
+    const live = await bind(70); const revoked = await bind(71);
+    const unexpired = parse(await load('app-write-token')(tokenEv(live.cookie))).token;   // a REAL mint while on
+    const nowS = Math.floor(Date.now() / 1000);
+    const parentExpired = tokenFor(live, { pexp: nowS - 10 });                              // its own 900 s still left
+    const revokedTok = parse(await load('app-write-token')(tokenEv(revoked.cookie))).token;
+    assert.equal((await rev.revokeSession(revoked.sid, revoked.epoch, 'test', { event: NF })).kind, 'verified');
+    const wrongEnv = tokenFor(live, { env: 'production' });
+    const legacy = writeAuth.issueAppSession('brad@example.invalid').token;
+    const ROLLBACK = [['unexpired', unexpired], ['parent-expired', parentExpired], ['revoked', revokedTok], ['wrong-environment', wrongEnv]];
+    flag(false); other = []; blobs.log.length = 0;
+    await check('F10 rollback (off): EVERY One-Login bound saving token -- unexpired, parent-expired, revoked, wrong-environment -- is refused by requireAppWriter (the common writer boundary) and by sessionWriteRefusal (401 one_login_off), with zero I/O', async () => {
+      for (const [label, t] of ROLLBACK) {
+        assert.throws(() => writeAuth.requireAppWriter({ headers: { authorization: `Bearer ${t}` } }), undefined, label);
+        assert.throws(() => writeAuth.appWriteSessionBinding({ headers: { authorization: `Bearer ${t}` } }), undefined, label);
+        const w = await rev.sessionWriteRefusal(ev({ bearer: t })); assert.equal(w && w.statusCode, 401, label); assert.equal(parse(w).reason, 'one_login_off', label);
+      }
+      assert.equal(blobCount(), 0); assert.equal(other.length, 0);
+    });
+    await check('F10b rollback (off): a LEGACY saving token is unchanged -- requireAppWriter accepts it and sessionWriteRefusal passes it (null)', async () => {
+      assert.equal(writeAuth.requireAppWriter({ headers: { authorization: `Bearer ${legacy}` } }), 'brad@example.invalid');
+      assert.equal(await rev.sessionWriteRefusal(ev({ bearer: legacy })), null);
+    });
+    await check('F11 rollback (off) through a REAL writer (ghl-write): each bound token -> 401 before any effect, zero GHL and zero Blob requests', async () => {
+      for (const [label, t] of ROLLBACK) {
+        other = []; blobs.log.length = 0;
+        const r = await load('ghl-write')(ev({ bearer: t, body: JSON.stringify({ operation: 'note.create', targetId: 'c1', requestId: 'rb-' + label, args: { body: 'x' } }) }));
+        assert.equal(r.statusCode, 401, label + ' ' + r.body); assert.equal(other.length, 0, label); assert.equal(blobCount(), 0, label);
+      }
+    });
+    await check('F12 the bound shape is unforgeable as legacy: it carries its own audience (never "iaos-app-write"); a token with the legacy audience and ANY binding claim, or the bound audience without the full claim set, is refused ON and OFF', async () => {
+      assert.equal(decode(unexpired).aud, writeAuth.BOUND_AUDIENCE); assert.notEqual(writeAuth.BOUND_AUDIENCE, 'iaos-app-write');
+      const secret = BASE_ENV.IAOS_APP_WRITE_SESSION_SECRET; const n = Math.floor(Date.now() / 1000);
+      const base = { iss: 'iaos', aud: 'iaos-app-write', sub: 'brad@example.invalid', iat: n, exp: n + 900 };
+      const hybrids = [['env', 'test'], ['sid', sid(72)], ['pexp', n + 99], ['epoch', EPOCH], ['aetag', '"a"'], ['setag', '"s"']].map(([k, v]) => signTok({ ...base, [k]: v }, secret));
+      hybrids.push(signTok({ ...base, aud: writeAuth.BOUND_AUDIENCE }, secret));
+      hybrids.push(signTok({ ...decode(unexpired), aud: 'iaos-app-write' }, secret));
+      for (const on of [false, true]) {
+        flag(on);
+        hybrids.forEach((t, i) => assert.throws(() => writeAuth.requireAppWriter({ headers: { authorization: `Bearer ${t}` } }), undefined, `hybrid ${i} on=${on}`));
+      }
+      flag(false);
+      assert.ok(writeAuth.isOneLoginBoundClaims(decode(unexpired)) && !writeAuth.isOneLoginBoundClaims(decode(legacy)));
+    });
+    await check('F13 rollback (off), read side: sid-only, sid+epoch and 30-day bound cookies are refused by verify, readAuthRefusal and sessionReadRefusal (zero I/O); status says signed out; a legacy cookie still reads', async () => {
+      const cfgR = readAuth.appReadConfig(); blobs.log.length = 0;
+      const sidOnly = readAuth.issueReadSession('brad@example.invalid', cfgR, Date.now(), sid(73)).token;
+      const sidEpoch = readAuth.issueReadSession('brad@example.invalid', cfgR, Date.now(), sid(73), EPOCH).token;
+      for (const [label, c] of [['sid-only', sidOnly], ['sid+epoch', sidEpoch], ['30-day bound', live.cookie]]) {
+        assert.throws(() => readAuth.verifyReadSession(c, cfgR), undefined, label);
+        assert.equal(readAuth.readAuthRefusal(ev({ method: 'GET', cookie: c })).statusCode, 401, label);
+        assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: c }))).statusCode, 401, label);
+        assert.equal(parse(await load('app-read-session')(ev({ method: 'GET', cookie: c }))).signedIn, false, label);
+      }
+      assert.equal(blobCount(), 0);
+      const legacyCookie = readAuth.issueReadSession('brad@example.invalid', cfgR).token;
+      assert.equal(readAuth.readAuthRefusal(ev({ method: 'GET', cookie: legacyCookie })), null);
+      assert.equal(parse(await load('app-read-session')(ev({ method: 'GET', cookie: legacyCookie }))).signedIn, true);
+    });
+  }
 
   // =========================================================================== A
   reset(); flag(true);
@@ -338,6 +403,8 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
   for (const [label, prep, reason] of [
     ['anchor absent', () => dropAnchor(), 'authority_absent'],
     ['anchor malformed', () => seedAnchor('{"v":1}'), 'authority_invalid'],
+    ['anchor WITHOUT state (the r3 shape; r4 requires state)', () => seedAnchor({ state: null }), 'authority_invalid'],
+    ['anchor CLOSED (restore containment)', () => seedAnchor({ state: 'closed' }), 'authority_closed'],
     ['anchor read 500', () => blobs.rule({ method: 'GET', key: ANCHOR_KEY, status: 500 }), null],
     ['anchor confirm 412 (stale read: the read etag is no longer current at origin)', () => blobs.rule({ method: 'PUT', key: ANCHOR_KEY, status: 412 }), 'authority_unconfirmed'],
     ['anchor confirm 500', () => blobs.rule({ method: 'PUT', key: ANCHOR_KEY, status: 500 }), 'authority_unconfirmed'],
@@ -403,7 +470,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.deepEqual(Object.keys(b).sort(), ['expiresAt', 'expiresInSeconds', 'token']);
     assert.ok(b.expiresInSeconds === 900 || b.expiresInSeconds === 899);
     const claims = decode(b.token);
-    assert.equal(claims.aud, 'iaos-app-write'); assert.equal(claims.sub, 'brad@example.invalid');
+    assert.equal(claims.aud, writeAuth.BOUND_AUDIENCE); assert.equal(claims.sub, 'brad@example.invalid');
     assert.equal(claims.exp - claims.iat, 900, 'lifetime unchanged'); assert.equal(claims.env, 'test'); assert.equal(claims.sid, T1.sid);
     assert.equal(claims.pexp, T1.exp, 'bound to the parent session expiry'); assert.equal(claims.epoch, EPOCH);
     assert.equal(claims.aetag, T1.aetag); assert.equal(claims.setag, T1.setag);
@@ -495,7 +562,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
   const signOut = (e) => load('app-signout')(e);
   await check('S1 status: signed in -> 200 {clientId, signedIn, expiresAt, state:"signed_in", handle}; handle is revoke-only (aud iaos-app-signout, exact claims incl. epoch, exp = parent exp + 24 h)', async () => {
     const b = await bind(14); const r = await status(b.cookie); const body = parse(r);
-    assert.equal(r.statusCode, 200); assert.deepEqual(Object.keys(body).sort(), ['clientId', 'expiresAt', 'handle', 'signedIn', 'state']);
+    assert.equal(r.statusCode, 200); assert.deepEqual(Object.keys(body).sort(), ['clientId', 'expiresAt', 'handle', 'operator', 'session', 'signedIn', 'state']);
     assert.equal(body.state, 'signed_in'); assert.equal(body.signedIn, true);
     assert.equal(Date.parse(body.expiresAt), b.exp * 1000);
     const h = decode(body.handle);
@@ -503,6 +570,18 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal(h.aud, 'iaos-app-signout'); assert.equal(h.sid, b.sid); assert.equal(h.env, 'test'); assert.equal(h.epoch, EPOCH);
     assert.equal(h.exp, b.exp + 24 * 3600);
     assert.equal(r.headers['Set-Cookie'], undefined); assert.equal(r.headers['Cache-Control'], 'no-store');
+  });
+  await check('S1b r4 status tags: operator / session are non-secret 128-bit tags -- same operator across sessions gives the same operator tag and a different session tag; neither contains the sid, email or a token, and neither is a credential', async () => {
+    const b1 = await bind(95); const b2 = await bind(96);
+    const s1 = parse(await status(b1.cookie)); const s2 = parse(await status(b2.cookie));
+    for (const s of [s1, s2]) for (const k of ['operator', 'session']) assert.match(s[k], /^[A-Za-z0-9_-]{22}$/, k);
+    assert.equal(s1.operator, s2.operator); assert.notEqual(s1.session, s2.session);
+    const all = JSON.stringify([s1.operator, s1.session, s2.operator, s2.session]);
+    for (const secret of [b1.sid, b2.sid, 'brad@example.invalid', 'brad']) assert.ok(!all.includes(secret), secret);
+    const other2 = rev.sessionViewTags('reader-only@example.invalid', 'test', b1.sid, readAuth.appReadConfig());
+    assert.notEqual(other2.operator, s1.operator); assert.equal(other2.session, s1.session);
+    assert.equal(readAuth.readAuthRefusal(ev({ method: 'GET', cookie: s1.session })).statusCode, 401, 'a tag is no read session');
+    assert.equal((await rev.sessionWriteRefusal(ev({ bearer: s1.operator }))).statusCode, 401, 'a tag is no saving token');
   });
   await check('S2 status: no cookie / sid-less / unbound (r2 shape) cookie -> 200 signed_out with clientId (sign-in landing still works), nothing written', async () => {
     blobs.log.length = 0;
@@ -681,8 +760,12 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     const legacy = writeAuth.issueAppSession('brad@example.invalid').token;
     assert.equal(parse(await rev.sessionWriteRefusal(ev({ bearer: legacy }))).reason, 'sign_in_again');
     const now = Math.floor(Date.now() / 1000);
-    const noEtags = signTok({ iss: 'iaos', aud: 'iaos-app-write', sub: 'brad@example.invalid', iat: now, exp: now + 900, env: 'test', sid: sid(25), pexp: now + 3600, epoch: EPOCH }, BASE_ENV.IAOS_APP_WRITE_SESSION_SECRET);
-    assert.equal(parse(await rev.sessionWriteRefusal(ev({ bearer: noEtags }))).reason, 'sign_in_again');
+    // r4: a token without the store ETags no longer has a valid shape at all (bound claim set incomplete) -> 401.
+    for (const aud of ['iaos-app-write', writeAuth.BOUND_AUDIENCE]) {
+      const noEtags = signTok({ iss: 'iaos', aud, sub: 'brad@example.invalid', iat: now, exp: now + 900, env: 'test', sid: sid(25), pexp: now + 3600, epoch: EPOCH }, BASE_ENV.IAOS_APP_WRITE_SESSION_SECRET);
+      assert.equal((await rev.sessionWriteRefusal(ev({ bearer: noEtags }))).statusCode, 401, aud);
+      assert.throws(() => writeAuth.requireAppWriter({ headers: { authorization: `Bearer ${noEtags}` } }), undefined, aud);
+    }
   });
   await check('X4 L2: a write whose check passed BEFORE the revocation keeps its admission (it may finish); every request checked AFTER the confirmed revocation is refused', async () => {
     const b = await bind(26); const t = tokenFor(b);
@@ -865,6 +948,9 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     ['anchor empty', () => seedAnchor('')],
     ['anchor non-canonical key order', () => seedAnchor(JSON.stringify({ v: 1, kind: 'iaos-session-revocation-authority', env: 'test', siteID: SITE, epoch: EPOCH }))],
     ['anchor extra field', () => seedAnchor(anchorText({ extra: { note: 'x' } }))],
+    ['anchor WITHOUT state (r3 shape)', () => seedAnchor({ state: null })],
+    ['anchor state neither open nor closed', () => seedAnchor({ state: 'Open' })],
+    ['anchor CLOSED', () => seedAnchor({ state: 'closed' })],
     ['anchor epoch too short', () => seedAnchor(anchorText({ epoch: 'short-epoch' }))],
     ['anchor epoch with a forbidden character', () => seedAnchor(anchorText({ epoch: 'fixture-epoch/0001' }))],
     ['anchor wrong version', () => seedAnchor(anchorText({ v: 2 }))],
@@ -998,6 +1084,58 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.match(s, /if \(!isCanonicalEtag\(etag\)\) return Promise\.resolve/, 'an empty etag can never turn the anchor write unconditional');
   });
 
+  // ---- r4 (H2 operational): restore containment through the anchor state.
+  await check('H14 CLOSED anchor: sign-in 503 (no session, no Set-Cookie); an existing session is refused everywhere -- check revoked, reader 401, writer 401, mint 401, status revoked -- and the closed anchor bytes are never changed', async () => {
+    reset(); const b = await bind(80); const t = tokenFor(b);
+    assert.equal(await rev.sessionWriteRefusal(ev({ bearer: t })), null, 'before closing: allowed');
+    seedAnchor({ state: 'closed' }); const closed = blobs.get('iaos-write-receipts', ANCHOR_KEY).text;
+    const si = await signIn2(); assert.equal(si.statusCode, 503); assert.equal(si.headers['Set-Cookie'], undefined);
+    assert.deepEqual(await rev.beginSession(sid(81), 'test', { event: NF }), { kind: 'unavailable', reason: 'authority_closed' });
+    assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'revoked' });
+    assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: b.cookie }))).statusCode, 401);
+    assert.equal((await rev.sessionWriteRefusal(ev({ bearer: t }))).statusCode, 401);
+    const mt = await mint(tokenEv(b.cookie)); assert.equal(mt.statusCode, 401); noCredentialLeak(mt);
+    assert.equal(parse(await status(b.cookie)).state, 'revoked');
+    assert.equal(blobs.get('iaos-write-receipts', ANCHOR_KEY).text, closed, 'no check re-opened the anchor');
+    assert.equal(rev.authorityEpoch(closed, 'test'), null); assert.deepEqual(rev.parseAuthority(closed, 'test'), { epoch: EPOCH, state: 'closed' });
+  });
+  await check('H15 REOPEN with a NEW epoch (open): every session from before the closure stays refused; a fresh sign-in binds to the new epoch, mints and saves', async () => {
+    reset(); const b = await bind(82); const t = tokenFor(b);
+    seedAnchor({ state: 'closed' }); seedAnchor({ epoch: EPOCH2, state: 'open' });
+    assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'revoked' });
+    assert.equal((await rev.sessionWriteRefusal(ev({ bearer: t }))).statusCode, 401);
+    const r = await signIn2(); assert.equal(r.statusCode, 200, r.body); const c = cookieOf(r); assert.equal(decode(c).epoch, EPOCH2);
+    const t2 = parse(await mint(tokenEv(c))).token; assert.equal(await rev.sessionWriteRefusal(ev({ bearer: t2 })), null);
+  });
+  await check('H16 RESTORE procedure (runbook section 6): close -> restore EXCLUDING the anchor (old active records come back) -> still closed: old sessions refused, sign-in 503 -> new epoch open: old sessions refused, new sign-in works', async () => {
+    reset(); const b = await bind(83); const t = tokenFor(b);
+    const snapshot = new Map([...blobs.store.entries()].filter(([k]) => !k.endsWith('|' + ANCHOR_KEY)));   // a backup that excludes the anchor
+    assert.equal((await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF })).kind, 'verified');
+    seedAnchor({ state: 'closed' });                                                                     // (a) close BEFORE restore
+    for (const [k, v] of snapshot) blobs.store.set(k, { ...v });                                         // (b) restore without the anchor
+    assert.equal(blobs.get('iaos-write-receipts', sKey(b.sid)).text, rev.sessionRecordText('test', EPOCH, b.sid, 'active'), 'the old active record is back');
+    assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'revoked' }, 'closed: refused');
+    assert.equal((await rev.sessionWriteRefusal(ev({ bearer: t }))).statusCode, 401);
+    assert.equal((await signIn2()).statusCode, 503, 'closed: no sign-in');
+    seedAnchor({ epoch: EPOCH2, state: 'open' });                                                        // (c) new epoch, open
+    assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'revoked' }, 'reopened: still refused');
+    assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: b.cookie }))).statusCode, 401);
+    assert.equal((await signIn2()).statusCode, 200);
+  });
+  await check('H17 RESTORE that could NOT exclude the anchor: the old OPEN anchor bytes come back with the old records; the procedure immediately re-writes the CLOSED anchor -> the old session is refused, and stays refused after the new epoch opens', async () => {
+    reset(); const b = await bind(84); const t = tokenFor(b);
+    const snapshot = new Map([...blobs.store.entries()]);                                                // a backup INCLUDING the old open anchor
+    seedAnchor({ state: 'closed' });
+    for (const [k, v] of snapshot) blobs.store.set(k, { ...v });                                         // restore brought the old open anchor back
+    seedAnchor({ state: 'closed' });                                                                     // (b) immediately re-write the closed anchor
+    assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'revoked' });
+    assert.equal((await rev.sessionWriteRefusal(ev({ bearer: t }))).statusCode, 401);
+    assert.equal((await mint(tokenEv(b.cookie))).statusCode, 401);
+    seedAnchor({ epoch: EPOCH2, state: 'open' });
+    assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'revoked' });
+    assert.equal((await rev.sessionWriteRefusal(ev({ bearer: t }))).statusCode, 401);
+  });
+
   flag(false);
   await check('Z0 the WHOLE run: no request created, changed or deleted the authority anchor; every anchor write carried If-Match (never If-None-Match, never unconditional) and the canonical bytes', async () => {
     assert.deepEqual(blobs.mutations.filter((m) => m.key === ANCHOR_KEY), []);
@@ -1006,7 +1144,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.ok(writes.every((w) => w.method === 'PUT' && w.ifMatch && !w.ifNoneMatch), JSON.stringify(writes.filter((w) => !(w.method === 'PUT' && w.ifMatch && !w.ifNoneMatch)).slice(0, 3)));
     assert.ok(writes.every((w) => rev.authorityEpoch(w.body, 'test')), 'every anchor write body is a canonical valid anchor');
   });
-  const FLOOR = 209;
+  const FLOOR = 224;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (server): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;

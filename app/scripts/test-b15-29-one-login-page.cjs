@@ -66,7 +66,7 @@ delete process.env.IAOS_VOICE_SESSION_SECRET;
 
 const blobs = createFakeBlobs({ siteID: SITE });
 // The operator-provisioned authority anchor (fixture only; no code path writes it).
-blobs.put('iaos-write-receipts', 'session-revocation/_authority', JSON.stringify({ env: 'test', epoch: EPOCH, kind: 'iaos-session-revocation-authority', siteID: SITE, v: 1 }));
+blobs.put('iaos-write-receipts', 'session-revocation/_authority', JSON.stringify({ env: 'test', epoch: EPOCH, kind: 'iaos-session-revocation-authority', siteID: SITE, state: 'open', v: 1 }));
 const nodeFetch = global.fetch;
 global.fetch = async (url, init) => {
   const u = String(url);

@@ -96,7 +96,7 @@ const rev = require(path.join(FUNCTIONS, 'lib/session-revocation.ts'));
 cfg.getConfig('test').supplementalReadBudget = { enabled: cfg.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'offline-disabled', ceiling: 0 };
 const blobs = createFakeBlobs({ siteID: SITE, clock: () => T });
 const ANCHOR_KEY = 'session-revocation/_authority';
-const anchorText = (epoch = EPOCH) => JSON.stringify({ env: 'test', epoch, kind: 'iaos-session-revocation-authority', siteID: SITE, v: 1 });
+const anchorText = (epoch = EPOCH) => JSON.stringify({ env: 'test', epoch, kind: 'iaos-session-revocation-authority', siteID: SITE, state: 'open', v: 1 });
 const seedAnchor = (epoch) => blobs.put('iaos-write-receipts', ANCHOR_KEY, anchorText(epoch));
 seedAnchor();
 const basePayload = () => ({ ...cfg.projectRuntimeConfig(cfg.getConfig('test'), 'test'), repairApproval: { active: false } });

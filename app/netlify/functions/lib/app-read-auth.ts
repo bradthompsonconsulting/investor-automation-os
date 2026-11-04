@@ -131,7 +131,8 @@ export function verifyReadSession(token: string, config: ReadAuthConfig, now = D
   const seconds = Math.floor(now / 1000);
   // B15-29 r6: the 30-day shape (it alone carries the store ETags) exists only while one IAOS sign-in is on.
   const oneLogin = !!claims && typeof claims === "object" && ("aetag" in claims || "setag" in claims);
-  if (oneLogin && !oneLoginActiveFor(config.deployment)) throw new ReadAuthRefused("Expired or unauthorized read session");
+  // r4 (R3-1): off, NO One-Login session shape is accepted -- any binding claim (sid, epoch, aetag, setag) is refused.
+  if (hasReadBindingClaim(claims) && !oneLoginActiveFor(config.deployment)) throw new ReadAuthRefused("Expired or unauthorized read session");
   if (header?.alg !== "HS256" || header?.typ !== "JWT" || claims?.iss !== "iaos" || claims.aud !== READ_AUDIENCE ||
       claims.env !== config.deployment || !Number.isInteger(claims.iat) || !Number.isInteger(claims.exp) ||
       claims.exp - claims.iat !== (oneLogin ? ONE_LOGIN_SESSION_SECONDS : READ_SESSION_SECONDS) || claims.exp <= seconds || claims.iat > seconds + 30 ||
@@ -151,6 +152,22 @@ export function verifyReadSession(token: string, config: ReadAuthConfig, now = D
   if ("epoch" in claims) return { email: claims.sub, expiresAt: new Date(claims.exp * 1000).toISOString(), sid: claims.sid, epoch: claims.epoch };
   if ("sid" in claims) return { email: claims.sub, expiresAt: new Date(claims.exp * 1000).toISOString(), sid: claims.sid };
   return { email: claims.sub, expiresAt: new Date(claims.exp * 1000).toISOString() };
+}
+
+const READ_BINDING_CLAIMS = ["sid", "epoch", "aetag", "setag"];
+function hasReadBindingClaim(claims: unknown): boolean {
+  return !!claims && typeof claims === "object" && !Array.isArray(claims) && READ_BINDING_CLAIMS.some((k) => k in (claims as object));
+}
+/**
+ * B15-29 r4: decode-only (NO signature check) -- true when the request's one read cookie carries any One-Login binding
+ * claim. Used ONLY to refuse while one IAOS sign-in is off (zero I/O); an unsigned decode never authorizes.
+ */
+export function cookieHasOneLoginBinding(event: any): boolean {
+  let token: string;
+  try { token = readSessionToken(event); } catch { return false; }
+  const parts = token.split(".");
+  if (parts.length !== 3) return false;
+  try { return hasReadBindingClaim(JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"))); } catch { return false; }
 }
 
 /** The one read-session cookie value. Two or more copies are ambiguous and refused. */

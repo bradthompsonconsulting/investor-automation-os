@@ -14,7 +14,7 @@ import {
   READ_AUTH_UNCONFIGURED, requireReadOrigin, verifyReadSession,
 } from "./lib/app-read-auth";
 import { verifyGoogleIdToken } from "./lib/google-identity";
-import { SESSION_UNAVAILABLE, beginSession, checkSession, issueSignoutHandle, sessionBound } from "./lib/session-revocation";
+import { SESSION_UNAVAILABLE, beginSession, checkSession, issueSignoutHandle, sessionBound, sessionViewTags } from "./lib/session-revocation";
 import { oneLoginActiveFor } from "../../shared/ghl-config";
 import { randomBytes } from "node:crypto";
 
@@ -60,7 +60,9 @@ export const handler = async (event: any) => {
 
 /**
  * B15-29 (INV-137), ONLY while one IAOS sign-in is on (C1 status, design r4 §B-§D; authority r5; lifetime r6):
- *   GET    200 {clientId, signedIn:true, expiresAt, state:"signed_in", handle}   the store check answered ACTIVE
+ *   GET    200 {clientId, signedIn:true, expiresAt, state:"signed_in", handle, operator, session}   the store check answered ACTIVE
+ *          (r4: operator / session are NON-SECRET keyed tags of the email and the sid -- sessionViewTags -- so the page can
+ *          partition its data on a session replacement or operator change; neither is a credential or reveals the sid)
  *          200 {clientId, signedIn:false, expiresAt:null, state:"signed_out"}   no / invalid / expired / unbound cookie
  *          200 {clientId, signedIn:false, expiresAt:null, state:"revoked"}      the store check answered REVOKED
  *          503 {clientId, state:"unavailable", by:"iaos-session-unavailable"}   anything uncertain -- never signedIn
@@ -85,7 +87,8 @@ async function oneLogin(event: any, config: ReturnType<typeof appReadConfig>) {
     if (r.kind === "revoked") return json(200, { ...out, state: "revoked" });
     if (r.kind !== "active") return json(503, { clientId: config.clientId, state: "unavailable", by: SESSION_UNAVAILABLE });
     const handle = issueSignoutHandle({ sid: session.sid as string, epoch: session.epoch as string, expiresAt: session.expiresAt }, config);
-    return json(200, { clientId: config.clientId, signedIn: true, expiresAt: session.expiresAt, state: "signed_in", handle });
+    const tags = sessionViewTags(session.email, config.deployment, session.sid as string, config);
+    return json(200, { clientId: config.clientId, signedIn: true, expiresAt: session.expiresAt, state: "signed_in", handle, operator: tags.operator, session: tags.session });
   }
   if (event.httpMethod === "POST") {
     let email: string;
