@@ -380,6 +380,8 @@ jobs:
         run: node app/scripts/test-deal-calculator-interaction.cjs
       - name: Incomplete repairs read as provisional, never a green Meets; numbers unchanged, real page (INV-134 B15-26, INV-100 B15-01) — 55 checks
         run: node app/scripts/test-b15-26-provisional-repairs.cjs
+      - name: Calendar reliability -- unavailable is never empty, each failure named, last good read kept and labelled, GHL Calendars one click away, real App (INV-106, B15-07) — 21 checks
+        run: node app/scripts/test-b15-07-calendar-reliability.cjs
       - name: Get Comps stays on one line and its reason wraps below at 640/480px; wide layout unchanged, real App (Pass 1 F44) — 26 checks
         run: node app/scripts/test-b15-44-get-comps-layout.cjs
       - name: Offer Readiness decision panel starting state, loading lockout and per-deal choice, real Seller Call page (Pass 1 F33) — 31 checks, floor 24
