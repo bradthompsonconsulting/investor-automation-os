@@ -1,0 +1,536 @@
+/**
+ * B15-29 (INV-137) professional login experience -- REAL page, headless Chromium, offline (spec SPEC_LOGIN_EXPERIENCE §5).
+ *
+ * Vite serves scripts/harness/login-experience (the REAL Layout + OneLoginAccess + OneLoginScreen + reminder dialog +
+ * REAL saving module around a workspace page whose draft lives only in component memory) for any /ws/... deep link.
+ * The REAL sign-in popup page public/app-read-login.html (+ .js) is served as-is; ONLY Google's GIS script is
+ * replaced by an in-process stub (its button hands the page a fixture credential). Every /.netlify/functions request
+ * is answered by the REAL handlers in this process (app-read-session, app-write-token, app-signout; every save runs
+ * requireAppWriter + sessionWriteRefusal). The revocation store is the in-memory fake Blob API; Google tokeninfo is a
+ * fixture. The one-sign-in switch is ON only in this process's in-memory config. Nothing leaves the machine: any
+ * other outbound request is aborted and counted (L0).
+ *
+ * The server expiry is controlled by issuing the SAME bound session (same sid, epoch and store ETags) with an earlier
+ * sign-in instant, so the real status answer reports an `expiresAt` days, or seconds, away.
+ *
+ * Screenshots are written ONLY when LOGIN_UI_SHOTS names a directory (never into the repository by default).
+ */
+'use strict';
+process.env.NODE_ENV = 'test';
+const fs = require('node:fs');
+const path = require('node:path');
+const Module = require('node:module');
+const ts = require('typescript');
+const { createFakeBlobs } = require('./lib/b15-29-fake-blobs.cjs');
+
+const APP = path.resolve(__dirname, '..');
+const FUNCTIONS = path.join(APP, 'netlify', 'functions');
+Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true },
+}).outputText, filename);
+Module._resolveFilename = ((original) => function (name, parent, ...rest) {
+  if (name.startsWith('.') && parent) {
+    const candidate = path.resolve(path.dirname(parent.filename), name + '.ts');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return original.call(this, name, parent, ...rest);
+})(Module._resolveFilename);
+
+const ORIGIN = 'https://proof.example.invalid';
+const SITE = '07ca1f1a-60fd-4229-a076-528970957912';
+const EPOCH = 'fixture-epoch-0001';
+const DAY = 24 * 3600_000;
+Object.assign(process.env, {
+  IAOS_ENV: 'test',
+  IAOS_APP_READ_GOOGLE_CLIENT_ID: 'offline-read-client',
+  IAOS_APP_READ_SESSION_SECRET: 'offline-read-fixture-only-not-a-real-secret',
+  IAOS_APP_READ_BRAD_EMAILS: 'brad@example.invalid',
+  IAOS_APP_READ_ALLOWED_ORIGIN: ORIGIN,
+  IAOS_APP_WRITE_GOOGLE_CLIENT_ID: 'offline-write-client',
+  IAOS_APP_WRITE_SESSION_SECRET: 'offline-write-fixture-only-not-a-real-secret',
+  IAOS_APP_WRITE_BRAD_EMAILS: 'brad@example.invalid',
+  IAOS_APP_WRITE_ALLOWED_ORIGIN: ORIGIN,
+});
+delete process.env.IAOS_VOICE_SESSION_SECRET;
+
+const blobs = createFakeBlobs({ siteID: SITE });
+blobs.put('iaos-write-receipts', 'session-revocation/_authority', JSON.stringify({ env: 'test', epoch: EPOCH, kind: 'iaos-session-revocation-authority', siteID: SITE, v: 1 }));
+let googleEmail = 'brad@example.invalid';
+global.fetch = async (url, init) => {
+  const u = String(url);
+  if (blobs.handles(u)) return blobs.fetch(url, init);
+  if (u.startsWith('https://oauth2.googleapis.com/tokeninfo')) {
+    return new Response(JSON.stringify({ iss: 'https://accounts.google.com', aud: 'offline-read-client', email: googleEmail, email_verified: 'true', exp: String(Math.floor(Date.now() / 1000) + 600) }), { status: 200 });
+  }
+  throw new Error('unexpected server-side outbound request: ' + u);
+};
+const cfg = require(path.join(APP, 'shared/ghl-config.ts'));
+cfg.getConfig('test').oneLogin = cfg.ONE_LOGIN_ENABLED;   // in-memory, this process only
+const readAuth = require(path.join(FUNCTIONS, 'lib/app-read-auth.ts'));
+const writeAuth = require(path.join(FUNCTIONS, 'lib/app-write-auth.ts'));
+const rev = require(path.join(FUNCTIONS, 'lib/session-revocation.ts'));
+const H = {
+  session: require(path.join(FUNCTIONS, 'app-read-session.ts')).handler,
+  token: require(path.join(FUNCTIONS, 'app-write-token.ts')).handler,
+  signout: require(path.join(FUNCTIONS, 'app-signout.ts')).handler,
+};
+const HARNESS = '/scripts/harness/login-experience/index.html';
+const SHOTS = process.env.LOGIN_UI_SHOTS || '';
+if (SHOTS) fs.mkdirSync(SHOTS, { recursive: true });
+
+let checks = 0, failures = 0;
+function check(name, ok, detail) {
+  checks += 1; if (!ok) failures += 1;
+  console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail)}`}`);
+}
+
+// ── the browser's one IAOS session cookie (the harness is http; the __Host- cookie is modelled by this jar) ──
+let jar = null;
+const setCookies = [];
+const claims = () => JSON.parse(Buffer.from(jar.split('.')[1], 'base64url'));
+const jarSid = () => (jar ? claims().sid : null);
+/** A real sign-in through the REAL handler (binds a new session at the fake store) -- used to seed a session directly. */
+const signInJar = async () => {
+  const res = await H.session({ httpMethod: 'POST', headers: { origin: ORIGIN, 'x-nf-site-id': SITE }, blobs: blobs.lambdaBlobs, body: JSON.stringify({ googleIdToken: 'fixture-google-token' }) });
+  if (res.statusCode !== 200) throw new Error('fixture sign-in failed: ' + res.body);
+  setCookies.push(res.headers['Set-Cookie']);
+  jar = /__Host-iaos_read=([^;]+)/.exec(res.headers['Set-Cookie'])[1];
+};
+/** The SAME bound session, re-issued as if signed in `agoMs` ago: the server then reports expiresAt = that + 30 days. */
+const signedInAgo = (agoMs) => {
+  const c = claims();
+  jar = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now() - agoMs, c.sid, c.epoch, { aetag: c.aetag, setag: c.setag }).token;
+  return claims().exp * 1000;
+};
+/** What the server says right now for this jar (direct handler call; not logged as a page request). */
+const serverStatus = async () => JSON.parse((await H.session({ httpMethod: 'GET', headers: { cookie: `${readAuth.READ_COOKIE}=${jar}`, 'x-nf-site-id': SITE }, blobs: blobs.lambdaBlobs })).body);
+
+let log = [];
+const applied = [];
+const outbound = [];
+// Google Identity Services, stubbed: renders one button; clicking it hands the page a fixture ID token.
+const GIS_STUB = `window.google = { accounts: { id: {
+  initialize(o) { window.__gis = o; },
+  renderButton(el) { const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Sign in with Google (stub)';
+    b.setAttribute('data-testid', 'gis-button'); b.onclick = () => window.__gis.callback({ credential: 'fixture-google-token' }); el.appendChild(b); },
+} } };`;
+
+const watchdog = setTimeout(() => { console.error('FAIL  the login-experience page suite did not finish within 9 minutes -- stopped'); process.exit(1); }, 9 * 60_000);
+
+async function main() {
+  const { createServer } = await import('vite');
+  const react = (await import('@vitejs/plugin-react')).default;
+  const { chromium } = require('playwright');
+  const server = await createServer({
+    root: APP, configFile: false, plugins: [react()], logLevel: 'error', clearScreen: false,
+    server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false },
+    optimizeDeps: { entries: [HARNESS.slice(1)], include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-router-dom', 'lucide-react'] },
+  });
+  await server.listen();
+  const base = server.resolvedUrls.local[0].replace(/\/$/, '');
+  const browser = await chromium.launch();
+  const exit = async (code) => { clearTimeout(watchdog); await browser.close().catch(() => {}); await server.close().catch(() => {}); process.exit(code); };
+
+  const router = async (route, tab) => {
+    const request = route.request();
+    const url = request.url();
+    if (url.startsWith('https://accounts.google.com/gsi/client')) return route.fulfill({ status: 200, contentType: 'text/javascript', body: GIS_STUB });
+    // Any deep link under /ws/ is the harness page; the browser keeps the deep-link URL.
+    if (url.startsWith(`${base}/ws/`) && request.resourceType() === 'document') return route.continue({ url: `${base}${HARNESS}` });
+    if (url.startsWith(base) && !url.includes('/.netlify/functions/')) return route.continue();
+    if (!url.includes('/.netlify/functions/')) { outbound.push(url); return route.abort(); }
+    const fn = new URL(url).pathname.replace('/.netlify/functions/', '');
+    const headers = await request.allHeaders();
+    const event = { httpMethod: request.method(), headers: {}, body: request.postData() || '' };
+    for (const [k, v] of Object.entries(headers)) if (!['cookie', 'origin'].includes(k)) event.headers[k] = v;
+    if (headers.origin !== undefined) event.headers.origin = headers.origin === base ? ORIGIN : headers.origin;
+    if (jar) event.headers.cookie = `${readAuth.READ_COOKIE}=${jar}`;
+    event.headers['x-nf-site-id'] = SITE;
+    event.blobs = blobs.lambdaBlobs;
+    const entry = { tab, fn, method: request.method() };
+    log.push(entry);
+    let res;
+    if (fn === 'app-read-session') res = await H.session(event);
+    else if (fn === 'app-write-token') res = await H.token(event);
+    else if (fn === 'app-signout') res = await H.signout(event);
+    else if (fn === 'ghl-write') {
+      try { writeAuth.requireAppWriter(event); } catch { res = { statusCode: 401, headers: {}, body: JSON.stringify({ error: 'Application write sign-in required' }) }; }
+      if (!res) res = await rev.sessionWriteRefusal(event);
+      if (!res) { applied.push({ tab, body: JSON.parse(event.body).args.body }); res = { statusCode: 200, headers: {}, body: JSON.stringify({ ok: true }) }; }
+    } else res = { statusCode: 404, headers: {}, body: JSON.stringify({ error: 'fixture does not model ' + fn }) };
+    entry.status = res.statusCode;
+    const sc = res.headers && res.headers['Set-Cookie'];
+    if (sc) { entry.setCookie = true; setCookies.push(sc); const m = /__Host-iaos_read=([^;]*)/.exec(sc); if (m) jar = m[1] || null; }
+    if (fn === 'app-read-session' && request.method() === 'GET') { try { entry.expiresAt = JSON.parse(res.body).expiresAt; entry.state = JSON.parse(res.body).state; } catch { /* not JSON */ } }
+    return route.fulfill({ status: res.statusCode, contentType: 'application/json', body: res.body });
+  };
+  const names = new WeakMap();
+  const routed = new WeakSet();
+  const tabOf = (request) => { try { return names.get(request.frame().page()) || 'popup'; } catch { return 'worker'; } };
+  const newCtx = async (opts = {}) => {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, ...opts });
+    routed.add(ctx); await ctx.route('**/*', (r) => router(r, tabOf(r.request())));
+    return ctx;
+  };
+  const newTab = async (ctx, tab, at = '/ws/seller-call/42?tab=notes', init) => {
+    const p = await ctx.newPage();
+    names.set(p, tab);
+    p.on('pageerror', (e) => console.error('pageerror', tab, String(e)));
+    if (init) await p.addInitScript(init);
+    await p.goto(`${base}${at}`);
+    return p;
+  };
+  const until = async (fn, ms = 20000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await fn()) return true; await new Promise((r) => setTimeout(r, 50)); } return false; };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const shown = (p, id) => p.getByTestId(id).first().isVisible().catch(() => false);
+  const txt = (p, id) => p.getByTestId(id).first().textContent({ timeout: 3000 }).catch(() => null);
+  const has = (p, s) => p.getByText(s, { exact: false }).first().isVisible().catch(() => false);
+  const msgText = async (p) => ((await p.getByTestId('one-login-card').locator('[role="status"],[role="alert"]').first().textContent().catch(() => '')) || '').trim();
+  const shot = async (p, name, opts = {}) => { if (SHOTS) await p.screenshot({ path: path.join(SHOTS, name), ...opts }); };
+  const rootInert = (p) => p.evaluate(() => document.getElementById('root').hasAttribute('inert'));
+  const draftValue = (p) => p.getByTestId('draft').inputValue().catch(() => null);
+  const mounts = (p) => p.evaluate(() => window.__workspaceMounts || 0);
+  const activeTestId = (p) => p.evaluate(() => document.activeElement && document.activeElement.getAttribute('data-testid'));
+  const overlayOnTop = (p, id) => p.evaluate((tid) => { const el = document.elementFromPoint(innerWidth / 2, innerHeight / 2); return !!(el && el.closest(`[data-testid="${tid}"]`)); }, id);
+  /** Click the IAOS button, then Google's (stubbed) button in the REAL popup page. Returns the popup page. */
+  const signInViaPopup = async (ctx, p, opts) => { try { return await signInViaPopupOnce(ctx, p, opts); } catch { return null; } };
+  const signInViaPopupOnce = async (ctx, p, { beforeGoogle } = {}) => {
+    const popupP = ctx.waitForEvent('page', { timeout: 20000 });
+    await p.getByRole('button', { name: 'Sign In to IAOS', exact: true }).click({ timeout: 8000 }).catch(() => {});
+    const pop = await popupP;
+    await pop.getByTestId('gis-button').waitFor({ timeout: 20000 });
+    if (beforeGoogle) await beforeGoogle(pop);
+    await pop.getByTestId('gis-button').click({ timeout: 8000 }).catch(() => {});
+    return pop;
+  };
+
+  try {
+    // ════════════════ 1. entrance: deep link, layout, popup flow ════════════════
+    const ctx1 = await newCtx();
+    const A = await newTab(ctx1, 'A');
+    await until(() => shown(A, 'one-login-sign-in'));
+    check('L1 entrance: a full-page screen with the IAOS mark, "Welcome to IAOS" and ONE button "Sign In to IAOS"; the app is not rendered',
+      await shown(A, 'one-login-entrance') && await shown(A, 'iaos-mark') && await has(A, 'INVESTOR') && await has(A, 'AUTOMATION OS') &&
+      (await A.getByRole('heading', { name: 'Welcome to IAOS' }).count()) === 1 &&
+      (await A.getByTestId('one-login-card').getByRole('button').count()) === 1 &&
+      (await A.getByRole('button', { name: 'Sign In to IAOS', exact: true }).count()) === 1 &&
+      await has(A, 'Secure sign-in with your authorized Google account.') &&
+      (await A.getByTestId('draft').count()) === 0 && (await A.getByTestId('route').count()) === 0);
+    check('L1 no registration fields: the entrance has no input, select or textarea', (await A.locator('input, select, textarea').count()) === 0);
+    check('L1 the entrance covers the whole viewport (opaque navy page) and the rest of the page is inert',
+      await overlayOnTop(A, 'one-login-entrance') && await rootInert(A) &&
+      (await A.evaluate(() => getComputedStyle(document.querySelector('[data-testid="one-login-entrance"]')).backgroundColor)) === 'rgb(7, 20, 46)');
+    check('L2 the deep link is kept on the entrance screen (URL untouched)', new URL(A.url()).pathname + new URL(A.url()).search === '/ws/seller-call/42?tab=notes', A.url());
+    const statusBefore = log.filter((e) => e.tab === 'A').map((e) => `${e.method} ${e.fn}`);
+    check('L2 before sign-in the entrance made only the status check (no protected read, no write)', statusBefore.length >= 1 && statusBefore.every((s) => s === 'GET app-read-session'), statusBefore);
+
+    for (const [w, h, name] of [[1440, 900, 'entrance-1440x900.png'], [768, 1024, 'entrance-768x1024.png'], [375, 812, 'entrance-375x812.png']]) {
+      await A.setViewportSize({ width: w, height: h });
+      await sleep(150);
+      const m = await A.evaluate(() => {
+        const card = document.querySelector('[data-testid="one-login-card"]').getBoundingClientRect();
+        const btn = document.querySelector('[data-testid="one-login-sign-in"]').getBoundingClientRect();
+        const se = document.scrollingElement;
+        const layer = document.querySelector('[data-testid="one-login-entrance"]');
+        return { sw: se.scrollWidth, cw: se.clientWidth, lsw: layer.scrollWidth, lcw: layer.clientWidth, cardW: card.width, cardL: card.left, cardR: card.right, btnH: btn.height, btnW: btn.width, vw: innerWidth };
+      });
+      const cardOk = w < 480 ? Math.abs(m.cardW - (w - 32)) <= 1 && Math.abs(m.cardL - 16) <= 1 : Math.abs(m.cardW - 420) <= 1;
+      check(`L3 responsive ${w}x${h}: no horizontal overflow; card ${w < 480 ? 'full width inside a 16 px gutter' : '420 px, centred'}; button >= 44 px tall, full card width`,
+        m.sw <= m.cw && m.lsw <= m.lcw && cardOk && m.cardL >= 0 && m.cardR <= m.vw && m.btnH >= 44 && m.btnW > m.cardW - 90, m);
+      await shot(A, name);
+    }
+    await A.setViewportSize({ width: 1440, height: 900 });
+
+    // L18 a11y basics on the entrance
+    const a11y = await A.evaluate(() => {
+      const lum = (rgb) => { const [r, g, b] = rgb.match(/\d+(\.\d+)?/g).slice(0, 3).map(Number).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+      const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
+      const card = document.querySelector('[data-testid="one-login-card"]');
+      const h1 = card.querySelector('h1'); const btn = card.querySelector('[data-testid="one-login-sign-in"]');
+      const dialog = card.closest('[role="dialog"]') || card;
+      return {
+        heading: ratio(getComputedStyle(h1).color, getComputedStyle(card).backgroundColor),
+        button: ratio(getComputedStyle(btn).color, getComputedStyle(btn).backgroundColor),
+        modal: dialog.getAttribute('aria-modal'), labelledBy: document.getElementById(dialog.getAttribute('aria-labelledby') || '')?.textContent,
+        btnBg: getComputedStyle(btn).backgroundColor, cardBg: getComputedStyle(card).backgroundColor,
+      };
+    });
+    check('L18 a11y: the screen is a labelled aria-modal dialog ("Welcome to IAOS"); primary text contrast >= 7:1 on the card; button text >= 4.5:1 on CTA blue #005CE6; card #1B2433',
+      a11y.modal === 'true' && a11y.labelledBy === 'Welcome to IAOS' && a11y.heading >= 7 && a11y.button >= 4.5 && a11y.btnBg === 'rgb(0, 92, 230)' && a11y.cardBg === 'rgb(27, 36, 51)', a11y);
+    check('L18 a11y: the focused element on entry is the labelled "Sign In to IAOS" button', (await activeTestId(A)) === 'one-login-sign-in');
+    {
+      const inside = [];
+      for (let i = 0; i < 5; i += 1) { await A.keyboard.press(i % 2 ? 'Shift+Tab' : 'Tab'); inside.push(await A.evaluate(() => !!document.activeElement.closest('[data-iaos-layer]'))); }
+      check('L18 a11y: Tab / Shift+Tab never leave the entrance dialog (focus trap)', inside.every(Boolean), inside);
+    }
+
+    // L5 popup blocked (separate tab with window.open returning null)
+    const AB = await newTab(ctx1, 'AB', '/ws/pipeline', () => { window.open = () => null; });
+    await until(() => shown(AB, 'one-login-sign-in'));
+    await AB.getByRole('button', { name: 'Sign In to IAOS', exact: true }).click({ timeout: 8000 }).catch(() => {});
+    await until(async () => (await msgText(AB)) !== '');
+    check('L5 popup blocked: "Allow pop-ups for IAOS to sign in." as an alert; still the entrance, no app',
+      (await AB.getByRole('alert').filter({ hasText: 'Allow pop-ups for IAOS to sign in.' }).count()) === 1 && (await AB.getByTestId('draft').count()) === 0);
+    await AB.close();
+
+    // L4 / L6 / L8 popup flow through the REAL popup page (GIS stubbed)
+    log = [];
+    let pop;
+    {
+      const popupP = ctx1.waitForEvent('page', { timeout: 20000 });
+      await A.getByRole('button', { name: 'Sign In to IAOS', exact: true }).click({ timeout: 8000 }).catch(() => {});
+      pop = await popupP;
+      await until(async () => (await msgText(A)) === 'Opening secure sign-in…');
+      const btn = A.getByTestId('one-login-sign-in');
+      check('L8 working: "Opening secure sign-in…"; the button is busy and disabled (aria-busy, aria-disabled)',
+        (await msgText(A)) === 'Opening secure sign-in…' && (await btn.getAttribute('aria-busy', { timeout: 3000 }).catch(() => null)) === 'true' && (await btn.getAttribute('aria-disabled', { timeout: 3000 }).catch(() => null)) === 'true');
+      await pop.getByTestId('gis-button').waitFor({ timeout: 20000 });
+      check('L4 the REAL popup page is restyled: the IAOS mark, "Sign in to IAOS", Google\'s button, the secure-sign-in footer; navy page, #1B2433 card',
+        await has(pop, 'INVESTOR') && await has(pop, 'AUTOMATION OS') && (await pop.getByRole('heading', { name: 'Sign in to IAOS' }).count()) === 1 &&
+        await shown(pop, 'gis-button') && await has(pop, 'Secure sign-in with your authorized Google account.') &&
+        (await pop.evaluate(() => getComputedStyle(document.querySelector('.card')).backgroundColor)) === 'rgb(27, 36, 51)');
+      await shot(pop, 'popup-sign-in.png');
+      googleEmail = 'intruder@example.invalid';
+      await pop.getByTestId('gis-button').click({ timeout: 8000 }).catch(() => {});
+      await until(() => has(pop, "This Google account isn't authorized for IAOS."));
+      check('L6 not authorized: the popup says "This Google account isn\'t authorized for IAOS."; the opener is still the entrance and nothing is signed in',
+        await has(pop, "This Google account isn't authorized for IAOS.") && await shown(A, 'one-login-entrance') && (await A.getByTestId('draft').count()) === 0 && jar === null);
+      googleEmail = 'brad@example.invalid';
+      await pop.getByTestId('gis-button').click({ timeout: 8000 }).catch(() => {});
+    }
+    await until(() => shown(A, 'draft'));
+    check('L4 popup flow -> the app opens at the original deep link /ws/seller-call/42?tab=notes (URL and route)',
+      (await txt(A, 'route')) === '/ws/seller-call/42?tab=notes' && new URL(A.url()).pathname + new URL(A.url()).search === '/ws/seller-call/42?tab=notes');
+    check('L4 after sign-in: entrance gone, nothing inert, signed-in status line, the popup was closed, no page reload',
+      !(await shown(A, 'one-login-entrance')) && !(await rootInert(A)) && await shown(A, 'read-access-signed-in') && pop.isClosed() &&
+      log.filter((e) => e.tab === 'A' && e.fn === 'app-read-session' && e.method === 'GET').length === 1);
+    check('L4 the sign-in was the ONE real POST from the popup (session bound, persistent cookie); the opener sent no write',
+      log.filter((e) => e.fn === 'app-read-session' && e.method === 'POST').length === 2 && log.filter((e) => e.fn === 'app-read-session' && e.method === 'POST' && e.status === 200).length === 1 &&
+      log.filter((e) => e.tab === 'A' && e.method !== 'GET' && e.fn !== 'app-write-token').length === 0);
+
+    // L8b popup closed without signing in -> idle (new context, nothing signed in)
+    jar = null;
+    const ctx1b = await newCtx();
+    const A2 = await newTab(ctx1b, 'A2', '/ws/pipeline');
+    await until(() => shown(A2, 'one-login-sign-in'));
+    {
+      const popupP = ctx1b.waitForEvent('page', { timeout: 20000 });
+      await A2.getByRole('button', { name: 'Sign In to IAOS', exact: true }).click({ timeout: 8000 }).catch(() => {});
+      const p2 = await popupP; await p2.waitForLoadState().catch(() => {}); await p2.close();
+      await until(async () => (await msgText(A2)) === '' && (await A2.getByTestId('one-login-sign-in').getAttribute('aria-busy', { timeout: 3000 }).catch(() => null)) === null, 5000);
+      check('L8 popup closed without signing in: back to idle (no message, button enabled), still the entrance',
+        (await msgText(A2)) === '' && (await A2.getByTestId('one-login-sign-in').getAttribute('aria-busy', { timeout: 3000 }).catch(() => null)) === null && await shown(A2, 'one-login-entrance'));
+    }
+    await ctx1b.close();
+    await ctx1.close();
+
+    // ════════════════ 2. outage at the entrance ════════════════
+    await signInJar();
+    for (let i = 0; i < 12; i += 1) blobs.rule({ method: 'PUT', status: 500 });
+    const ctx2 = await newCtx();
+    const O = await newTab(ctx2, 'O');
+    await until(() => shown(O, 'one-login-try-again'));
+    check('L7 entrance outage is never a sign-in prompt: "IAOS sign-in is temporarily unavailable. Try again." with Try again and NO sign-in button',
+      (await msgText(O)) === 'IAOS sign-in is temporarily unavailable. Try again.' && await shown(O, 'one-login-try-again') &&
+      (await O.getByRole('button', { name: /sign in/i }).count()) === 0 && !(await has(O, 'signed out')));
+    blobs.clearRules();
+    await O.getByTestId('one-login-try-again').click({ timeout: 5000 }).catch(() => {});   // absent under a mutation: the next check reports it
+    await until(() => shown(O, 'draft'));
+    check('L7 Try again (store back): signed in at the deep link', (await txt(O, 'route')) === '/ws/seller-call/42?tab=notes');
+    await ctx2.close();
+
+    // ════════════════ 3. expiry: 1-day reminder, overlay at expiresAt + 1 s, re-sign-in ════════════════
+    await signInJar();
+    const exp3 = signedInAgo(30 * DAY - 7000);   // the server's expiry is 7 s away
+    const ctx3 = await newCtx();
+    const X = await newTab(ctx3, 'X');
+    await until(() => shown(X, 'session-reminder'));
+    check('L12 at T1 (expiry < 1 day away) the 1-day reminder is shown: "Your IAOS session expires in 1 day. …"',
+      ((await txt(X, 'session-reminder-text')) || '') === 'Your IAOS session expires in 1 day. Log in again now to keep your workflow uninterrupted.');
+    await X.getByTestId('session-reminder-later').click({ timeout: 8000 }).catch(() => {});
+    await until(async () => !(await shown(X, 'session-reminder')));
+    await X.getByTestId('draft').click({ timeout: 8000 }).catch(() => {});
+    await X.getByTestId('draft').fill('Seller agreed to 142k, wants a 30-day close -- NOT saved', { timeout: 8000 }).catch(() => {});
+    const xWrites = log.filter((e) => e.tab === 'X' && e.fn === 'ghl-write').length;
+    while (Date.now() < exp3 + 1000) await sleep(100);
+    await until(() => shown(X, 'read-access-recovery'), 10000);
+    const xs = await X.evaluate(() => { const el = document.querySelector('[data-testid="one-login-app"]'); return { app: el ? getComputedStyle(el).visibility : 'unmounted' }; });
+    check('L9 at expiresAt + 1 s the overlay is shown: "Your 30-day session has ended. Sign in to continue — your unsaved work is still here."; no signed-in status line; the app is not painted',
+      await shown(X, 'read-access-recovery') && (await msgText(X)) === 'Your 30-day session has ended. Sign in to continue — your unsaved work is still here.' &&
+      !(await shown(X, 'read-access-signed-in')) && !(await shown(X, 'route')) && xs.app === 'hidden' && await overlayOnTop(X, 'read-access-recovery'));
+    check('L9 the server agrees: the status answer for this cookie is signed_out (never signed in after expiresAt)', (await serverStatus()).signedIn === false &&
+      log.filter((e) => e.tab === 'X' && e.fn === 'app-read-session' && e.method === 'GET').slice(-1)[0].state === 'signed_out');
+    check('L9 the expired overlay keeps the typed draft (the app stays mounted, never remounted)', (await draftValue(X)) === 'Seller agreed to 142k, wants a 30-day close -- NOT saved' && (await mounts(X)) === 1);
+    check('L9 the overlay is aria-modal over an inert app root', (await X.getByTestId('read-access-recovery').getByRole('dialog').getAttribute('aria-modal', { timeout: 3000 }).catch(() => null)) === 'true' && await rootInert(X));
+    {
+      const inside = [];
+      for (let i = 0; i < 6; i += 1) { await X.keyboard.press(i % 3 === 2 ? 'Shift+Tab' : 'Tab'); inside.push(await X.evaluate(() => !!document.activeElement.closest('[data-iaos-layer]'))); }
+      await X.getByTestId('draft').focus().catch(() => {});
+      check('L10 focus trap: Tab / Shift+Tab stay inside the overlay, and the inert draft cannot take focus', inside.every(Boolean) && (await activeTestId(X)) !== 'draft', inside);
+    }
+    {
+      const r = await X.evaluate(async () => { const m = await import('/src/lib/app-write-session.ts'); try { await m.appWriteFetch('/.netlify/functions/ghl-write', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation: 'note.create', targetId: 'x', requestId: 'expired-1', args: { body: 'should never apply' } }) }); return 'sent'; } catch (e) { return 'refused:' + e.message; } });
+      check('L9 writes refused after expiry: a save is refused before sending ("Saving paused…"), nothing reaches a writer, nothing is applied',
+        r.startsWith('refused:Saving paused') && log.filter((e) => e.tab === 'X' && e.fn === 'ghl-write').length === xWrites && !applied.some((a) => a.body === 'should never apply'), r);
+    }
+    await shot(X, 'overlay-expired-1440x900.png');
+    const oldSid3 = jarSid();
+    await signInViaPopup(ctx3, X);
+    await until(async () => !(await shown(X, 'read-access-recovery')) && await shown(X, 'route'));
+    await sleep(100);
+    check('L11 after re-sign-in the same page shows the same draft (same route, not remounted, nothing re-sent)',
+      (await draftValue(X)) === 'Seller agreed to 142k, wants a 30-day close -- NOT saved' && (await txt(X, 'route')) === '/ws/seller-call/42?tab=notes' &&
+      (await mounts(X)) === 1 && log.filter((e) => e.tab === 'X' && e.fn === 'ghl-write').length === xWrites);
+    check('L11 the overlay is gone, the app root is no longer inert, and focus is back in the draft', !(await rootInert(X)) && (await activeTestId(X)) === 'draft');
+    check('L11 the re-sign-in is a NEW session (new sid) and the status line is back', jarSid() !== oldSid3 && await shown(X, 'read-access-signed-in'));
+    await ctx3.close();
+
+    // ════════════════ 4. 5-day boundary, Remind Me Later ════════════════
+    await signInJar();
+    const exp4 = signedInAgo(25 * DAY - 4000);   // T5 is 4 s away
+    const T5 = exp4 - 5 * DAY;
+    const ctx4 = await newCtx();
+    const R = await newTab(ctx4, 'R');
+    await until(() => shown(R, 'draft'));
+    await sleep(300);
+    check('L12 no reminder before T5 (expiry 5 days + 4 s away)', Date.now() < T5 && !(await shown(R, 'session-reminder')), { msToT5: T5 - Date.now() });
+    await until(() => shown(R, 'session-reminder'), 10000);
+    check('L12 at T5 the 5-day reminder appears with no reload (timer to the checkpoint): "Your IAOS session expires in 5 days. …"; Remind Me Later + Log In Again',
+      Date.now() >= T5 && ((await txt(R, 'session-reminder-text')) || '') === 'Your IAOS session expires in 5 days. Log in again now to keep your workflow uninterrupted.' &&
+      await shown(R, 'session-reminder-later') && await shown(R, 'session-reminder-log-in') && (await R.getByTestId('session-reminder').getAttribute('aria-modal', { timeout: 3000 }).catch(() => null)) === 'true' && await rootInert(R));
+    await shot(R, 'reminder-5-day-1440x900.png');
+    const before = log.length; const cookiesBefore = setCookies.length; const statusBeforeLater = await serverStatus();
+    await R.getByTestId('session-reminder-later').click({ timeout: 8000 }).catch(() => {});
+    await sleep(1500);
+    const statusAfterLater = await serverStatus();
+    check('L13 Remind Me Later sends no request and changes no cookie; the server expiresAt is unchanged',
+      log.length === before && setCookies.length === cookiesBefore && statusAfterLater.expiresAt === statusBeforeLater.expiresAt && Date.parse(statusAfterLater.expiresAt) === exp4,
+      { requests: log.slice(before), before: statusBeforeLater.expiresAt, after: statusAfterLater.expiresAt });
+    check('L13 Remind Me Later closes the reminder; the app is interactive again', !(await shown(R, 'session-reminder')) && !(await rootInert(R)));
+    await R.getByTestId('nav-pipeline').click({ timeout: 8000 }).catch(() => {});
+    await until(async () => (await txt(R, 'route')) === '/ws/pipeline');
+    await sleep(300);
+    check('L13 Remind Me Later: no re-show after navigation', (await txt(R, 'route')) === '/ws/pipeline' && !(await shown(R, 'session-reminder')));
+    await R.reload();
+    await until(() => shown(R, 'draft'));
+    await sleep(400);
+    check('L13 Remind Me Later: no re-show after reload', await shown(R, 'draft') && !(await shown(R, 'session-reminder')));
+    const R2 = await newTab(ctx4, 'R2', '/ws/pipeline');
+    await until(() => shown(R2, 'draft'));
+    await sleep(400);
+    check('L13 Remind Me Later: no re-show in another tab of the same browser', !(await shown(R2, 'session-reminder')));
+    check('L13 nothing on the way extended the session (server expiresAt still the original)', Date.parse((await serverStatus()).expiresAt) === exp4 &&
+      log.filter((e) => (e.tab === 'R' || e.tab === 'R2') && e.fn === 'app-read-session' && e.expiresAt).every((e) => Date.parse(e.expiresAt) === exp4));
+    await ctx4.close();
+
+    // ════════════════ 5. 1-day boundary after a 5-day dismissal (memory fallback: storage throws); Log In Again + Cancel ════════════════
+    await signInJar();
+    const exp5 = signedInAgo(29 * DAY - 5000);   // T1 is 5 s away; T5 has passed
+    const T1 = exp5 - DAY;
+    const ctx5 = await newCtx();
+    await ctx5.addInitScript(() => { Storage.prototype.setItem = function () { throw new DOMException('fixture', 'QuotaExceededError'); }; Storage.prototype.getItem = function () { throw new DOMException('fixture', 'SecurityError'); }; });
+    const L = await newTab(ctx5, 'L');
+    await until(() => shown(L, 'session-reminder'));
+    check('L12 only the latest due checkpoint: between T5 and T1 the reminder says 5 days', Date.now() < T1 && ((await txt(L, 'session-reminder-text')) || '').includes('expires in 5 days.'));
+    await L.getByTestId('session-reminder-later').click({ timeout: 8000 }).catch(() => {});
+    await L.getByTestId('nav-pipeline').click({ timeout: 8000 }).catch(() => {});
+    await sleep(300);
+    check('L14 storage unavailable: the dismissal is kept in memory (no re-show on navigation)', !(await shown(L, 'session-reminder')));
+    await L.getByTestId('draft').click({ timeout: 8000 }).catch(() => {});
+    await L.getByTestId('draft').fill('typed before the 1-day reminder', { timeout: 8000 }).catch(() => {});
+    await until(() => shown(L, 'session-reminder'), 10000);
+    check('L12 at T1 the 1-day reminder appears (a different checkpoint is not covered by the 5-day dismissal)',
+      Date.now() >= T1 && ((await txt(L, 'session-reminder-text')) || '') === 'Your IAOS session expires in 1 day. Log in again now to keep your workflow uninterrupted.');
+    check('L15 the reminder is modal: the app behind it is inert and keeps its draft', await rootInert(L) && (await draftValue(L)) === 'typed before the 1-day reminder');
+    await L.getByTestId('session-reminder-log-in').click({ timeout: 8000 }).catch(() => {});
+    await until(() => shown(L, 'one-login-relogin'));
+    check('L15 Log In Again opens the sign-in overlay above the mounted, inert app (aria-modal, Sign In to IAOS + Cancel)',
+      await shown(L, 'one-login-relogin') && await rootInert(L) && (await L.getByTestId('one-login-relogin').getByRole('dialog').getAttribute('aria-modal', { timeout: 3000 }).catch(() => null)) === 'true' &&
+      await shown(L, 'one-login-sign-in') && await shown(L, 'one-login-cancel') && (await mounts(L)) === 1 && (await draftValue(L)) === 'typed before the 1-day reminder');
+    await shot(L, 'overlay-log-in-again-1440x900.png');
+    { const n = log.length; const sid = jarSid();
+      await L.getByTestId('one-login-cancel').click({ timeout: 8000 }).catch(() => {}); await sleep(300);
+      check('L15 Cancel closes the overlay without touching the session (no request, same sid); focus back in the draft',
+        !(await shown(L, 'one-login-relogin')) && !(await rootInert(L)) && log.length === n && jarSid() === sid && (await activeTestId(L)) === 'draft'); }
+    await ctx5.close();
+
+    // ════════════════ 5b. Log In Again end to end (working storage) ════════════════
+    await signInJar();
+    const exp6 = signedInAgo(29 * DAY - 5000);
+    const ctx6 = await newCtx();
+    const G = await newTab(ctx6, 'G');
+    await until(() => shown(G, 'session-reminder'));
+    await G.getByTestId('session-reminder-later').click({ timeout: 8000 }).catch(() => {});
+    await G.getByTestId('draft').click({ timeout: 8000 }).catch(() => {});
+    await G.getByTestId('draft').fill('Seller call notes kept through Log In Again', { timeout: 8000 }).catch(() => {});
+    await until(() => shown(G, 'session-reminder'), 10000);   // the 1-day checkpoint
+    await shot(G, 'reminder-1-day-1440x900.png');
+    await G.getByTestId('session-reminder-log-in').click({ timeout: 8000 }).catch(() => {});
+    await until(() => shown(G, 'one-login-relogin'));
+    const oldSid6 = jarSid();
+    const beforeLogIn = Date.now();
+    await signInViaPopup(ctx6, G);
+    await until(async () => !(await shown(G, 'one-login-relogin')));
+    await sleep(150);
+    const st6 = await serverStatus();
+    const newExp = Date.parse(st6.expiresAt);
+    check('L15 Log In Again: a NEW session (new sid) whose server expiresAt is 30 days out (not the old one, not extended in place)',
+      jarSid() !== oldSid6 && Math.abs(newExp - (beforeLogIn + 30 * DAY)) <= 15_000 && newExp > exp6, { oldSid6, newSid: jarSid(), newExp: st6.expiresAt, old: new Date(exp6).toISOString() });
+    check('L15 the old session is left to expire, not revoked (its store record is still active)',
+      (blobs.get('iaos-write-receipts', rev.sessionKey('test', oldSid6)) || {}).text === rev.sessionRecordText('test', EPOCH, oldSid6, 'active'));
+    check('L15 back on the same page with the draft intact and focus restored; no reminder for the new session',
+      (await draftValue(G)) === 'Seller call notes kept through Log In Again' && (await txt(G, 'route')) === '/ws/seller-call/42?tab=notes' &&
+      (await mounts(G)) === 1 && !(await rootInert(G)) && (await activeTestId(G)) === 'draft' && !(await shown(G, 'session-reminder')));
+    await G.getByTestId('save').click({ timeout: 8000 }).catch(() => {});
+    await until(async () => ((await txt(G, 'save-result')) || '') !== '');
+    check('L15 the next save under the new session is sent once and applied', ((await txt(G, 'save-result')) || '') === 'Save answered 200' &&
+      applied.filter((a) => a.body === 'Seller call notes kept through Log In Again').length === 1);
+    await ctx6.close();
+
+    // ════════════════ 6. Logout: this tab -> entrance; the other tab -> overlay on its next protected request ════════════════
+    await signInJar();
+    const ctx7 = await newCtx();
+    const LA = await newTab(ctx7, 'LA');
+    const LB = await newTab(ctx7, 'LB', '/ws/pipeline');
+    await until(async () => await shown(LA, 'draft') && await shown(LB, 'draft'));
+    await LB.getByTestId('draft').fill('tab B notes, unsaved', { timeout: 8000 }).catch(() => {});
+    await until(async () => log.filter((e) => e.tab === 'LB' && e.fn === 'app-write-token' && e.status === 200).length >= 1);
+    await LA.getByRole('button', { name: 'Sign out' }).click({ timeout: 8000 }).catch(() => {});
+    await until(() => shown(LA, 'one-login-entrance'));
+    check('L16 Logout (server-confirmed): this tab shows the entrance screen with "You\'ve signed out of IAOS." and the Sign In button; the page is gone',
+      await shown(LA, 'one-login-entrance') && (await msgText(LA)) === "You've signed out of IAOS." && await shown(LA, 'one-login-sign-in') && (await LA.getByTestId('draft').count()) === 0 &&
+      log.filter((e) => e.fn === 'app-signout' && e.status === 200).length === 1);
+    await LB.getByTestId('save').click({ timeout: 8000 }).catch(() => {});
+    await until(() => shown(LB, 'read-access-recovery'));
+    check('L16 the other tab: its next protected request (a save) is refused by the server and the overlay says "You\'ve signed out of IAOS."; its draft is kept',
+      await shown(LB, 'read-access-recovery') && (await msgText(LB)) === "You've signed out of IAOS." && (await draftValue(LB)) === 'tab B notes, unsaved' && !applied.some((a) => a.body === 'tab B notes, unsaved'));
+    await ctx7.close();
+
+    // ════════════════ 7. outage while signed in ════════════════
+    await signInJar();
+    const ctx8 = await newCtx();
+    const U = await newTab(ctx8, 'U');
+    await until(() => shown(U, 'draft'));
+    await U.getByTestId('draft').fill('kept through an outage', { timeout: 8000 }).catch(() => {});
+    for (let i = 0; i < 12; i += 1) blobs.rule({ method: 'PUT', status: 500 });
+    await U.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await until(() => shown(U, 'one-login-try-again'));
+    check('L17 signed-in outage is never a sign-in prompt: the overlay says "IAOS sign-in is temporarily unavailable. Try again." with Try again, no sign-in button, not "signed out"',
+      await shown(U, 'read-access-recovery') && (await msgText(U)) === 'IAOS sign-in is temporarily unavailable. Try again.' &&
+      (await U.getByRole('button', { name: /sign in/i }).count()) === 0 && !(await has(U, 'signed out')) && (await draftValue(U)) === 'kept through an outage');
+    blobs.clearRules();
+    await U.getByTestId('one-login-try-again').click({ timeout: 5000 }).catch(() => {});   // absent under a mutation: the next check reports it
+    await until(() => shown(U, 'route'));
+    check('L17 Try again (store back): the same page and draft', (await draftValue(U)) === 'kept through an outage' && (await mounts(U)) === 1);
+    await ctx8.close();
+
+    check('L0 nothing left the machine: no outbound request other than the stubbed Google script', outbound.length === 0, outbound);
+    if (checks < 45) { failures += 1; console.error(`FAIL  check floor -- ${checks} checks ran, the floor is 45`); }
+    console.log(`B15-29 login experience (real page): ${checks - failures}/${checks} checks passed`);
+    await exit(failures ? 1 : 0);
+  } catch (e) {
+    console.error('FAIL  suite aborted -- ' + (e && e.stack));
+    await exit(1);
+  }
+}
+main();

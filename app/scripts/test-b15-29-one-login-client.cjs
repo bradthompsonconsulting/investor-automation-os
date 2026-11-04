@@ -26,6 +26,9 @@
  *   C10 store unavailable: paused before send / returned once, never re-sent, never a sign-in prompt
  *   C11 Sign out on THIS page pauses at the click; malformed token answers refused before send
  *   C12 the session's last minutes: the token is capped at the session end and still used; never re-sent
+ *   R1-R5 login experience reminders: the server's absolute expiry (never moved by any request), the 5-day / 1-day
+ *       checkpoints, the capped next-checkpoint timer, Remind Me Later keyed by expiry + checkpoint (memory fallback),
+ *       and a reminder module that sends nothing
  */
 'use strict';
 process.env.NODE_ENV = 'test';
@@ -452,8 +455,61 @@ const resetAll = async ({ signIn = true } = {}) => {
     assert.ok(writes().length - n <= 1); noDuplicateWrites();
   });
 
+  // ---------------------------------------------------------------- R reminders (login experience, spec §3)
+  // The reminder module is pure: its only input is the SERVER's absolute expiry from the status answer.
+  const RM = require(path.join(APP, 'src/lib/session-reminder.ts'));
+  await resetAll();
+  const serverExpiry = async () => Date.parse((await statusOf()).body.expiresAt);
+  await check('R1 the status answer carries the absolute expiry = Google sign-in + exactly 30 days; 60 status checks, mints and saves across 26 days never move it (nothing the page does extends it)', async () => {
+    const signedInAt = T; const exp = await serverExpiry();
+    assert.equal(exp, Math.floor(signedInAt / 1000) * 1000 + 30 * DAY);
+    for (let i = 0; i < 60; i += 1) { advance(10.4 * 3600_000); if (i % 3 === 0) assert.equal((await save()).out, 'sent:200'); assert.equal(await serverExpiry(), exp); }
+    assert.ok(log.every((e) => !e.setCookie), 'a request set a cookie');
+  });
+  await check('R2 checkpoints from the server expiry: nothing before T5; 5 days at T5 up to T1; 1 day at T1 up to the expiry; nothing at/after the expiry (only the latest due checkpoint)', async () => {
+    const exp = await serverExpiry(); const T5 = exp - 5 * DAY, T1 = exp - DAY;
+    const at = (t) => RM.dueReminder(exp, t);
+    assert.deepEqual([at(exp - 30 * DAY), at(T5 - 1), at(T5), at(T5 + 1), at(T1 - 1), at(T1), at(exp - 1), at(exp), at(exp + 1000)],
+      [null, null, 5, 5, 5, 1, 1, null, null]);
+    assert.equal(RM.reminderMessage(5), 'Your IAOS session expires in 5 days. Log in again now to keep your workflow uninterrupted.');
+    assert.equal(RM.reminderMessage(1), 'Your IAOS session expires in 1 day. Log in again now to keep your workflow uninterrupted.');
+  });
+  await check('R3 the next-checkpoint timer lands exactly on T5 / T1 / the expiry and is capped at one day (never a setTimeout overflow)', async () => {
+    const exp = await serverExpiry(); const T5 = exp - 5 * DAY, T1 = exp - DAY;
+    assert.equal(RM.nextReminderDelay(exp, exp - 30 * DAY), DAY);
+    assert.equal(RM.nextReminderDelay(exp, T5 - 2000), 2000);
+    assert.equal(RM.nextReminderDelay(exp, T5), DAY);
+    assert.equal(RM.nextReminderDelay(exp, T1 - 7), 7);
+    assert.equal(RM.nextReminderDelay(exp, exp - 5), 5);
+    assert.equal(RM.nextReminderDelay(exp, exp), null);
+    for (let t = exp - 30 * DAY; t < exp; t += 3.7 * 3600_000) { const d = RM.nextReminderDelay(exp, t); assert.ok(d > 0 && d <= RM.REMINDER_MAX_TIMER_MS && d < 2 ** 31 - 1, String(d)); }
+  });
+  await check('R4 Remind Me Later is keyed by this session expiry + checkpoint: the other checkpoint and a NEW session are not dismissed; memory fallback with no storage (this process) and with a throwing storage', async () => {
+    const exp = await serverExpiry();
+    assert.equal(typeof window.localStorage, 'undefined');
+    assert.equal(RM.reminderDismissed(exp, 5), false); RM.dismissReminder(exp, 5);
+    assert.equal(RM.reminderDismissed(exp, 5), true); assert.equal(RM.reminderDismissed(exp, 1), false);
+    assert.equal(RM.reminderDismissed(exp + 30 * DAY, 5), false);
+    window.localStorage = { get length() { throw new Error('denied'); }, getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+    try { RM.dismissReminder(exp, 1); assert.equal(RM.reminderDismissed(exp, 1), true); } finally { delete window.localStorage; }
+  });
+  await check('R4b with working storage the record holds only the expiry instant + checkpoint (no token, sid, email or handle) and older sessions\' records are dropped', async () => {
+    const exp = await serverExpiry(); const map = new Map([[RM.reminderKey(exp - 30 * DAY, 1), '1'], ['unrelated', 'x']]);
+    window.localStorage = { get length() { return map.size; }, key: (i) => [...map.keys()][i] ?? null, getItem: (k) => map.get(k) ?? null, setItem: (k, v) => map.set(k, String(v)), removeItem: (k) => map.delete(k) };
+    try {
+      RM.dismissReminder(exp + 1000, 5);
+      assert.deepEqual([...map.keys()].sort(), ['iaos.session-reminder.dismissed.' + new Date(exp + 1000).toISOString() + '.5d', 'unrelated'].sort());
+      const all = [...map.entries()].join('|');
+      assert.ok(!all.includes(D.cookie) && !all.includes(sidOf(D)) && !all.includes('brad@'), all);
+    } finally { delete window.localStorage; }
+  });
+  await check('R5 the reminder module sends nothing and touches no session: no fetch, no endpoint, no cookie, no saving-module call', async () => {
+    const src = fs.readFileSync(path.join(APP, 'src/lib/session-reminder.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
+    assert.ok(!/fetch|XMLHttpRequest|sendBeacon|netlify\/functions|document\.cookie|import /.test(src));
+  });
+
   Date.now = realNow; setFlag(false);
-  const FLOOR = 28;
+  const FLOOR = 34;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (client): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;
