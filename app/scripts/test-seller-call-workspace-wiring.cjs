@@ -682,8 +682,13 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
     /onBlur=\{\(e\) => \{ if \(isLifecycleBlur\(e\.currentTarget\)\) return; saveSellerPosition\(\); \}\}/.test(sellerCallTsxNoComments)
     && /onKeyDown=\{saveOnEnter\(saveSellerPosition\)\}/.test(sellerCallTsxNoComments)
     && /formatSellerPositionNote\(\{ opportunityId: t\.opportunityId, at, operator: null, kind: "value", value: Number\(signature\) \}\)/.test(sellerCallTsxNoComments), true);
+  // B15-03 slice C (Bones ACCEPT 216b59e): with Save at Summary enabled, three sections join the Save plan and never
+  // write on their own (`if (!t || saveEnabled) return;`); the refusal button's own guard is `requestSellerPriceRefused`'s
+  // `if (saveEnabled) return;`. The binding rule is unchanged: no autosave writes without a write target.
   check('every autosave binds its contact and opportunity when it starts, and writes nothing without a write target',
-    (sellerCallTsxNoComments.match(/const t = writeTarget;\s*if \(!t\) return;/g) || []).length === 4
+    (sellerCallTsxNoComments.match(/const t = writeTarget;\s*if \(!t(?: \|\| saveEnabled)?\) return;/g) || []).length === 4
+    && (sellerCallTsxNoComments.match(/const t = writeTarget;\s*if \(!t \|\| saveEnabled\) return;/g) || []).length === 3
+    && /function requestSellerPriceRefused\([^)]*\)\s*\{\s*if \(saveEnabled\) return;/.test(sellerCallTsxNoComments)
     && (sellerCallTsxNoComments.match(/await ghl\.notes\.create\(t\.contactId, note\);\s*appendSavedNote\(t\.contactId, note, at\);/g) || []).length === 4, true);
   check('the write target requires this route\'s contact loaded and an opportunity that belongs to it',
     /if \(!contact \|\| contact\.id !== contactId \|\| loadedFor\.current !== contactId\) return null;/.test(sellerCallTsxNoComments)
@@ -702,7 +707,8 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('Current Offer is also locked while the selected seller loads, and keeps its own deliberate save on leave (no autosave, no Enter save)',
     /data-testid="negotiation-current-offer-input"\s*value=\{currentOfferInput\}\s*onChange=\{\(e\) => handleCurrentOfferChange\(e\.target\.value\)\}\s*onBlur=\{\(e\) => \{ if \(isLifecycleBlur\(e\.currentTarget\)\) return; void commitCurrentOffer\(\); \}\}\s*readOnly=\{offerSaves\.isLocked\(dealBarOppId\)\}\s*disabled=\{sellerLoading\}\s*placeholder=/.test(sellerCallTsxNoComments), true);
   check('one page-wide Save changes fallback, shown only while something is unsaved or saving',
-    (sellerCallTsx.match(/data-testid="seller-call-save-changes"/g) || []).length === 1 && /\{pageHasUnsaved \|\| pageSaving \? \(/.test(sellerCallTsxNoComments), true);
+    // slice C: hidden while Save at Summary is enabled (the sections save with the call).
+    (sellerCallTsx.match(/data-testid="seller-call-save-changes"/g) || []).length === 1 && /\{!saveEnabled && \(pageHasUnsaved \|\| pageSaving\) \? \(/.test(sellerCallTsxNoComments), true);
 
   check('a stale Offer Readiness decision is marked in the UI, never silently hidden', /data-testid="readiness-human-action-stale"/.test(sellerCallTsx), true);
   check('the stale marker states it no longer authorizes readiness', /no longer authorizes readiness/.test(sellerCallTsx), true);
