@@ -430,7 +430,7 @@ jobs:
         run: node app/scripts/test-b15-29-one-login-server.cjs
       - name: One IAOS sign-in, saving module with the real handlers -- 29-day span on one sign-in, 30-day end, browser close, two devices, cross-tab Sign out, never re-sent (INV-137, B15-29) - 28 checks
         run: node app/scripts/test-b15-29-one-login-client.cjs
-      - name: One IAOS sign-in on the real page -- one sign-in, Sign out stops another tab without any browser channel, unavailable is not signed out, drafts kept, persistent 30-day cookie (INV-137, B15-29) - 27 checks
+      - name: One IAOS sign-in on the real page -- one sign-in, Sign out stops another tab without any browser channel, unavailable is not signed out, drafts kept, persistent 30-day cookie (INV-137, B15-29) - 28 checks
         run: node app/scripts/test-b15-29-one-login-page.cjs
 
       # Not a counted runner — a typecheck. No floor, and it must not be given

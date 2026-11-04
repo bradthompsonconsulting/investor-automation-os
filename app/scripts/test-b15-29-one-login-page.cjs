@@ -182,6 +182,12 @@ async function main() {
     check('P1 before sign-in only the sign-in landing is shown; no page mounts', await has(A, 'Sign in to IAOS') && (await A.getByTestId('draft').count()) === 0);
     await A.getByRole('button', { name: 'Sign in' }).click();
     await until(() => shown(A, 'read-access-signed-in'));
+    { // r6: a 30-day expiry must not overflow the page's expiry timer into an immediate re-check loop.
+      const before = log.filter((e) => e.tab === 'A' && e.fn === 'app-read-session').length;
+      await new Promise((r) => setTimeout(r, 1500));
+      const after = log.filter((e) => e.tab === 'A' && e.fn === 'app-read-session').length;
+      check('P1b no status-request storm after sign-in (30-day expiry timer capped): no further status request within 1.5 s', after === before, { before, after });
+    }
     const status = await text(A, 'read-access-signed-in');
     check('P1 one sign-in: the status line reads "Signed in until … · Sign out"', /^Signed in until .+ · Sign out$/.test(status.trim()), status);
     check('P1 no saving control: no "Enable saving", "Turn off saving" or "View only"', !(await has(A, 'Enable saving')) && !(await has(A, 'Turn off saving')) && !(await has(A, 'View only')));
@@ -298,7 +304,7 @@ async function main() {
     const statusAfter = log.filter((e) => e.tab === 'E' && e.fn === 'app-read-session').length;
     check('P9 a signed-in page with a 30-day expiry made exactly ONE status request (its load) and none while idle (expiry timer capped: no overflow re-check)', statusAfter === statusBefore && statusAfter === 1, { statusBefore, statusAfter });
 
-    if (checks < 27) { failures += 1; console.error(`FAIL  check floor -- ${checks} checks ran, the floor is 27`); }
+    if (checks < 28) { failures += 1; console.error(`FAIL  check floor -- ${checks} checks ran, the floor is 28`); }
     console.log(`B15-29 one IAOS sign-in (real page): ${checks - failures}/${checks} checks passed`);
     await exit(failures ? 1 : 0);
   } catch (e) {
