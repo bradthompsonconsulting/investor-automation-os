@@ -3,6 +3,7 @@ import { useReadRecovered } from "../components/access-status";
 import { Link } from "react-router-dom";
 import { CalendarDays, Loader2, ExternalLink, Clock, RefreshCw } from "lucide-react";
 import { ghl, ghlCalendarsUrl, type CalendarEventRow, type CalendarEventsResult } from "../lib/ghl";
+import { READ_SESSION_LOST_EVENT } from "../lib/read-session";
 import { calendarFailureKind, readTime, type CalendarFailureKind } from "../lib/calendar-read-state";
 
 /**
@@ -77,31 +78,53 @@ function AgendaList({ days }: { days: [string, CalendarEventRow[]][] }) {
 }
 
 export default function Calendars() {
-  // `data` is the LAST SUCCESSFUL read (never replaced by a failure); `error` is the latest read's failure, if any.
-  const [data, setData]   = useState<CalendarEventsResult | null>(null);
-  const [error, setError] = useState<{ detail: string; accessDenied: boolean; kind: CalendarFailureKind } | null>(null);
-  const [loadedAt, setLoadedAt] = useState<number | null>(null);
+  /* B15-07 r2 (Bones P2): every read and every failure is TAGGED with the read context it was made in -- the recovery
+     epoch (useReadRecovered: it changes each time read sign-in comes back after a lapse, i.e. possibly another session
+     or operator). A retained read is rendered only while its tag equals the CURRENT context, so a recovered session
+     never sees the previous session's appointments: not while its own read is pending, not after it fails. The check
+     runs during render (no effect delay), an old context's late answer can never match again, and the cache is also
+     dropped the moment IAOS reports a lost read session. Within one context, a failed refresh still keeps the last
+     good read, labelled. */
+  const readRecovered = useReadRecovered();
+  const ctxRef = useRef(readRecovered);
+  ctxRef.current = readRecovered;
+  const [cache, setCache] = useState<{ ctx: number; result: CalendarEventsResult; at: number } | null>(null);
+  const [failure, setFailure] = useState<{ ctx: number; detail: string; accessDenied: boolean; kind: CalendarFailureKind } | null>(null);
   const [loading, setLoading]   = useState(true);
   const readSeq = useRef(0);   // only the newest read may set state (a superseded read that settles late is ignored)
+  // `data` is the LAST SUCCESSFUL read IN THIS READ CONTEXT (never replaced by a failure); `error` is the latest failure in it.
+  const data: CalendarEventsResult | null = cache !== null && cache.ctx === readRecovered ? cache.result : null;
+  const loadedAt: number | null = cache !== null && cache.ctx === readRecovered ? cache.at : null;
+  const error = failure !== null && failure.ctx === readRecovered ? failure : null;
 
   // Explicit window (client clock) so the read is deterministic: today → +30 days.
   const load = useCallback(() => {
     const mine = ++readSeq.current;
+    const ctx = ctxRef.current;
     setLoading(true);
     const now = Date.now();
     ghl.calendars.events(now, now + WINDOW_DAYS * 86_400_000)
-      .then((r) => { if (mine !== readSeq.current) return; setData(r); setLoadedAt(Date.now()); setError(null); setLoading(false); })
+      .then((r) => { if (mine !== readSeq.current) return; setCache({ ctx, result: r, at: Date.now() }); setFailure(null); setLoading(false); })
       .catch((e: Error & { code?: string | null }) => {
         if (mine !== readSeq.current) return;
-        setError({ detail: e.message, accessDenied: e.code === "ghl_calendar_access_denied", kind: calendarFailureKind(e.code) });
+        setFailure({ ctx, detail: e.message, accessDenied: e.code === "ghl_calendar_access_denied", kind: calendarFailureKind(e.code) });
         setLoading(false);
       });
   }, []);
-  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. */
-  const readRecovered = useReadRecovered();
+  /* Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse. B15-07 r2: a new read context
+     voids every read still in flight and drops the previous context's read and failure before reading again. */
   useEffect(() => {
+    readSeq.current += 1;
+    setCache((c) => (c !== null && c.ctx !== readRecovered ? null : c));
+    setFailure((f) => (f !== null && f.ctx !== readRecovered ? null : f));
     load();
   }, [readRecovered]);
+  // B15-07 r2: IAOS reports a lost read session (any read refused for sign-in) -> retained appointments are dropped at once.
+  useEffect(() => {
+    const lost = () => setCache(null);
+    window.addEventListener(READ_SESSION_LOST_EVENT, lost);
+    return () => window.removeEventListener(READ_SESSION_LOST_EVENT, lost);
+  }, []);
 
   // Group by CT day, preserving the server's oldest→newest ordering.
   const days = useMemo(() => {

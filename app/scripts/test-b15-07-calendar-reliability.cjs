@@ -29,16 +29,19 @@ const BEFORE = beforeArg ? beforeArg.slice('--before='.length) : null;
 const APP_BEFORE = path.join(HARNESS_DIR, 'AppBefore.tsx');
 const CAL_BEFORE = path.join(HARNESS_DIR, 'CalendarsBefore.tsx');
 const STATE_BEFORE = path.join(APP, 'src', 'lib', '_b15_07_before_calendar_state.ts');
+const CTX_HARNESS = '/scripts/harness/calendar-context/index.html';
+const CTX_BEFORE = path.join(APP, 'scripts/harness/calendar-context/CalendarsCtxBefore.tsx');
+const READACCESS_BEFORE = path.join(HARNESS_DIR, 'ReadAccessBefore.tsx');
 
-/** Literal check() call sites: U 2 + S 8 + R 10 + X 1 = 21. */
-const FLOOR = 21;
+/** Literal check() call sites: U 2 + S 8 + R 10 + C 3 + RS 3 + X 1 = 27 (r2 added C1-C3, RS1-RS3 for Bones P2). */
+const FLOOR = 27;
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
   console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail).slice(0, 400)}`}`);
 }
 const tryOr = (fn, dflt) => { try { return fn(); } catch { return dflt; } };
-const cleanup = () => [APP_BEFORE, CAL_BEFORE, STATE_BEFORE].forEach((f) => { if (fs.existsSync(f)) fs.rmSync(f); });
+const cleanup = () => [APP_BEFORE, CAL_BEFORE, STATE_BEFORE, CTX_BEFORE, READACCESS_BEFORE].forEach((f) => { if (fs.existsSync(f)) fs.rmSync(f); });
 cleanup(); process.on('exit', cleanup);
 const show = (p) => execFileSync('git', ['show', `${BEFORE}:app/${p}`], { cwd: APP, encoding: 'utf8' });
 const src = (p) => (BEFORE ? tryOr(() => show(p), '') : tryOr(() => fs.readFileSync(path.join(APP, p), 'utf8'), '')).replace(/\r\n/g, '\n');
@@ -123,7 +126,7 @@ async function main() {
   const server = await createServer({
     root: APP, configFile: false, plugins: [react(), tailwindcss()], logLevel: 'error', clearScreen: false,
     server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false },
-    optimizeDeps: { entries: [HARNESS.slice(1)], include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-router-dom', 'lucide-react'] },
+    optimizeDeps: { entries: [HARNESS.slice(1), CTX_HARNESS.slice(1)], include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-router-dom', 'lucide-react'] },
   });
   await server.listen();
   const base = server.resolvedUrls.local[0].replace(/\/$/, '');
@@ -226,6 +229,138 @@ async function main() {
     check('R10 reads only (GET) for every request in the rendered runs; nothing left the machine except captured GHL hand-offs; no page errors',
       methods.every((m) => m === 'GET') && foreign.length === 0 && pageErrors.length === 0, { methods: [...new Set(methods)], foreign, pageErrors });
   } catch (e) { console.error(`FAIL  rendered: ${e.message}`); failures += 1; }
+
+  // ───────────────────────── C: the read-context boundary (Bones P2), real Calendars under a controlled epoch ─────────────────────────
+  // ── RS: the real App, real ReadAccess: a session expires, another session signs in through the real popup message ──
+  try {
+    if (BEFORE) {
+      const repointCtx = (t) => t.replace(/from "\.\.\//g, 'from "../../../src/').replace(/(from|import) "\.\//g, '$1 "../../../src/pages/')
+        .replace(/from "\.\.\/\.\.\/\.\.\/src\/lib\/calendar-read-state"/g, stateSrc ? 'from "../../../src/lib/_b15_07_before_calendar_state"' : 'from "../../../src/lib/calendar-read-state"');
+      fs.writeFileSync(CTX_BEFORE, repointCtx(show('src/pages/Calendars.tsx')));
+    }
+    const A_TITLE = 'Session A private appointment'; const B_TITLE = 'Session B appointment'; const LATE_TITLE = 'Late answer from an old context';
+    const ctxAnswers = []; const ctxHeld = [];
+    const ctxCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const cp = await ctxCtx.newPage();
+    cp.on('pageerror', (e) => pageErrors.push(String(e.message || e)));
+    await ctxCtx.route('**/*', async (route) => {
+      const url = route.request().url();
+      if (url.startsWith(base) && !url.includes('/.netlify/functions/')) return route.continue();
+      if (!url.includes('/.netlify/functions/')) { foreign.push(url); return route.abort(); }
+      methods.push(route.request().method());
+      const fn = new URL(url).pathname.replace('/.netlify/functions/', '');
+      if (fn !== 'ghl-calendar-events') return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
+      const a = ctxAnswers.shift() || OK([]);
+      if (a.hold) await a.hold;
+      return route.fulfill({ status: a.status, contentType: 'application/json', body: JSON.stringify(a.body) });
+    });
+    const gate = () => { let release; const hold = new Promise((r) => { release = r; }); return { hold, release }; };
+    await cp.goto(base + CTX_HARNESS);
+    await cp.waitForFunction(() => typeof window.__setCalendarContext === 'function', null, { timeout: 60000 });
+    const ctxBody = () => cp.evaluate(() => document.querySelector('[data-testid="ctx-page"]').innerText).catch(() => '');
+    const setCtx = (epoch, hidden) => cp.evaluate(([e, h]) => window.__setCalendarContext({ epoch: e, hidden: h }), [epoch, hidden]);
+    // Context 0 (session A) loads its appointment. (The first read was queued before load: answer it now.)
+    ctxAnswers.push(OK([EV('a', A_TITLE, 1)]));
+    await cp.evaluate(() => window.__setCalendarContext({ epoch: 0, hidden: false }));
+    await cp.getByTestId('calendar-refresh').click().catch(() => {});
+    const a0 = await text(cp, '[data-testid="ctx-page"]', new RegExp(A_TITLE));
+    // Lapse (hidden), then context 1 (session B) shown while its first read is HELD.
+    await setCtx(0, true);
+    const g1 = gate(); ctxAnswers.push({ ...OK([EV('b', B_TITLE, 2)]), hold: g1.hold, status: 500, body: { error: 'GET /calendars/events → 503: upstream' } });
+    await setCtx(1, false);
+    await cp.waitForTimeout(400);
+    const pending = await ctxBody();
+    check('C1 a new read context (session B) never shows session A\'s appointments while its own read is pending',
+      !!a0 && new RegExp(A_TITLE).test(a0) && !new RegExp(A_TITLE).test(pending), [a0 && a0.slice(0, 80), pending.slice(0, 160)]);
+    g1.release();
+    const failed = await text(cp, '[data-testid="calendar-unavailable"]', /couldn.t be loaded/);
+    const afterFail = await ctxBody();
+    check('C2 when session B\'s read FAILS, session A\'s appointments are not offered as a stale list (no calendar-stale, no A title)',
+      !!failed && !new RegExp(A_TITLE).test(afterFail) && !(await cp.getByTestId('calendar-stale').count().catch(() => 1)), afterFail.slice(0, 200));
+    // Context 1: a Refresh whose answer is HELD; context 2 starts and reads fresh; then the old context's answer arrives late.
+    ctxAnswers.push(OK([EV('b', B_TITLE, 2)]));
+    await cp.getByTestId('calendar-retry').click().catch(() => {});
+    await text(cp, '[data-testid="ctx-page"]', new RegExp(B_TITLE));
+    const g2 = gate(); ctxAnswers.push({ ...OK([EV('late', LATE_TITLE, 3)]), hold: g2.hold });
+    await cp.getByTestId('calendar-refresh').click().catch(() => {});
+    await cp.waitForTimeout(200);
+    ctxAnswers.push(OK([]));
+    await setCtx(2, false);
+    await text(cp, '[data-testid="calendar-empty"]', /No upcoming appointments/);
+    g2.release();
+    await cp.waitForTimeout(600);
+    const lateBody = await ctxBody();
+    check('C3 an old context\'s late answer can never repopulate a newer context (late title absent; the new context\'s own read stands)',
+      !new RegExp(LATE_TITLE).test(lateBody) && !new RegExp(B_TITLE).test(lateBody) && /No upcoming appointments/.test(lateBody), lateBody.slice(0, 200));
+    await ctxCtx.close();
+
+    // RS: real App + real ReadAccess. Session A expires (the gate's own expiry timer: no lost-session event), session B
+    // signs in through the real popup message; a per-frame monitor records whether any PAINTED frame shows A's data.
+    if (BEFORE) {
+      fs.writeFileSync(READACCESS_BEFORE, show('src/components/ReadAccess.tsx').replace(/from "\.\.\//g, 'from "../../../src/').replace(/(from|import) "\.\//g, '$1 "../../../src/components/'));
+      fs.writeFileSync(APP_BEFORE, fs.readFileSync(APP_BEFORE, 'utf8').replace('from "../../../src/components/ReadAccess"', 'from "./ReadAccessBefore"'));
+    }
+    let session = { signedIn: true, expiresAt: new Date(Date.now() + 2500).toISOString() };
+    const rsAnswers = [];
+    const rsCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const rp = await rsCtx.newPage();
+    rp.on('pageerror', (e) => pageErrors.push(String(e.message || e)));
+    await rsCtx.route('**/*', async (route) => {
+      const url = route.request().url();
+      if (/^https:\/\/[^/]*(gohighlevel\.com|leadconnectorhq\.com)\//.test(url)) { handoffs.push(url); return route.abort(); }
+      if (url.startsWith(base) && !url.includes('/.netlify/functions/')) return route.continue();
+      if (!url.includes('/.netlify/functions/')) { foreign.push(url); return route.abort(); }
+      const fn = new URL(url).pathname.replace('/.netlify/functions/', '');
+      methods.push(route.request().method());
+      const json = (b, st = 200) => route.fulfill({ status: st, contentType: 'application/json', body: JSON.stringify(b) });
+      if (fn === 'app-read-session') return json(session.signedIn ? { clientId: 'offline-read-client', signedIn: true, expiresAt: session.expiresAt } : { clientId: 'offline-read-client', signedIn: false, expiresAt: null });
+      if (fn === 'ghl-calendar-events') { const a = rsAnswers.shift() || OK([]); if (a.hold) await a.hold; return json(a.body, a.status); }
+      return json({ error: 'fixture: ' + fn + ' not answered' }, 404);
+    });
+    rsAnswers.push(OK([EV('a', A_TITLE, 1)]));
+    await rp.goto(base + HARNESS + '?start=' + encodeURIComponent('/calendars'));
+    await rp.waitForFunction(() => typeof window.__iaosAppSource === 'string', null, { timeout: 60000 });
+    const ra = await text(rp, 'body', new RegExp(A_TITLE));
+    // Session A ends at its own expiry (the status answer now says signed out) -> the gate shows its recovery card.
+    session = { signedIn: false };
+    const card = await text(rp, '[data-testid="read-access-recovery"]', /Your sign-in has ended/, 15000);
+    // Per-frame monitor: from now on, any animation frame in which A's title is VISIBLE (inside an un-hidden page) is recorded.
+    await rp.evaluate((title) => {
+      window.__leak = 0;
+      const tick = () => { const pages = [...document.querySelectorAll('#root [aria-hidden]'), ...document.querySelectorAll('#root > div, #root div[hidden]')];
+        const visible = [...document.querySelectorAll('#root *')].some((el) => el.childElementCount === 0 && el.textContent && el.textContent.includes(title) && el.getClientRects().length > 0 && !el.closest('[hidden]'));
+        if (visible) window.__leak += 1; window.__leakRaf = requestAnimationFrame(tick); };
+      window.__leakRaf = requestAnimationFrame(tick);
+    }, A_TITLE);
+    // Session B signs in through the REAL popup message the gate trusts; B's first calendar read is HELD.
+    session = { signedIn: true, expiresAt: new Date(Date.now() + 3600_000).toISOString() };
+    let releaseB; const holdB = new Promise((r) => { releaseB = r; });
+    rsAnswers.push({ status: 500, body: { error: 'GET /calendars/events → 503: upstream' }, hold: holdB });
+    const popupP = rp.waitForEvent('popup', { timeout: 15000 }).catch(() => null);
+    await rp.getByRole('button', { name: 'Sign in again' }).click().catch(() => {});
+    const popup = await popupP;
+    if (popup) await popup.evaluate(() => window.opener.postMessage({ type: 'iaos-app-read-signed-in' }, window.location.origin)).catch(() => {});
+    await rp.waitForSelector('[data-testid="read-access-recovery"]', { state: 'detached', timeout: 15000 }).catch(() => {});
+    await rp.waitForTimeout(500);
+    const leakDuringPending = await rp.evaluate(() => window.__leak).catch(() => -1);
+    const pendingBody = await bodyText(rp);
+    check('RS1 real App: after session A expires and session B signs in (real popup message), NO painted frame shows A\'s appointment while B\'s read is pending',
+      !!ra && !!card && !!popup && leakDuringPending === 0 && !new RegExp(A_TITLE).test(pendingBody), { popup: !!popup, leakDuringPending, body: pendingBody.slice(0, 160) });
+    releaseB();
+    await text(rp, '[data-testid="calendar-unavailable"]', /couldn.t be loaded/);
+    await rp.waitForTimeout(300);
+    const leakAfterFail = await rp.evaluate(() => window.__leak).catch(() => -1);
+    const failBody = await bodyText(rp);
+    check('RS2 real App: B\'s read fails -> the failure is shown and A\'s appointment is still never painted (no stale list from another session)',
+      leakAfterFail === 0 && !new RegExp(A_TITLE).test(failBody) && !(await rp.getByTestId('calendar-stale').count().catch(() => 1)), { leakAfterFail, body: failBody.slice(0, 200) });
+    rsAnswers.push(OK([EV('b', B_TITLE, 2)]));
+    await rp.getByTestId('calendar-retry').click().catch(() => {});
+    const bb = await text(rp, 'body', new RegExp(B_TITLE));
+    const leakEnd = await rp.evaluate(() => { cancelAnimationFrame(window.__leakRaf); return window.__leak; }).catch(() => -1);
+    check('RS3 real App: B\'s own successful read replaces it (B shown, A never painted in the new session)', !!bb && new RegExp(B_TITLE).test(bb) && !new RegExp(A_TITLE).test(bb) && leakEnd === 0, { leakEnd });
+    if (popup) await popup.close().catch(() => {});
+    await rsCtx.close();
+  } catch (e) { console.error(`FAIL  session boundary: ${e.message}`); failures += 1; }
 
   // ───────────────────────── X: source ─────────────────────────
   const pg = src('src/pages/Calendars.tsx'); const fnSrc = src('netlify/functions/ghl-calendar-events.ts');
