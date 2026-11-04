@@ -3,7 +3,8 @@ import OneLoginScreen, { ReminderDialog, type ScreenAction, type ScreenMessage }
 import { dismissReminder, dueReminder, nextReminderDelay, reminderDismissed, reminderMessage } from "../lib/session-reminder";
 import { READ_SESSION_ENDPOINT, READ_SESSION_LOST_EVENT } from "../lib/read-session";
 import { SESSION_UNAVAILABLE_EVENT, SESSION_UNAVAILABLE_MARKER } from "../lib/one-login";
-import { clearAppWriteToken, pauseAppWriteForSignOut, primeAppWriteSession, resumeAppWriteAccess } from "../lib/app-write-session";
+import { clearAppWriteToken, confirmAppWriteSession, pauseAppWriteForSignOut, primeAppWriteSession, replaceAppWriteSession, resumeAppWriteAccess } from "../lib/app-write-session";
+import { clearOperatorScopedData, operatorChangedSinceLastPage, rememberOperator } from "../lib/operator-partition";
 import { ReadRecovered, ReadViewReport, type ReadView } from "./access-status";
 
 /** The ONE status line while one IAOS sign-in is on (Layout renders this instead of AppWriteAccess): no saving control. */
@@ -29,6 +30,9 @@ export const SIGN_IN_LABEL = "Sign In to IAOS";
 export const WORKING_TEXT = "Opening secure sign-in…";
 export const POPUP_BLOCKED_TEXT = "Allow pop-ups for IAOS to sign in.";
 export const EXPIRED_TEXT = "Your 30-day session has ended. Sign in to continue — your unsaved work is still here.";
+/** r4 (R3-2): shown once after a sign-in with a DIFFERENT account replaced this page's session. */
+export const ACCOUNT_CHANGED_HEADING = "Signed in with a different account";
+export const ACCOUNT_CHANGED_TEXT = "Unsaved work from the previous account was cleared from this page. Anything already saved is not affected.";
 
 /** Why there is no session: none known (first visit / expired cookie), ended while open, revoked by a Sign out elsewhere, or Sign out here. */
 type SignedOutReason = "none" | "ended" | "revoked" | "signed_out_here";
@@ -36,7 +40,7 @@ type Status =
   | { kind: "checking" }
   | { kind: "unconfigured" }
   | { kind: "signed_out"; reason: SignedOutReason }
-  | { kind: "signed_in"; expiresAt: number }
+  | { kind: "signed_in"; expiresAt: number; operator: string; session: string }
   | { kind: "unavailable"; message: string }
   | { kind: "signing_out" }
   | { kind: "signout_unconfirmed"; message: string };
@@ -69,6 +73,15 @@ type Status =
  * (never unmounted, so drafts survive; focus returns after). The 5-day / 1-day reminder is computed only from the
  * server's absolute `expiresAt`; Remind Me Later records a dismissal and sends nothing; Log In Again opens the
  * overlay, and its sign-in is a NEW 30-day session (the old one is left to expire).
+ *
+ * r4 (Bones R3-2, delayed status). Every status answer carries non-secret operator / session tags. A deliberate
+ * sign-in discards the saving token at once (cached and pending) and saving waits for the server-confirmed NEW
+ * session; whenever a confirmed session differs from the one this page had (this tab or another one replaced the
+ * cookie), the old session's saving tokens are discarded, and if the OPERATOR differs the routed app is remounted,
+ * operator-scoped page data is cleared (lib/operator-partition.ts) and a neutral notice says so. The same operator
+ * keeps the page and its unsaved work. Every status request carries a sequence number: an answer older than the
+ * newest applied one, or from an earlier generation, is discarded, so a late "signed in" can never repaint after a
+ * newer revoked / unavailable / expired answer.
  */
 export default function OneLoginAccess({ children }: { children: ReactNode }) {
   const popup = useRef<Window | null>(null);
@@ -81,6 +94,13 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
   const [relogin, setRelogin] = useState(false);
   const [tick, setTick] = useState(0);
   const generation = useRef(0);
+  const seq = useRef(0);
+  const appliedSeq = useRef(0);
+  /** The session this page last had confirmed (non-secret tags), kept across lapses so a replacement is always seen. */
+  const bound = useRef<{ operator: string; session: string } | null>(null);
+  const pageShown = useRef(false);
+  const [partition, setPartition] = useState(0);
+  const [accountChanged, setAccountChanged] = useState(false);
   const attempt = useRef(0);
   const handle = useRef<string | null>(null);
   const frozen = useRef<string | null>(null);
@@ -102,26 +122,51 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
       : { kind: status.kind === "signing_out" ? "signout_unconfirmed" : status.kind });
   }, [status, report]);
 
+  /** r4: a server-confirmed session. A different session than before discards its saving tokens; a different operator partitions the page. */
+  const adoptSession = useCallback((next: { operator: string; session: string }) => {
+    const prev = bound.current;
+    if (prev === null) {
+      if (operatorChangedSinceLastPage(next.operator)) clearOperatorScopedData();
+    } else if (prev.session !== next.session) {
+      replaceAppWriteSession();
+      if (prev.operator !== next.operator) {
+        clearOperatorScopedData();
+        setPartition((p) => p + 1);
+        if (pageShown.current) setAccountChanged(true);
+      }
+    }
+    bound.current = next;
+    rememberOperator(next.operator);
+    confirmAppWriteSession();
+    primeAppWriteSession();   // learn the (new) operator's identity before the first save; silent on failure
+  }, []);
+
   const check = useCallback(async (signedOutReason: SignedOutReason = "none") => {
     if (signOutBusy.current || frozen.current) return;   // never while a Sign out is pending or unconfirmed
     const g = generation.current;
+    const s = ++seq.current;
+    // Discarded: an answer from before a Sign out began or a sign-in replaced the session, or older than one already applied.
+    const stale = () => g !== generation.current || !!frozen.current || s < appliedSeq.current;
     let res: Response;
     try { res = await fetch(READ_SESSION_ENDPOINT, { cache: "no-store", credentials: "same-origin" }); }
-    catch { if (g === generation.current && !frozen.current) setStatus({ kind: "unavailable", message: UNAVAILABLE_TEXT }); return; }
+    catch { if (!stale()) { appliedSeq.current = s; setStatus({ kind: "unavailable", message: UNAVAILABLE_TEXT }); } return; }
     const body = await res.json().catch(() => null);
-    if (g !== generation.current || frozen.current) return;   // an answer from before a Sign out began: discarded
+    if (stale()) return;
+    appliedSeq.current = s;
     if (res.status === 503 && body?.by === "iaos-app-read-unconfigured") { setStatus({ kind: "unconfigured" }); return; }
     if (res.status === 503 && body?.by === SESSION_UNAVAILABLE_MARKER) { setStatus({ kind: "unavailable", message: UNAVAILABLE_TEXT }); return; }
     if (!res.ok) { setStatus({ kind: "unavailable", message: UNAVAILABLE_TEXT }); return; }
     const expiresAt = Date.parse(body?.expiresAt ?? "");
-    if (body?.state === "signed_in" && body?.signedIn === true && typeof body?.handle === "string" && Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+    if (body?.state === "signed_in" && body?.signedIn === true && typeof body?.handle === "string" && Number.isFinite(expiresAt) && expiresAt > Date.now() &&
+        typeof body?.operator === "string" && body.operator && typeof body?.session === "string" && body.session) {
+      adoptSession({ operator: body.operator, session: body.session });
       handle.current = body.handle;
-      setStatus({ kind: "signed_in", expiresAt });
+      setStatus({ kind: "signed_in", expiresAt, operator: body.operator, session: body.session });
     } else {
       handle.current = null;
       setStatus({ kind: "signed_out", reason: body?.state === "revoked" ? "revoked" : signedOutReason });
     }
-  }, []);
+  }, [adoptSession]);
 
   useEffect(() => { void check(); }, [check]);
 
@@ -129,7 +174,8 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
     const receive = (event: MessageEvent) => {
       if (event.origin !== location.origin || !popup.current || event.source !== popup.current || event.data?.type !== "iaos-app-read-signed-in") return;
       popup.current.close(); popup.current = null;
-      // A deliberate sign-in: a new session; any old frozen handle is dropped and saving may resume here.
+      // A deliberate sign-in: a new session; any old frozen handle is dropped. r4: the old session's saving tokens
+      // (cached and pending) are discarded NOW and saving waits until the status check confirms the new session.
       generation.current += 1; frozen.current = null; handle.current = null;
       resumeAppWriteAccess();
       setPopupState("idle");
@@ -221,9 +267,11 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
   }
 
   const signedIn = status.kind === "signed_in";
+  pageShown.current = signedIn || wasSignedIn;
   // Not signed in: the page stays MOUNTED (drafts, saves in flight) but is not painted (visibility keeps its layout and
   // scroll position) under the opaque overlay, and the overlay layer makes it inert.
-  const page = <div key="page" data-testid="one-login-app" style={signedIn ? undefined : { visibility: "hidden" }} aria-hidden={!signedIn || undefined}>
+  // r4: keyed by the operator partition -- a different operator remounts the routed app (no previous operator's state).
+  const page = <div key={`page-${partition}`} data-testid="one-login-app" style={signedIn ? undefined : { visibility: "hidden" }} aria-hidden={!signedIn || undefined}>
     <ReadRecovered.Provider value={epoch}>{children}</ReadRecovered.Provider>
   </div>;
 
@@ -235,9 +283,12 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
 
   let layer: ReactNode = null;
   if (signedIn) {
-    if (relogin) {
+    if (accountChanged) {
+      layer = <OneLoginScreen key="overlay" mode="overlay" testId="one-login-account-changed" heading={ACCOUNT_CHANGED_HEADING}
+        line={ACCOUNT_CHANGED_TEXT} primary={{ label: "Continue", onClick: () => setAccountChanged(false), testId: "one-login-account-continue" }} />;
+    } else if (relogin) {
       layer = <OneLoginScreen key="overlay" mode="overlay" testId="one-login-relogin" heading="Log in again"
-        line="Start a new 30-day session. Your work on this page stays where it is."
+        line="Start a new 30-day session. With the same account, your unsaved work on this page stays where it is."
         primary={signInAction} message={popupMessage}
         secondary={{ label: "Cancel", onClick: () => { setRelogin(false); setPopupState("idle"); }, testId: "one-login-cancel" }} />;
     } else {

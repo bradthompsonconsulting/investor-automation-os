@@ -14,6 +14,11 @@
  * sign-in instant, so the real status answer reports an `expiresAt` days, or seconds, away.
  *
  * Screenshots are written ONLY when LOGIN_UI_SHOTS names a directory (never into the repository by default).
+ *
+ * r4 (Bones R3-2 + delayed status): section 8 holds chosen server answers (computed at arrival, delivered later) to
+ * prove that a pending old-session mint and a delayed old status answer are discarded after Log In Again (A->A), that
+ * a sign-in with a DIFFERENT account (A->B) remounts the page and clears operator-scoped data, that logout after a
+ * replacement revokes the NEW session, and that a late "signed in" never repaints after a newer "revoked".
  */
 'use strict';
 process.env.NODE_ENV = 'test';
@@ -44,11 +49,11 @@ Object.assign(process.env, {
   IAOS_ENV: 'test',
   IAOS_APP_READ_GOOGLE_CLIENT_ID: 'offline-read-client',
   IAOS_APP_READ_SESSION_SECRET: 'offline-read-fixture-only-not-a-real-secret',
-  IAOS_APP_READ_BRAD_EMAILS: 'brad@example.invalid',
+  IAOS_APP_READ_BRAD_EMAILS: 'brad@example.invalid,second@example.invalid',
   IAOS_APP_READ_ALLOWED_ORIGIN: ORIGIN,
   IAOS_APP_WRITE_GOOGLE_CLIENT_ID: 'offline-write-client',
   IAOS_APP_WRITE_SESSION_SECRET: 'offline-write-fixture-only-not-a-real-secret',
-  IAOS_APP_WRITE_BRAD_EMAILS: 'brad@example.invalid',
+  IAOS_APP_WRITE_BRAD_EMAILS: 'brad@example.invalid,second@example.invalid',
   IAOS_APP_WRITE_ALLOWED_ORIGIN: ORIGIN,
 });
 delete process.env.IAOS_VOICE_SESSION_SECRET;
@@ -108,6 +113,9 @@ const serverStatus = async () => JSON.parse((await H.session({ httpMethod: 'GET'
 let log = [];
 const applied = [];
 const outbound = [];
+/** r4: hold the NEXT matching function answer -- computed when the request arrives, delivered only on release(). */
+const holds = [];
+const hold = (fn, method) => { const h = { fn, method, taken: false, entered: false }; h.promise = new Promise((r) => { h.release = r; }); holds.push(h); return h; };
 // Google Identity Services, stubbed: renders one button; clicking it hands the page a fixture ID token.
 const GIS_STUB = `window.google = { accounts: { id: {
   initialize(o) { window.__gis = o; },
@@ -154,6 +162,7 @@ async function main() {
     else if (fn === 'app-write-token') res = await H.token(event);
     else if (fn === 'app-signout') res = await H.signout(event);
     else if (fn === 'ghl-write') {
+      entry.auth = event.headers.authorization || null;
       try { writeAuth.requireAppWriter(event); } catch { res = { statusCode: 401, headers: {}, body: JSON.stringify({ error: 'Application write sign-in required' }) }; }
       if (!res) res = await rev.sessionWriteRefusal(event);
       if (!res) { applied.push({ tab, body: JSON.parse(event.body).args.body }); res = { statusCode: 200, headers: {}, body: JSON.stringify({ ok: true }) }; }
@@ -162,6 +171,9 @@ async function main() {
     const sc = res.headers && res.headers['Set-Cookie'];
     if (sc) { entry.setCookie = true; setCookies.push(sc); const m = /__Host-iaos_read=([^;]*)/.exec(sc); if (m) jar = m[1] || null; }
     if (fn === 'app-read-session' && request.method() === 'GET') { try { entry.expiresAt = JSON.parse(res.body).expiresAt; entry.state = JSON.parse(res.body).state; } catch { /* not JSON */ } }
+    if (fn === 'app-write-token') { try { entry.token = JSON.parse(res.body).token || null; } catch { /* not JSON */ } }
+    const h = holds.find((x) => !x.taken && x.fn === fn && (!x.method || x.method === request.method()) && tab !== 'popup');
+    if (h) { h.taken = true; h.entered = true; entry.held = true; await h.promise; }
     return route.fulfill({ status: res.statusCode, contentType: 'application/json', body: res.body });
   };
   const names = new WeakMap();
@@ -524,8 +536,124 @@ async function main() {
     check('L17 Try again (store back): the same page and draft', (await draftValue(U)) === 'kept through an outage' && (await mounts(U)) === 1);
     await ctx8.close();
 
+    // ════════════════ 8. r4: session replacement isolation (A->A, A->B), logout after replacement, delayed answers ════════════════
+    const tokSid = (t) => JSON.parse(Buffer.from(String(t).replace(/^Bearer /, '').split('.')[1], 'base64url')).sid;
+    const tokSub = (t) => JSON.parse(Buffer.from(String(t).replace(/^Bearer /, '').split('.')[1], 'base64url')).sub;
+    /** Sign in, wait for the 1-day reminder (T1 a few seconds away), type a draft, save once; returns at the reminder. */
+    const toT1WithDraft = async (ctx, tab, draft) => {
+      await signInJar(); signedInAgo(29 * DAY - 5000);
+      const p = await newTab(ctx, tab);
+      await until(() => shown(p, 'session-reminder'));
+      await p.getByTestId('session-reminder-later').click({ timeout: 8000 }).catch(() => {});
+      await p.getByTestId('draft').click({ timeout: 8000 }).catch(() => {});
+      await p.getByTestId('draft').fill(draft, { timeout: 8000 }).catch(() => {});
+      await p.getByTestId('save').click({ timeout: 8000 }).catch(() => {});
+      await until(async () => ((await txt(p, 'save-result')) || '') === 'Save answered 200');
+      await until(() => shown(p, 'session-reminder'), 12000);   // the 1-day checkpoint
+      return p;
+    };
+    {
+      const ctx9 = await newCtx();
+      const Q = await toT1WithDraft(ctx9, 'Q', 'A-to-A unsaved seller notes');
+      const oldSid = jarSid();
+      // A pending mint under the OLD session (held), and a delayed OLD status answer (held, "signed in" + the old handle).
+      const mintHold = hold('app-write-token');
+      await Q.evaluate(async () => { const m = await import('/src/lib/app-write-session.ts'); m.clearAppWriteToken(); m.primeAppWriteSession(); });
+      await until(() => mintHold.entered);
+      const statusHold = hold('app-read-session', 'GET');
+      await Q.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await until(() => statusHold.entered);
+      const heldMint = log.filter((e) => e.held && e.fn === 'app-write-token').slice(-1)[0];
+      await Q.getByTestId('session-reminder-log-in').click({ timeout: 8000 }).catch(() => {});
+      await until(() => shown(Q, 'one-login-relogin'));
+      await signInViaPopup(ctx9, Q);
+      await until(async () => !(await shown(Q, 'one-login-relogin')) && await shown(Q, 'read-access-signed-in'));
+      const newSid = jarSid();
+      mintHold.release(); statusHold.release();
+      await sleep(700);
+      check('L19 A->A Log In Again: a NEW session; the same page (not remounted) keeps the unsaved draft; no account-changed notice',
+        newSid !== oldSid && (await draftValue(Q)) === 'A-to-A unsaved seller notes' && (await mounts(Q)) === 1 && !(await shown(Q, 'one-login-account-changed')) &&
+        await shown(Q, 'read-access-signed-in'), { oldSid, newSid, mounts: await mounts(Q) });
+      check('L19 the delayed OLD status answer delivered after the replacement is discarded (still signed in, no overlay)',
+        await shown(Q, 'read-access-signed-in') && !(await shown(Q, 'read-access-recovery')));
+      const n = log.filter((e) => e.tab === 'Q' && e.fn === 'ghl-write').length;
+      await Q.getByTestId('save').click({ timeout: 8000 }).catch(() => {});
+      await until(async () => log.filter((e) => e.tab === 'Q' && e.fn === 'ghl-write').length === n + 1);
+      await sleep(200);
+      const after = log.filter((e) => e.tab === 'Q' && e.fn === 'ghl-write').slice(n);
+      check('L19 the PENDING old-session mint answered after the replacement is never used: the next save carries a token freshly minted under the NEW session',
+        after.length === 1 && after[0].status === 200 && heldMint && heldMint.token && tokSid(heldMint.token) === oldSid &&
+        after[0].auth !== `Bearer ${heldMint.token}` && tokSid(after[0].auth) === newSid,
+        { after: after.map((e) => ({ status: e.status, sid: e.auth && tokSid(e.auth) })), oldSid, newSid });
+      check('L19 after the replacement no write carried an old-session token', log.filter((e) => e.tab === 'Q' && e.fn === 'ghl-write').slice(n).every((e) => tokSid(e.auth) === newSid));
+      await Q.getByRole('button', { name: 'Sign out' }).click({ timeout: 8000 }).catch(() => {});
+      await until(() => shown(Q, 'one-login-entrance'));
+      check('L20 logout after the replacement revokes the NEW session (the handle came from the new status answer); the replaced session is left to expire (still active)',
+        (blobs.get('iaos-write-receipts', rev.sessionKey('test', newSid)) || {}).text === rev.sessionRecordText('test', EPOCH, newSid, 'revoked') &&
+        (blobs.get('iaos-write-receipts', rev.sessionKey('test', oldSid)) || {}).text === rev.sessionRecordText('test', EPOCH, oldSid, 'active'));
+      await ctx9.close();
+    }
+    {
+      const ctx10 = await newCtx();
+      const W = await toT1WithDraft(ctx10, 'W', "operator A's private draft");
+      const oldSid = jarSid();
+      await W.evaluate(() => { try { sessionStorage.setItem('iaos.dispositionOverride.v1', '{"fixture":{"disposition":"A data","at":"x"}}'); } catch { /* storage */ } });
+      await W.getByTestId('session-reminder-log-in').click({ timeout: 8000 }).catch(() => {});
+      await until(() => shown(W, 'one-login-relogin'));
+      googleEmail = 'second@example.invalid';
+      await signInViaPopup(ctx10, W);
+      await until(() => shown(W, 'one-login-account-changed'));
+      googleEmail = 'brad@example.invalid';
+      const newSid = jarSid();
+      check('L21 A->B: a neutral notice says the account changed and that the previous account\'s unsaved work was cleared',
+        await shown(W, 'one-login-account-changed') && await has(W, 'Signed in with a different account') &&
+        await has(W, 'Unsaved work from the previous account was cleared from this page.') && claims().sub === 'second@example.invalid' && newSid !== oldSid);
+      await W.getByTestId('one-login-account-continue').click({ timeout: 8000 }).catch(() => {});
+      await until(async () => !(await shown(W, 'one-login-account-changed')));
+      check('L21 A->B: the routed app was REMOUNTED -- A\'s draft is gone; the deep link is kept; signed in',
+        (await draftValue(W)) === '' && (await mounts(W)) === 2 && (await txt(W, 'route')) === '/ws/seller-call/42?tab=notes' && await shown(W, 'read-access-signed-in'),
+        { draft: await draftValue(W), mounts: await mounts(W) });
+      check('L21 A->B: operator-scoped page data (session-local overrides) was cleared', (await W.evaluate(() => { try { return sessionStorage.getItem('iaos.dispositionOverride.v1'); } catch { return 'unreadable'; } })) === null);
+      await W.getByTestId('draft').fill('operator B note', { timeout: 8000 }).catch(() => {});
+      const n = log.filter((e) => e.tab === 'W' && e.fn === 'ghl-write').length;
+      await W.getByTestId('save').click({ timeout: 8000 }).catch(() => {});
+      await until(async () => ((await txt(W, 'save-result')) || '') === 'Save answered 200');
+      const w = log.filter((e) => e.tab === 'W' && e.fn === 'ghl-write').slice(n);
+      check('L21 A->B: B\'s save carries a token of B\'s NEW session (sub B, new sid); A\'s token is never sent under B',
+        w.length === 1 && tokSub(w[0].auth) === 'second@example.invalid' && tokSid(w[0].auth) === newSid, w.map((e) => e.auth && [tokSub(e.auth), tokSid(e.auth)]));
+      await W.getByRole('button', { name: 'Sign out' }).click({ timeout: 8000 }).catch(() => {});
+      await until(() => shown(W, 'one-login-entrance'));
+      check('L21 A->B then Sign out: B\'s session is revoked; A\'s replaced session was left to expire',
+        (blobs.get('iaos-write-receipts', rev.sessionKey('test', newSid)) || {}).text === rev.sessionRecordText('test', EPOCH, newSid, 'revoked') &&
+        (blobs.get('iaos-write-receipts', rev.sessionKey('test', oldSid)) || {}).text === rev.sessionRecordText('test', EPOCH, oldSid, 'active'));
+      await ctx10.close();
+    }
+    {
+      // Delayed status ordering, one session: an OLDER "signed in" answer delivered after a NEWER "revoked" one.
+      await signInJar();
+      const ctx11 = await newCtx();
+      const V = await newTab(ctx11, 'V');
+      await until(() => shown(V, 'draft'));
+      await V.getByTestId('draft').fill('kept under the revoked overlay', { timeout: 8000 }).catch(() => {});
+      const late = hold('app-read-session', 'GET');
+      await V.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await until(() => late.entered);
+      const lateEntry = log.filter((e) => e.held && e.tab === 'V' && e.fn === 'app-read-session').slice(-1)[0];
+      const c = claims();
+      if ((await rev.revokeSession(c.sid, c.epoch, 'test', { event: { headers: { 'x-nf-site-id': SITE }, blobs: blobs.lambdaBlobs } })).kind !== 'verified') throw new Error('fixture revoke failed');
+      await V.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await until(() => shown(V, 'read-access-recovery'));
+      const overlayFirst = await shown(V, 'read-access-recovery');
+      late.release();
+      await sleep(800);
+      check('L22 delayed status: an OLDER "signed in" answer delivered after a NEWER "revoked" one is discarded -- the overlay stays, no signed-in status line repaints',
+        lateEntry && lateEntry.state === 'signed_in' && overlayFirst && await shown(V, 'read-access-recovery') && !(await shown(V, 'read-access-signed-in')) &&
+        (await msgText(V)) === "You've signed out of IAOS." && (await draftValue(V)) === 'kept under the revoked overlay');
+      await ctx11.close();
+    }
+
     check('L0 nothing left the machine: no outbound request other than the stubbed Google script', outbound.length === 0, outbound);
-    if (checks < 45) { failures += 1; console.error(`FAIL  check floor -- ${checks} checks ran, the floor is 45`); }
+    if (checks < 65) { failures += 1; console.error(`FAIL  check floor -- ${checks} checks ran, the floor is 65`); }
     console.log(`B15-29 login experience (real page): ${checks - failures}/${checks} checks passed`);
     await exit(failures ? 1 : 0);
   } catch (e) {

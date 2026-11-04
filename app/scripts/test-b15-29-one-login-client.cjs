@@ -26,6 +26,10 @@
  *   C10 store unavailable: paused before send / returned once, never re-sent, never a sign-in prompt
  *   C11 Sign out on THIS page pauses at the click; malformed token answers refused before send
  *   C12 the session's last minutes: the token is capped at the session end and still used; never re-sent
+ *   C13 r4 (Bones R3-2) session replacement: A->A and A->B deliberate re-login discard the cached AND pending saving
+ *       token synchronously, no save until the new session is confirmed, then a fresh mint under the NEW session;
+ *       a pending old mint resolving after the replacement is discarded; logout after replacement revokes the new
+ *       session; the status answer's non-secret operator / session tags tell A->A from A->B
  *   R1-R5 login experience reminders: the server's absolute expiry (never moved by any request), the 5-day / 1-day
  *       checkpoints, the capped next-checkpoint timer, Remind Me Later keyed by expiry + checkpoint (memory fallback),
  *       and a reminder module that sends nothing
@@ -62,11 +66,11 @@ const ENV = {
   IAOS_ENV: 'test',
   IAOS_APP_READ_GOOGLE_CLIENT_ID: 'offline-read-client',
   IAOS_APP_READ_SESSION_SECRET: 'offline-read-fixture-only-not-a-real-secret',
-  IAOS_APP_READ_BRAD_EMAILS: 'brad@example.invalid',
+  IAOS_APP_READ_BRAD_EMAILS: 'brad@example.invalid,second@example.invalid',
   IAOS_APP_READ_ALLOWED_ORIGIN: ORIGIN,
   IAOS_APP_WRITE_GOOGLE_CLIENT_ID: 'offline-write-client',
   IAOS_APP_WRITE_SESSION_SECRET: 'offline-write-fixture-only-not-a-real-secret',
-  IAOS_APP_WRITE_BRAD_EMAILS: 'brad@example.invalid',
+  IAOS_APP_WRITE_BRAD_EMAILS: 'brad@example.invalid,second@example.invalid',
   IAOS_APP_WRITE_ALLOWED_ORIGIN: ORIGIN,
   GHL_PRIVATE_API_KEY: 'offline-fixture',
 };
@@ -134,11 +138,12 @@ let tokenMode = 'real';      // 'real' | 'network' | 'bad-lifetime' | 'no-token'
 let held = null;
 let writeStore = [];
 const lambda = (headers) => ({ origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'x-nf-site-id': SITE, ...headers });
+let googleEmail = 'brad@example.invalid';
 global.fetch = async (url, init = {}) => {
   const u = String(url);
   if (blobs.handles(u)) return blobs.fetch(url, init);
   if (u.startsWith('https://oauth2.googleapis.com/tokeninfo')) {
-    return new Response(JSON.stringify({ iss: 'https://accounts.google.com', aud: 'offline-read-client', email: 'brad@example.invalid', email_verified: 'true', exp: String(Math.floor(T / 1000) + 600) }), { status: 200 });
+    return new Response(JSON.stringify({ iss: 'https://accounts.google.com', aud: 'offline-read-client', email: googleEmail, email_verified: 'true', exp: String(Math.floor(T / 1000) + 600) }), { status: 200 });
   }
   const headers = {};
   new Headers(init.headers || {}).forEach((v, k) => { headers[k] = v; });
@@ -210,7 +215,8 @@ async function check(name, fn) {
   catch (err) { failures += 1; console.log('FAIL  ' + name + ' -- ' + (err && err.message)); }
 }
 const resetAll = async ({ signIn = true } = {}) => {
-  log = []; events.length = 0; blobs.reset(); seedAnchor(); tokenMode = 'real'; writeStore = []; S.clearAppWriteToken(); S.resumeAppWriteAccess();
+  log = []; events.length = 0; blobs.reset(); seedAnchor(); tokenMode = 'real'; writeStore = []; S.clearAppWriteToken(); S.resumeAppWriteAccess(); S.confirmAppWriteSession();
+  googleEmail = 'brad@example.invalid';
   process.env.IAOS_APP_WRITE_BRAD_EMAILS = ENV.IAOS_APP_WRITE_BRAD_EMAILS;
   D = newDevice('laptop'); googleSignIns = 0;
   if (signIn) { await googleSignIn(); log = []; }
@@ -422,15 +428,17 @@ const resetAll = async ({ signIn = true } = {}) => {
     assert.equal(r.out, `refused:${S.SAVE_SIGNED_OUT_MESSAGE}`); assert.equal(log.length, 0);
   });
   await check('C11b a token request IN FLIGHT when Sign out is clicked: its token is never used and the save is never sent', async () => {
-    S.resumeAppWriteAccess(); S.clearAppWriteToken(); log = []; tokenMode = 'hold';
+    S.resumeAppWriteAccess(); S.confirmAppWriteSession(); S.clearAppWriteToken(); log = []; tokenMode = 'hold';
     const p = save();
     await new Promise((r) => setImmediate(r));
     S.pauseAppWriteForSignOut(); tokenMode = 'real'; held();
     const r = await p;
     assert.ok(r.out.startsWith('refused:Saving paused:'), r.out); assert.equal(writes().length, 0);
   });
-  await check('C11c only an explicit sign-in resumes; the next save is sent once', async () => {
-    S.resumeAppWriteAccess(); const r = await save(); assert.equal(r.out, 'sent:200'); noDuplicateWrites();
+  await check('C11c only an explicit sign-in resumes (r4: once the read gate confirms the session); the next save is sent once', async () => {
+    S.resumeAppWriteAccess(); log = [];
+    assert.equal((await save()).out, `refused:${S.SAVE_CONFIRMING_MESSAGE}`, 'not before the new session is confirmed'); assert.equal(log.length, 0);
+    S.confirmAppWriteSession(); const r = await save(); assert.equal(r.out, 'sent:200'); noDuplicateWrites();
   });
   for (const [label, mode] of [['a network failure', 'network'], ['a lifetime above 900 s', 'bad-lifetime'], ['no token in the answer', 'no-token']]) {
     await check(`C11d ${label} at token issue -> refused before sending, exactly one token request for this save, no retry`, async () => {
@@ -453,6 +461,80 @@ const resetAll = async ({ signIn = true } = {}) => {
     assert.ok(r.out === 'sent:401' || r.out.startsWith('refused:Saving paused'), r.out);
     if (r.out === 'sent:401') assert.equal(writes()[writes().length - 1].reason, 'session_expired');
     assert.ok(writes().length - n <= 1); noDuplicateWrites();
+  });
+
+  // ---------------------------------------------------------------- C13 session replacement (r4, Bones R3-2)
+  const tokSid = (auth) => JSON.parse(Buffer.from(auth.slice(7).split('.')[1], 'base64url')).sid;
+  const tokSub = (auth) => JSON.parse(Buffer.from(auth.slice(7).split('.')[1], 'base64url')).sub;
+  /** What the read gate does on a deliberate sign-in: popup message -> resumeAppWriteAccess(); then the status check confirms. */
+  async function deliberateSignIn(email = 'brad@example.invalid', { confirm = true } = {}) {
+    S.resumeAppWriteAccess();                          // synchronous, at the popup message (before any request)
+    googleEmail = email; await googleSignIn(); googleEmail = 'brad@example.invalid';
+    if (confirm) { const st = await statusOf(); assert.equal(st.body.state, 'signed_in'); S.confirmAppWriteSession(); return st.body; }
+    return null;
+  }
+  await resetAll();
+  await check('C13 A->A Log In Again: the cached token is discarded at once; no save until the new session is confirmed; then a FRESH mint under the NEW session -- the old token is never sent again', async () => {
+    assert.equal((await save()).out, 'sent:200');
+    const oldAuth = writes()[0].auth; const oldSid = tokSid(oldAuth); const before = await statusOf();
+    S.resumeAppWriteAccess(); log = [];
+    assert.equal(S.appWriteIdentity().operator, null, 'the cached token is gone synchronously');
+    assert.equal((await save()).out, `refused:${S.SAVE_CONFIRMING_MESSAGE}`); assert.equal(log.length, 0, 'nothing sent while confirming');
+    await googleSignIn(); const st = await statusOf(); S.confirmAppWriteSession();
+    assert.equal(st.body.operator, before.body.operator, 'same operator tag'); assert.notEqual(st.body.session, before.body.session, 'a new session tag');
+    log = []; const r = await save();
+    assert.equal(r.out, 'sent:200'); assert.equal(tokens().length, 1, 'a fresh mint');
+    assert.notEqual(writes()[0].auth, oldAuth); assert.equal(tokSid(writes()[0].auth), sidOf(D)); assert.notEqual(tokSid(writes()[0].auth), oldSid);
+  });
+  await resetAll();
+  await check('C13b a PENDING mint started under the OLD session that resolves AFTER the replacement is discarded (never adopted, never used); the save is not sent; the next save mints under the new session', async () => {
+    S.clearAppWriteToken(); log = []; tokenMode = 'hold';
+    const p = save();                                  // its mint request carries the OLD cookie
+    await new Promise((r) => setImmediate(r));
+    const oldSid = sidOf(D);
+    S.resumeAppWriteAccess();                          // the popup message: replacement begins
+    tokenMode = 'real'; await googleSignIn();          // the new session's cookie replaces the old one
+    held();                                            // the old mint answers now, with an OLD-session token
+    const r = await p;
+    assert.ok(r.out.startsWith('refused:Saving paused:'), r.out); assert.equal(writes().length, 0);
+    assert.equal(S.appWriteIdentity().operator, null, 'the late old token was not adopted');
+    S.confirmAppWriteSession(); log = [];
+    assert.equal((await save()).out, 'sent:200'); assert.equal(tokSid(writes()[0].auth), sidOf(D)); assert.notEqual(sidOf(D), oldSid);
+  });
+  await resetAll();
+  await check('C13c A->B (a different account): the operator tag changes, the previous operator\'s token is never sent, the identity becomes B (generation changes), and B\'s save carries B\'s new session', async () => {
+    assert.equal((await save()).out, 'sent:200'); const a = await statusOf(); const genA = S.appWriteIdentity().generation;
+    const b = await deliberateSignIn('second@example.invalid');
+    assert.notEqual(b.operator, a.body.operator); assert.notEqual(b.session, a.body.session);
+    log = []; assert.equal((await save()).out, 'sent:200');
+    assert.equal(tokSub(writes()[0].auth), 'second@example.invalid'); assert.equal(tokSid(writes()[0].auth), sidOf(D));
+    const id = S.appWriteIdentity(); assert.equal(id.operator, 'second@example.invalid'); assert.equal(id.lastOperator, 'second@example.invalid'); assert.ok(id.generation > genA);
+  });
+  await check('C13d logout AFTER the replacement revokes the NEW session (the handle comes from the new status answer): its token is refused next; the old session was left to expire (still active, not revoked)', async () => {
+    const newSid = sidOf(D); assert.equal((await save()).out, 'sent:200');
+    const so = await signOutFrom(); assert.equal(so.status, 200);
+    assert.equal(blobs.get('iaos-write-receipts', rev.sessionKey('test', newSid)).text, rev.sessionRecordText('test', EPOCH, newSid, 'revoked'));
+    const r = await save(); assert.ok(r.out === 'sent:401' || r.out.startsWith('refused:'), r.out);
+    if (r.out === 'sent:401') assert.equal(writes()[writes().length - 1].reason, 'revoked');
+    const actives = blobs.keys().filter((k) => k.includes('session/')).map((k) => blobs.store.get(k).text).filter((t) => t.includes('"active"'));
+    assert.equal(actives.length, 1, 'the replaced (A) session is still active -- left to expire');
+  });
+  await resetAll();
+  await check('C13e a session replaced in ANOTHER tab (the gate sees a new session tag): replaceAppWriteSession discards the cached token; after confirmation the next save mints under the new session', async () => {
+    assert.equal((await save()).out, 'sent:200'); const oldAuth = writes()[0].auth;
+    await googleSignIn();                              // another tab signed in again: the shared cookie changed
+    S.replaceAppWriteSession(); log = [];
+    assert.equal((await save()).out, `refused:${S.SAVE_CONFIRMING_MESSAGE}`); assert.equal(log.length, 0);
+    S.confirmAppWriteSession(); assert.equal((await save()).out, 'sent:200');
+    assert.notEqual(writes()[0].auth, oldAuth); assert.equal(tokSid(writes()[0].auth), sidOf(D));
+  });
+  await resetAll();
+  await check('C13f (Bones probe-relogin model) a cached previous-session token + the popup resume + confirmation: the cached token is NOT sent; exactly one fresh mint', async () => {
+    const old = writeAuth.issueBoundAppSession('brad@example.invalid', { env: 'test', sid: Buffer.alloc(16, 9).toString('base64url'), pexp: Math.floor(T / 1000) + 3600, epoch: EPOCH, aetag: '"a"', setag: '"s"' });
+    S.setAppWriteSession({ token: old.token, expiresAt: new Date(T + 600_000).toISOString() });
+    S.resumeAppWriteAccess(); S.confirmAppWriteSession(); log = [];
+    assert.equal((await save()).out, 'sent:200');
+    assert.notEqual(writes()[0].auth, `Bearer ${old.token}`); assert.equal(tokens().length, 1);
   });
 
   // ---------------------------------------------------------------- R reminders (login experience, spec §3)
@@ -509,7 +591,7 @@ const resetAll = async ({ signIn = true } = {}) => {
   });
 
   Date.now = realNow; setFlag(false);
-  const FLOOR = 34;
+  const FLOOR = 40;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (client): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;
