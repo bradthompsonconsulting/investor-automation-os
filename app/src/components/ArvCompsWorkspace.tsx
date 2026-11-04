@@ -25,6 +25,8 @@ import {
 import { latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
 import {
   ARV_ADDRESS_FIRST, ARV_SHOW_FACTS_ANYWAY, arvOnRecordState, type ArvOnRecord,
+  arvConfirmationOnSave, arvOnRecordFor, nextArvReadGeneration,
+  type ArvConfirmation, type ArvLedgerRead, type ArvReadGeneration,
 } from "../lib/authoritative-figures";
 import { ArvOnRecordLine } from "./AuthoritativeFigures";
 
@@ -79,38 +81,52 @@ export default function ArvCompsWorkspace({ contact, opportunityId, currentArv }
   /* B15-22: the ARV approval ledger for this contact (one GET, the existing
      ghl.notes.list read), keyed so another deal's record is never shown. */
   const recordKey = `${contact.id}|${opportunityId}`;
-  const [arvLedger, setArvLedger] = useState<{ key: string; notes: { body: string }[] | null } | null>(null);
-  /* An approval this workspace saved and confirmed on this visit: the page
-     does not re-read the Opportunity, so the confirmed figure is the record. */
-  const [savedThisVisit, setSavedThisVisit] = useState<{ key: string; amount: number } | null>(null);
+  const [arvLedger, setArvLedger] = useState<ArvLedgerRead | null>(null);
+  /* B15-22 r3 (Bones P2): the READ GENERATION of the deal facts handed in.
+     A newer read -- a new contact object (refresh, sign-in recovery, the
+     re-read after another save) or a changed ARV on file -- moves it. Derived
+     during render from the previous value; idempotent, so a repeated render
+     of the same props leaves it where it is. */
+  const readGenRef = useRef<ArvReadGeneration | null>(null);
+  readGenRef.current = nextArvReadGeneration(readGenRef.current, contact, currentArv);
+  const readGen = readGenRef.current.gen;
+  /* An approval this workspace saved and confirmed on this visit, for THIS
+     deal and THIS read generation only: the page does not re-read the
+     Opportunity after an ARV save, so until a newer read arrives the
+     confirmed figure is the record; a newer read retires it. */
+  const [savedThisVisit, setSavedThisVisit] = useState<ArvConfirmation | null>(null);
+  const saveStartedFor = useRef<{ key: string; gen: number } | null>(null);
   const [showFactsAnyway, setShowFactsAnyway] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    const key = recordKey;
+    const key = recordKey; const gen = readGen;
     ghl.notes.list(contact.id)
-      .then((body) => { if (!cancelled) setArvLedger({ key, notes: Array.isArray(body?.notes) ? body.notes : [] }); })
-      .catch(() => { if (!cancelled) setArvLedger({ key, notes: null }); });
+      .then((body) => { if (!cancelled) setArvLedger({ key, gen, notes: Array.isArray(body?.notes) ? body.notes : [] }); })
+      .catch(() => { if (!cancelled) setArvLedger({ key, gen, notes: null }); });
     return () => { cancelled = true; };
-    // Keyed by the deal, not the contact object: a re-read of the same contact does not re-fetch.
+    // Keyed by the deal AND its read generation: a newer read of the same deal re-reads the ledger
+    // (and so recovers after a failed read); a repeated render of the same read does not.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recordKey]);
+  }, [recordKey, readGen]);
   /* Observed from the existing outcome state, never set inside the save path:
-     a confirmed save (persistApprovedArv's own ok) is the record from then on. */
+     the deal and read generation are noted when saving starts, and a
+     confirmed save (persistApprovedArv's own ok) counts only if no newer read
+     arrived meanwhile. */
   useEffect(() => {
-    if ("ok" in persistState && persistState.ok) setSavedThisVisit({ key: recordKey, amount: persistState.value });
+    if (persistState.stage === "saving") { saveStartedFor.current = { key: recordKey, gen: readGen }; return; }
+    if ("ok" in persistState && persistState.ok) {
+      setSavedThisVisit(arvConfirmationOnSave({ started: saveStartedFor.current, key: recordKey, gen: readGen, amount: persistState.value, basisArv: currentArv }));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [persistState]);
-  const arvOnRecord: ArvOnRecord = savedThisVisit !== null && savedThisVisit.key === recordKey
-    ? { kind: "approved", amount: savedThisVisit.amount }
-    : arvLedger === null || arvLedger.key !== recordKey
-      ? { kind: "loading" }
-      : arvLedger.notes === null
-        ? { kind: "unavailable" }
-        : arvOnRecordState({
-          latestLedgerArv: latestArvApprovalForOpportunity(arvLedger.notes, opportunityId)?.approvedArv ?? null,
-          matchedArv: matchingArvApprovalForOpportunity(arvLedger.notes, opportunityId, currentArv)?.approvedArv ?? null,
-          currentArv,
-        });
+  const arvOnRecord: ArvOnRecord = arvOnRecordFor({
+    key: recordKey, gen: readGen, confirmation: savedThisVisit, ledger: arvLedger,
+    fromLedger: (notes) => arvOnRecordState({
+      latestLedgerArv: latestArvApprovalForOpportunity(notes, opportunityId)?.approvedArv ?? null,
+      matchedArv: matchingArvApprovalForOpportunity(notes, opportunityId, currentArv)?.approvedArv ?? null,
+      currentArv,
+    }),
+  });
 
   /* Board 15 cleanup: seeded once per contact. A re-read of the SAME contact
      (sign-in recovery, a refresh) hands over a new object; re-seeding then

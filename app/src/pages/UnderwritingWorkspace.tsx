@@ -61,7 +61,10 @@ import ArvCompsWorkspace from "../components/ArvCompsWorkspace";
    is read with the rail's own readOpportunityNumber, the live one is
    computeUnderwriting's, and Approve is untouched. */
 import { readOpportunityNumber } from "../lib/underwriting/selectOpportunity";
-import { compareSellerMao, type SellerMaoComparison } from "../lib/authoritative-figures";
+import {
+  compareSellerMao, confirmSubmittedApproval, recordedSellerMaoFor, submittedApprovalSnapshot,
+  type ConfirmedApproval, type SellerMaoComparison,
+} from "../lib/authoritative-figures";
 import { LiveSellerMaoFigure, RecordedSellerMaoCell } from "../components/AuthoritativeFigures";
 
 /**
@@ -1152,11 +1155,24 @@ export default function UnderwritingWorkspace() {
       ? pipeline.facts.assignmentMode.reason
       : null;
 
+  /* B15-22 r3 (Bones P2): the recorded Seller MAO after Approve is what that
+     Approve operation SUBMITTED, captured in the operation itself before it
+     awaits (the same screen values its request carries), and applied on its
+     own confirmed success -- bound to that operation, that Opportunity and
+     the pipeline read on screen at confirmation. Never read from the render
+     state at completion; a superseded operation's confirmation is ignored;
+     the next pipeline read (a mode change, a refresh) is the record again. */
+  const [approvedThisVisit, setApprovedThisVisit] = useState<ConfirmedApproval | null>(null);
+  const approveOp = useRef(0);
+  const oppsRef = useRef(opps);
+  oppsRef.current = opps;
+
   async function onApprove() {
     if (screen.state !== "resolved") return;
     if (screen.approve.status === "in_flight") return;
 
     setApprove({ status: "in_flight" });
+    const submitted = submittedApprovalSnapshot(++approveOp.current, screen.opportunity.id, screen.figures, OPTION_BY_MODE[screen.assignment.kind]); // B15-22 snapshot
 
     try {
       /* The domain discriminant maps to a GHL option label HERE, at the
@@ -1169,6 +1185,7 @@ export default function UnderwritingWorkspace() {
       });
 
       if (result.ok) {
+        setApprovedThisVisit((prev) => confirmSubmittedApproval(prev, submitted, approveOp.current, oppsRef.current)); // B15-22 snapshot
         setApprove({ status: "succeeded" });
         return;
       }
@@ -1201,22 +1218,11 @@ export default function UnderwritingWorkspace() {
   }
 
   /* B15-22: recorded approved vs calculated now. Wording only -- no number is
-     changed and Approve's handler and gating above are untouched.
-     Approve does not re-read the Opportunity, so the figure it just saved and
-     confirmed on read-back is remembered here -- for that deal and that
-     pipeline read only; the next read (a mode change, a refresh) is the
-     record again. Observed, never sent: this effect only watches the state. */
-  const [approvedThisVisit, setApprovedThisVisit] = useState<{ oppId: string; opps: OpportunityRow[] | null; value: number } | null>(null);
-  const approvedFigure = screen.state === "resolved" && screen.approve.status === "succeeded"
-    ? { oppId: screen.opportunity.id, value: screen.figures.sellerMAO } : null;
-  useEffect(() => {
-    if (approvedFigure) setApprovedThisVisit({ oppId: approvedFigure.oppId, opps, value: approvedFigure.value });
-    // Captured once, when Approve's confirmed outcome first appears.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [approve.status]);
-  const recordedForScreen = approvedThisVisit !== null && selected !== null
-    && approvedThisVisit.oppId === selected.id && approvedThisVisit.opps === opps
-    ? approvedThisVisit.value : recordedSellerMAO;
+     changed; Approve's request and gating are unchanged (its two marked
+     snapshot lines only record what it sent). */
+  const recordedForScreen = recordedSellerMaoFor({
+    confirmed: approvedThisVisit, selectedId: selected ? selected.id : null, read: opps, fromRead: recordedSellerMAO,
+  });
   const maoComparison = compareSellerMao({
     recorded: recordedForScreen,
     live: screen.state === "resolved" ? screen.figures.sellerMAO : null,

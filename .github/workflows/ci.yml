@@ -350,6 +350,9 @@ jobs:
         run: node app/scripts/test-b15-20-contacts-columns.cjs
       - name: Contract Workspace display, combined invariants and checked-in slice provenance (B15-21)
         run: node app/scripts/test-b15-21-contract-display.cjs
+      # Node-only (esbuild + react-dom/server); base identity is pinned by committed SHA-256 (no git object needed).
+      - name: Authoritative figures -- recorded vs calculated-now Seller MAO, ARV on record bound to its read, submitted-snapshot approval, base-identity pins (INV-131, B15-22) — 96 checks
+        run: node app/scripts/test-b15-22-authoritative-figures.cjs
       # B1 Blob authority (B15-26 B1 r7 boundary r2/r3): isolated module, loopback fake service only, no real credential.
       - name: B1 Blob authority -- single-attempt conditional writes, process-local handles, forbidden transitions (INV-134) — 80 checks
         run: node app/scripts/test-blob-authority.cjs

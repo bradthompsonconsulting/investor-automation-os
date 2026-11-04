@@ -115,6 +115,105 @@ export function arvOnRecordState(input: {
   return { kind: "none" };
 }
 
+// ── B15-22 r3 (Bones REVISE P2 #1): a visit-local ARV confirmation is bound
+//    to the read it supplements ──────────────────────────────────────────────
+
+/**
+ * A READ GENERATION of the deal facts the ARV workspace is handed. It moves
+ * on every newer read the page hands in: a new contact object (a refresh,
+ * sign-in recovery, the re-read after another save) or a changed ARV on file.
+ * Pure: the caller keeps the previous value and passes it back.
+ */
+export type ArvReadGeneration = { contact: unknown; currentArv: number | null; gen: number };
+export function nextArvReadGeneration(prev: ArvReadGeneration | null, contact: unknown, currentArv: number | null): ArvReadGeneration {
+  if (prev === null) return { contact, currentArv, gen: 0 };
+  if (prev.contact === contact && prev.currentArv === currentArv) return prev;
+  return { contact, currentArv, gen: prev.gen + 1 };
+}
+
+/** What a confirmed ARV save supplements: that deal, that read generation, the ARV on file then. */
+export type ArvConfirmation = { key: string; gen: number; amount: number; basisArv: number | null };
+
+/**
+ * A confirmed save becomes the visit-local confirmation ONLY when no newer
+ * read arrived while it was in flight (same deal key, same generation as when
+ * the save started). Otherwise there is no confirmation: the newer read and
+ * its ledger re-read are the record.
+ */
+export function arvConfirmationOnSave(input: {
+  started: { key: string; gen: number } | null;
+  key: string; gen: number; amount: number; basisArv: number | null;
+}): ArvConfirmation | null {
+  if (input.started === null || input.started.key !== input.key || input.started.gen !== input.gen) return null;
+  return { key: input.key, gen: input.gen, amount: input.amount, basisArv: input.basisArv };
+}
+
+/** The ARV ledger as read for one deal key and one read generation (notes null = the read failed). */
+export type ArvLedgerRead = { key: string; gen: number; notes: { body: string }[] | null };
+
+/**
+ * The ARV-on-record line's state. A confirmation counts only for the deal
+ * AND read generation it supplements; a newer read retires it, and the line
+ * then waits for (and reconciles against) the ledger re-read for THAT
+ * generation -- an older ledger answer is never shown for a newer read.
+ */
+export function arvOnRecordFor(input: {
+  key: string; gen: number;
+  confirmation: ArvConfirmation | null;
+  ledger: ArvLedgerRead | null;
+  fromLedger: (notes: { body: string }[]) => ArvOnRecord;
+}): ArvOnRecord {
+  const c = input.confirmation;
+  if (c !== null && c.key === input.key && c.gen === input.gen) return { kind: "approved", amount: c.amount };
+  const l = input.ledger;
+  if (l === null || l.key !== input.key || l.gen !== input.gen) return { kind: "loading" };
+  if (l.notes === null) return { kind: "unavailable" };
+  return input.fromLedger(l.notes);
+}
+
+// ── B15-22 r3 (Bones REVISE P2 #2): the recorded Seller MAO after Approve is
+//    the SUBMITTED snapshot, never the render state at completion ───────────
+
+/** Exactly what one Approve operation sent, captured in that operation before it awaits. */
+export type SubmittedApproval = {
+  op: number; opportunityId: string;
+  sellerMAO: number; endBuyerMaxPrice: number; assignmentMode: string;
+};
+/** A confirmed Approve: its submitted snapshot, bound to the pipeline read it supplements. */
+export type ConfirmedApproval = SubmittedApproval & { boundTo: unknown };
+
+export function submittedApprovalSnapshot(
+  op: number, opportunityId: string,
+  figures: { sellerMAO: number; endBuyerMaxPrice: number }, assignmentMode: string,
+): SubmittedApproval {
+  return { op, opportunityId, sellerMAO: figures.sellerMAO, endBuyerMaxPrice: figures.endBuyerMaxPrice, assignmentMode };
+}
+
+/**
+ * On confirmed success: the SUBMITTED snapshot becomes the confirmation,
+ * bound to the pipeline read on screen at confirmation. A confirmation from
+ * a superseded operation (a newer Approve has started since) changes nothing.
+ */
+export function confirmSubmittedApproval(
+  prev: ConfirmedApproval | null, submitted: SubmittedApproval, latestOp: number, boundTo: unknown,
+): ConfirmedApproval | null {
+  if (submitted.op !== latestOp) return prev;
+  return { ...submitted, boundTo };
+}
+
+/**
+ * The recorded Seller MAO for the selected Opportunity: the confirmed
+ * submitted figure while the page still holds the read it supplements and
+ * the same Opportunity is selected; otherwise what the Opportunity read holds.
+ */
+export function recordedSellerMaoFor(input: {
+  confirmed: ConfirmedApproval | null; selectedId: string | null; read: unknown; fromRead: number | null;
+}): number | null {
+  const c = input.confirmed;
+  if (c !== null && input.selectedId !== null && c.opportunityId === input.selectedId && c.boundTo === input.read) return c.sellerMAO;
+  return input.fromRead;
+}
+
 /** F44: with no property address, the subject-fact grid is collapsed and this is said instead. */
 export const ARV_ADDRESS_FIRST = "Add the property address first — comps and property facts need it.";
 export const ARV_SHOW_FACTS_ANYWAY = "Enter property facts anyway (this session only)";
