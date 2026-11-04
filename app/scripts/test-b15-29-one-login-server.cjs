@@ -47,7 +47,9 @@ Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
 }).outputText, filename);
 
 const ORIGIN = 'https://proof.example.invalid';
-const SITE = 'fixture-site-id';
+// The PINNED Test revocation site (public Netlify site id of iaos-app-test); Production's pinned id for mismatch cases.
+const SITE = '07ca1f1a-60fd-4229-a076-528970957912';
+const PROD_SITE = '19fcbf6a-7c3c-40e3-af20-bd077f0f8ec8';
 const BLOB_TOKEN = 'fixture-blob-token-not-real';
 const BASE_ENV = {
   IAOS_APP_READ_GOOGLE_CLIENT_ID: 'offline-read-client',
@@ -75,8 +77,11 @@ let now = null; // null = real clock
 const clock = () => (now === null ? Date.now() : now);
 const blobs = createFakeBlobs({ siteID: SITE, token: BLOB_TOKEN });
 let other = [];
+// Every request for the authority anchor key that is not a read, across the WHOLE run (no code path may write it).
+const anchorWrites = [];
 global.fetch = async (url, init = {}) => {
   const u = String(url);
+  if (u.startsWith('https://api.netlify.com/') && decodeURIComponent(u).includes('session-revocation/_authority') && String(init.method || 'GET').toUpperCase() !== 'GET') anchorWrites.push(String(init.method));
   if (u.startsWith('https://api.netlify.com/') || u.startsWith('https://signed.blobs.invalid/')) return blobs.fetch(url, init);
   other.push({ url: u, method: init.method || 'GET' });
   if (other.length > 400) throw new Error('runaway outbound');
@@ -110,13 +115,23 @@ async function check(name, fn) {
 // ---- fixtures -----------------------------------------------------------------
 const FUTURE = Math.floor(Date.now() / 1000) + 3600;
 const sid = (n) => Buffer.alloc(16, n).toString('base64url');
-const readCookie = ({ email = 'brad@example.invalid', at = Date.now(), s = sid(1), deployment = 'test', withSid = true } = {}) => {
+// The authority anchor's epoch (operator-provisioned; opaque 16-64 chars) and a rotated one (after a restore).
+const EPOCH = 'fixture-epoch-0001';
+const EPOCH2 = 'fixture-epoch-0002-rotated';
+const ANCHOR_KEY = 'session-revocation/_authority';
+const anchorText = ({ env = 'test', siteID = SITE, epoch = EPOCH, v = 1, kind = 'iaos-session-revocation-authority', extra = {} } = {}) =>
+  JSON.stringify(Object.fromEntries(Object.entries({ env, epoch, kind, siteID, v, ...extra }).sort()));
+const seedAnchor = (o) => blobs.put('iaos-write-receipts', ANCHOR_KEY, typeof o === 'string' ? o : anchorText(o));
+const dropAnchor = () => blobs.remove('iaos-write-receipts', ANCHOR_KEY);
+const readCookie = ({ email = 'brad@example.invalid', at = Date.now(), s = sid(1), deployment = 'test', withSid = true, epoch = EPOCH } = {}) => {
   const env = { ...process.env, IAOS_ENV: deployment };
-  return readAuth.issueReadSession(email, readAuth.appReadConfig(env), at, withSid ? s : undefined).token;
+  return readAuth.issueReadSession(email, readAuth.appReadConfig(env), at, withSid ? s : undefined, withSid && epoch ? epoch : undefined).token;
 };
+const bound = (s, { pexp = FUTURE, epoch = EPOCH, env = 'test' } = {}) => writeAuth.issueBoundAppSession('brad@example.invalid', { env, sid: s, pexp, epoch }).token;
+const NF = { headers: { 'x-nf-site-id': SITE } };   // the platform's runtime site header, as a minimal event
 const cookieHeader = (token) => `${readAuth.READ_COOKIE}=${token}`;
 function ev({ method = 'POST', cookie = null, headers = {}, body = '', bearer = null, multi, query } = {}) {
-  const h = { origin: ORIGIN, 'sec-fetch-site': 'same-origin', ...headers };
+  const h = { origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'x-nf-site-id': SITE, ...headers };
   if (cookie) h.cookie = cookieHeader(cookie);
   if (bearer) h.authorization = `Bearer ${bearer}`;
   for (const [k, v] of Object.entries(h)) if (v === undefined) delete h[k];
@@ -137,7 +152,8 @@ const RECORD = (deployment, s) => {
   return { key, text: JSON.stringify(Object.fromEntries(Object.entries({ env: deployment, kind: 'iaos-session-revocation', revokedAt: '2026-11-03T00:00:00.000Z', schema: 1, sidDigest: key.slice('session-revocation/'.length) }).sort())) };
 };
 const seedRevoked = (deployment, s) => { const r = RECORD(deployment, s); blobs.put('iaos-write-receipts', r.key, r.text); };
-const reset = () => { blobs.reset(); other = []; now = null; setEnv('test'); };
+const reset = () => { blobs.reset(); seedAnchor(); other = []; now = null; setEnv('test'); };
+const keysOf = (kind) => blobs.log.filter((e) => (e.key === ANCHOR_KEY) === (kind === 'anchor')).map((e) => `${e.stage}:${e.method}`);
 const blobCount = () => blobs.log.length;
 const marker = (res) => (parse(res) || {}).by;
 
@@ -160,7 +176,7 @@ const marker = (res) => (parse(res) || {}).by;
   });
   await check('F3 off: the reader/writer helpers return null with ZERO I/O, even for a sid whose revocation record exists', async () => {
     seedRevoked('test', sid(1)); const before = blobCount();
-    const tok = writeAuth.issueBoundAppSession('brad@example.invalid', { env: 'test', sid: sid(1), pexp: FUTURE }).token;
+    const tok = bound(sid(1));
     assert.equal(await rev.sessionReadRefusal(ev({ method: 'GET', cookie: readCookie() })), null);
     assert.equal(await rev.sessionWriteRefusal(ev({ bearer: tok })), null);
     assert.equal(blobCount() - before, 0); assert.equal(other.length, 0);
@@ -196,15 +212,16 @@ const marker = (res) => (parse(res) || {}).by;
 
   // =========================================================================== M
   reset(); flag(true);
-  const ck = (s = sid(2), o = {}) => rev.checkRevocation(s, 'test', o);
+  const ck = (s = sid(2), o = {}) => rev.checkRevocation(s, 'test', { event: NF, epoch: EPOCH, ...o });
   await check('M1 the store name equals blob-authority AUTHORITY_STORE (existing store; no new store)', async () => {
     assert.equal(rev.REVOCATION_STORE, blobAuthority.AUTHORITY_STORE);
   });
-  await check('M2 absent: one sign + one GET, 404 -> absent; key under session-revocation/, env- and sid-bound', async () => {
+  await check('M2 absent: one sign + one GET for the sid record (and one each for the anchor), 404 -> absent; key under session-revocation/, env- and sid-bound', async () => {
     const r = await ck();
     assert.deepEqual(r, { kind: 'absent' });
-    assert.deepEqual(blobs.log.map((e) => `${e.stage}:${e.method}`), ['sign:GET', 'blob:GET']);
-    assert.equal(blobs.log[0].key, rev.revocationKey('test', sid(2)));
+    assert.deepEqual(keysOf('sid'), ['sign:GET', 'blob:GET']);
+    assert.deepEqual(keysOf('anchor'), ['sign:GET', 'blob:GET']);
+    assert.equal(blobs.log.filter((e) => e.key !== ANCHOR_KEY)[0].key, rev.revocationKey('test', sid(2)));
     assert.notEqual(rev.revocationKey('test', sid(2)), rev.revocationKey('production', sid(2)));
     assert.ok(blobs.log[0].auth && blobs.log[0].site === SITE && blobs.log[0].storeName === 'site:iaos-write-receipts');
   });
@@ -229,9 +246,12 @@ const marker = (res) => (parse(res) || {}).by;
     ['blob 401', { stage: 'blob', method: 'GET', status: 401 }], ['blob transport error', { stage: 'blob', method: 'GET', throw: true }],
   ]) {
     await check(`M5 ${label} -> unavailable, exactly one attempt per stage (no SDK retry sent)`, async () => {
-      reset(); blobs.rule(rule);
+      reset(); blobs.rule({ ...rule, key: rev.revocationKey('test', sid(2)) });
       const r = await ck(); assert.equal(r.kind, 'unavailable', JSON.stringify(r));
-      assert.ok(blobs.log.filter((e) => e.stage === 'sign').length <= 1 && blobs.log.filter((e) => e.stage === 'blob').length <= 1, JSON.stringify(blobs.log));
+      for (const kind of ['sid', 'anchor']) {
+        const l = blobs.log.filter((e) => (e.key === ANCHOR_KEY) === (kind === 'anchor'));
+        assert.ok(l.filter((e) => e.stage === 'sign').length <= 1 && l.filter((e) => e.stage === 'blob').length <= 1, kind + ' ' + JSON.stringify(blobs.log));
+      }
     });
   }
   await check('M6 not configured (no site id / token) -> unavailable with zero requests', async () => {
@@ -243,7 +263,7 @@ const marker = (res) => (parse(res) || {}).by;
   await check('M7 malformed sid or env -> unavailable with zero requests', async () => {
     reset();
     for (const [s, e] of [['short', 'test'], [sid(2) + 'A', 'test'], [sid(2), 'staging'], [sid(2).replace(/.$/, '='), 'test']]) {
-      assert.equal((await rev.checkRevocation(s, e)).kind, 'unavailable');
+      assert.equal((await rev.checkRevocation(s, e, { event: NF, epoch: EPOCH })).kind, 'unavailable');
     }
     assert.equal(blobCount(), 0);
   });
@@ -265,19 +285,20 @@ const marker = (res) => (parse(res) || {}).by;
   await check('M11 a LATE 404 (answered after the deadline) is NOT absent -> unavailable', async () => {
     reset(); let t = 1_000_000;
     const lateFetch = async (u, i) => { const res = await blobs.fetch(u, i); if (String(u).startsWith('https://signed.')) t += 5_000; return res; };
-    const r = await rev.checkRevocation(sid(2), 'test', { fetch: lateFetch, now: () => t, budgetMs: 3000 });
+    const r = await rev.checkRevocation(sid(2), 'test', { event: NF, epoch: EPOCH, fetch: lateFetch, now: () => t, budgetMs: 3000 });
     assert.equal(r.kind, 'unavailable', JSON.stringify(r));
   });
   await check('M12 no request is started with less than the minimum start time left (deadline already spent)', async () => {
-    reset(); const r = await rev.checkRevocation(sid(2), 'test', { budgetMs: 100 });
+    reset(); const r = await ck(sid(2), { budgetMs: 100 });
     assert.equal(r.kind, 'unavailable'); assert.equal(blobCount(), 0);
   });
-  const rr = (s = sid(4), o = {}) => rev.recordRevocation(s, 'test', o);
-  await check('M13 revoke: conditional create (If-None-Match: *) + strong readback -> verified; a canonical record is stored', async () => {
+  const rr = (s = sid(4), o = {}) => rev.recordRevocation(s, 'test', { event: NF, ...o });
+  await check('M13 revoke: conditional create (If-None-Match: *) + strong readback -> verified; a canonical record is stored; the anchor is only READ', async () => {
     reset(); const r = await rr();
     assert.deepEqual(r, { kind: 'verified' });
-    assert.deepEqual(blobs.log.map((e) => `${e.stage}:${e.method}`), ['sign:PUT', 'blob:PUT', 'sign:GET', 'blob:GET']);
-    assert.equal(blobs.log[1].ifNoneMatch, '*'); assert.deepEqual(blobs.violations, []);
+    assert.deepEqual(keysOf('sid'), ['sign:PUT', 'blob:PUT', 'sign:GET', 'blob:GET']);
+    assert.deepEqual(keysOf('anchor'), ['sign:GET', 'blob:GET']);
+    assert.equal(blobs.log.find((e) => e.stage === 'blob' && e.method === 'PUT').ifNoneMatch, '*'); assert.deepEqual(blobs.violations, []);
     const stored = blobs.get('iaos-write-receipts', rev.revocationKey('test', sid(4)));
     assert.ok(rev.validRevocationText(stored.text, 'test', sid(4)));
     assert.deepEqual(await ck(sid(4)), { kind: 'revoked' });
@@ -304,7 +325,7 @@ const marker = (res) => (parse(res) || {}).by;
     assert.deepEqual(await rr(), { kind: 'verified' });
   });
   await check('M18 readback unreadable after a committed write -> not confirmed (never "signed out" without a verified read)', async () => {
-    reset(); blobs.rule({ stage: 'blob', method: 'GET', status: 503 });
+    reset(); blobs.rule({ stage: 'blob', method: 'GET', status: 503, key: rev.revocationKey('test', sid(4)) });
     assert.equal((await rr()).kind, 'unconfirmed');
     assert.deepEqual(await ck(sid(4)), { kind: 'revoked' }, 'the revocation did commit: conservative for the SAME sid');
   });
@@ -320,7 +341,7 @@ const marker = (res) => (parse(res) || {}).by;
   await check('M21 a readback answered after the deadline -> not confirmed', async () => {
     reset(); let t = 2_000_000;
     const lateFetch = async (u, i) => { const res = await blobs.fetch(u, i); if (String(u).startsWith('https://signed.') && String(i.method || 'GET').toUpperCase() === 'GET') t += 9_000; return res; };
-    assert.equal((await rev.recordRevocation(sid(4), 'test', { fetch: lateFetch, now: () => t })).kind, 'unconfirmed');
+    assert.equal((await rev.recordRevocation(sid(4), 'test', { event: NF, fetch: lateFetch, now: () => t })).kind, 'unconfirmed');
   });
 
   // =========================================================================== T
@@ -339,7 +360,9 @@ const marker = (res) => (parse(res) || {}).by;
     assert.equal(claims.pexp, decode(c).exp, 'bound to the parent session expiry');
     assert.equal(writeAuth.requireAppWriter({ headers: { authorization: `Bearer ${b.token}` } }), 'brad@example.invalid');
     assert.equal(res.headers['Set-Cookie'], undefined); assert.equal(res.headers['Cache-Control'], 'no-store');
-    assert.deepEqual(blobs.log.map((e) => `${e.stage}:${e.method}`), ['sign:GET', 'blob:GET'], 'one strong read per issue');
+    assert.deepEqual(keysOf('sid'), ['sign:GET', 'blob:GET'], 'one strong read of the sid record per issue');
+    assert.deepEqual(keysOf('anchor'), ['sign:GET', 'blob:GET'], 'one strong read of the anchor per issue');
+    assert.equal(claims.epoch, EPOCH, 'the token carries the session epoch');
     assert.equal(other.length, 0);
   });
   const refusals = [
@@ -359,14 +382,15 @@ const marker = (res) => (parse(res) || {}).by;
     ['T15 a Production session presented to Test -> 401 (environment separation)', () => tokenEv(readCookie({ deployment: 'production' })), 401],
     ['T16 a session WITHOUT sid (issued before one sign-in) -> 401 sign_in_again', () => tokenEv(readCookie({ withSid: false })), 401],
     ['T17 a reader NOT on the saving allowlist -> 401', () => tokenEv(readCookie({ email: 'reader-only@example.invalid' })), 401],
-    ['T18 a saving token presented as the cookie -> 401', () => tokenEv(writeAuth.issueBoundAppSession('brad@example.invalid', { env: 'test', sid: sid(1), pexp: FUTURE }).token), 401],
+    ['T18 a saving token presented as the cookie -> 401', () => tokenEv(bound(sid(1))), 401],
+    ['T16b a session with a sid but WITHOUT an authority epoch -> 401 sign_in_again', () => tokenEv(readCookie({ epoch: null })), 401],
   ];
   for (const [name, make, status] of refusals) {
     await check(name + '; no token, no cookie, no-store', async () => {
       reset(); const res = await mint(make());
       assert.equal(res.statusCode, status, res.body); noCredentialLeak(res);
       if (status !== 401 || /T1[2-8]/.test(name)) assert.equal(blobCount(), 0, 'refused before the revocation read');
-      if (name.startsWith('T16')) assert.equal(parse(res).reason, 'sign_in_again');
+      if (name.startsWith('T16')) assert.equal(parse(res).reason, 'sign_in_again', name);
     });
   }
   await check('T19 revoked sid -> 401 reason "revoked" (never a token)', async () => {
@@ -432,6 +456,7 @@ const marker = (res) => (parse(res) || {}).by;
     const sa = decode(/__Host-iaos_read=([^;]+)/.exec(a.headers['Set-Cookie'])[1]).sid;
     const sb = decode(/__Host-iaos_read=([^;]+)/.exec(b.headers['Set-Cookie'])[1]).sid;
     assert.ok(readAuth.isCanonicalSid(sa) && readAuth.isCanonicalSid(sb) && sa !== sb);
+    assert.equal(decode(/__Host-iaos_read=([^;]+)/.exec(a.headers['Set-Cookie'])[1]).epoch, EPOCH, 'bound to the anchor epoch at sign-in');
     assert.match(a.headers['Set-Cookie'], /; Path=\/; Max-Age=28800; HttpOnly; Secure; SameSite=Strict$/);
   });
   await check('S5 DELETE is retired: 410, NO Set-Cookie (a delayed sign-out can never erase a newer sign-in)', async () => {
@@ -448,7 +473,8 @@ const marker = (res) => (parse(res) || {}).by;
     blobs.log.length = 0;
     const r = await signOut(signOutEv(handle));
     assert.equal(r.statusCode, 200, r.body); assert.deepEqual(parse(r), { state: 'revoked' }); assert.equal(r.headers['Set-Cookie'], undefined);
-    assert.deepEqual(blobs.log.map((e) => `${e.stage}:${e.method}`), ['sign:PUT', 'blob:PUT', 'sign:GET', 'blob:GET']);
+    assert.deepEqual(keysOf('sid'), ['sign:PUT', 'blob:PUT', 'sign:GET', 'blob:GET']);
+    assert.deepEqual(keysOf('anchor'), ['sign:GET', 'blob:GET']);
     const s = parse(await status(c)); assert.equal(s.state, 'revoked'); assert.equal(s.signedIn, false); assert.equal(s.handle, undefined);
   });
   await check('S8 Sign out again with the same handle: idempotent 200', async () => {
@@ -478,7 +504,7 @@ const marker = (res) => (parse(res) || {}).by;
     ['a tampered handle (sid swapped)', () => { const [h, p, s] = goodHandle().split('.'); const c = JSON.parse(Buffer.from(p, 'base64url')); c.sid = sid(12); return signOutEv([h, Buffer.from(JSON.stringify(c)).toString('base64url'), s].join('.')); }, 400],
     ['a handle with alg none', () => { const [, p] = goodHandle().split('.'); return signOutEv(`${Buffer.from('{"alg":"none","typ":"JWT"}').toString('base64url')}.${p}.`); }, 400],
     ['the READ session token as a handle', () => signOutEv(readCookie({ s: sid(11) })), 400],
-    ['a SAVING token as a handle', () => signOutEv(writeAuth.issueBoundAppSession('brad@example.invalid', { env: 'test', sid: sid(11), pexp: FUTURE }).token), 400],
+    ['a SAVING token as a handle', () => signOutEv(bound(sid(11))), 400],
     ['a foreign Origin', () => signOutEv(goodHandle(), { headers: { origin: 'https://evil.example.invalid' } }), 403],
     ['Sec-Fetch-Site cross-site', () => signOutEv(goodHandle(), { headers: { 'sec-fetch-site': 'cross-site' } }), 403],
     ['no X-IAOS-Session header', () => ev({ body: JSON.stringify({ handle: goodHandle() }) }), 403],
@@ -529,7 +555,7 @@ const marker = (res) => (parse(res) || {}).by;
     assert.equal(parse(await status(c)).state, 'revoked');
   });
   await check('X2 the same T1 through a REAL writer (ghl-write): 401 revoked, zero GHL requests', async () => {
-    const t1 = writeAuth.issueBoundAppSession('brad@example.invalid', { env: 'test', sid: sid(15), pexp: FUTURE }).token;
+    const t1 = bound(sid(15));
     other = [];
     const r = await load('ghl-write')(ev({ bearer: t1, body: JSON.stringify({ operation: 'note.create', targetId: 'c1', requestId: 'r1', args: { body: 'x' } }) }));
     assert.equal(r.statusCode, 401); assert.equal(parse(r).reason, 'revoked'); assert.equal(other.length, 0);
@@ -542,24 +568,25 @@ const marker = (res) => (parse(res) || {}).by;
   await check('X4 two DISTINCT requests with the same token separated by revocation: first passes, second refused', async () => {
     reset(); const c = readCookie({ s: sid(16) }); const t = parse(await mint(tokenEv(c))).token;
     assert.equal(await rev.sessionWriteRefusal(ev({ bearer: t })), null);
-    assert.equal((await rev.recordRevocation(sid(16), 'test')).kind, 'verified');
+    assert.equal((await rev.recordRevocation(sid(16), 'test', { event: NF })).kind, 'verified');
     assert.equal((await rev.sessionWriteRefusal(ev({ bearer: t }))).statusCode, 401);
   });
   await check('X5 store unavailable for a writer -> 503 marker, not 401; for a reader -> 503 marker, not 401', async () => {
-    reset(); const c = readCookie({ s: sid(17) }); const t = writeAuth.issueBoundAppSession('brad@example.invalid', { env: 'test', sid: sid(17), pexp: FUTURE }).token;
-    blobs.rule({ stage: 'blob', method: 'GET', status: 500 }, { stage: 'blob', method: 'GET', status: 500 });
+    reset(); const c = readCookie({ s: sid(17) }); const t = bound(sid(17));
+    const k17 = rev.revocationKey('test', sid(17));
+    blobs.rule({ stage: 'blob', method: 'GET', status: 500, key: k17 }, { stage: 'blob', method: 'GET', status: 500, key: k17 });
     const w = await rev.sessionWriteRefusal(ev({ bearer: t })); const r = await rev.sessionReadRefusal(ev({ method: 'GET', cookie: c }));
     for (const x of [w, r]) { assert.equal(x.statusCode, 503); assert.equal(marker(x), 'iaos-session-unavailable'); }
   });
   await check('X6 an earlier-authorized write (its own check passed BEFORE revocation) is not cancelled by a later revocation (accepted L2): the check result is per request, never re-evaluated', async () => {
-    reset(); const t = writeAuth.issueBoundAppSession('brad@example.invalid', { env: 'test', sid: sid(18), pexp: FUTURE }).token;
+    reset(); const t = bound(sid(18));
     const passed = await rev.sessionWriteRefusal(ev({ bearer: t }));
-    await rev.recordRevocation(sid(18), 'test');
+    await rev.recordRevocation(sid(18), 'test', { event: NF });
     assert.equal(passed, null, 'the admitted request keeps its admission'); assert.equal((await rev.sessionWriteRefusal(ev({ bearer: t }))).statusCode, 401, 'any later request refuses');
   });
 
   await check('X7 the parent session has expired (pexp passed): a still-unexpired saving token is refused on writes, 401 session_expired; no pexp -> sign_in_again', async () => {
-    reset(); const past = writeAuth.issueBoundAppSession('brad@example.invalid', { env: 'test', sid: sid(19), pexp: Math.floor(Date.now() / 1000) - 1 }).token;
+    reset(); const past = bound(sid(19), { pexp: Math.floor(Date.now() / 1000) - 1 });
     const r = await rev.sessionWriteRefusal(ev({ bearer: past }));
     assert.equal(r.statusCode, 401); assert.equal(parse(r).reason, 'session_expired'); assert.equal(blobCount(), 0);
     const claims = { iss: 'iaos', aud: 'iaos-app-write', sub: 'brad@example.invalid', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 900, env: 'test', sid: sid(19) };
@@ -616,7 +643,7 @@ const marker = (res) => (parse(res) || {}).by;
     for (const [label, s, prep, want] of [['revoked', revokedSid, () => {}, 401], ['store unavailable', liveSid, () => blobs.rule({ stage: 'blob', method: 'GET', status: 500 }), 503]]) {
       await check(`I6 writer ${n}: ${label} -> ${want}, no GHL request`, async () => {
         other = []; blobs.clearRules(); prep();
-        const t = writeAuth.issueBoundAppSession('brad@example.invalid', { env: 'test', sid: s, pexp: FUTURE }).token;
+        const t = bound(s);
         const r = await load(n)(ev({ bearer: t, body: '{}' }), { getRemainingTimeInMillis: () => 20_000 });
         if (r.statusCode === 404 && !PRE_AUTH_GATES[n]) PRE_AUTH_GATES[n] = true;
         if (PRE_AUTH_GATES[n]) { assert.equal(r.statusCode, 404); return; }
@@ -626,7 +653,7 @@ const marker = (res) => (parse(res) || {}).by;
     }
   }
   await check('I7 with a LIVE (verified-absent) session every writer passes the new check and reaches its own next refusal (malformed body), not a session refusal', async () => {
-    const t = writeAuth.issueBoundAppSession('brad@example.invalid', { env: 'test', sid: liveSid, pexp: FUTURE }).token;
+    const t = bound(liveSid);
     blobs.clearRules();
     for (const n of WRITERS) {
       if (PRE_AUTH_GATES[n]) continue;
@@ -637,7 +664,218 @@ const marker = (res) => (parse(res) || {}).by;
   });
   console.log('pre-authentication gates observed (not reached in this config): ' + JSON.stringify(Object.keys(PRE_AUTH_GATES)));
 
+  // =========================================================================== H
+  // Authority binding (Bones H2): pinned site, runtime site header, operator anchor, restore epoch.
+  reset(); flag(true);
+  const signIn = () => load('app-read-session')(ev({ body: JSON.stringify({ googleIdToken: 'fixture-google-token' }) }));
+  const unavailableEverywhere = async (label) => {
+    const c = readCookie({ s: sid(30) });
+    const r = await ck(sid(30)); assert.equal(r.kind, 'unavailable', `${label} check ${JSON.stringify(r)}`);
+    const so = await rr(sid(31)); assert.equal(so.kind, 'unconfirmed', `${label} sign-out ${JSON.stringify(so)}`);
+    const st = await status(c); assert.equal(st.statusCode, 503, `${label} status`); assert.equal(parse(st).state, 'unavailable');
+    const rd = await rev.sessionReadRefusal(ev({ method: 'GET', cookie: c })); assert.equal(rd.statusCode, 503, `${label} reader`); assert.equal(marker(rd), 'iaos-session-unavailable');
+    const wr = await rev.sessionWriteRefusal(ev({ bearer: bound(sid(30)) })); assert.equal(wr.statusCode, 503, `${label} writer`);
+    const mt = await mint(tokenEv(c)); assert.equal(mt.statusCode, 503, `${label} mint`); noCredentialLeak(mt);
+    const handle = rev.issueSignoutHandle({ sid: sid(32), expiresAt: new Date(Date.now() + 3600_000).toISOString() }, readAuth.appReadConfig());
+    const sh = await signOut(signOutEv(handle)); assert.equal(sh.statusCode, 503, `${label} app-signout`); assert.equal(parse(sh).state, 'not_confirmed');
+  };
+  await check('H0 the pinned revocation sites are frozen repo constants: test 07ca1f1a-... (iaos-app-test), production 19fcbf6a-... (iaos-app)', async () => {
+    assert.deepEqual({ ...rev.PINNED_REVOCATION_SITES }, { test: SITE, production: PROD_SITE });
+    assert.ok(Object.isFrozen(rev.PINNED_REVOCATION_SITES));
+    assert.equal(rev.RUNTIME_SITE_HEADER, 'x-nf-site-id');
+  });
+  await check('H1 anchor ABSENT -> check unavailable (authority_absent, never absent), Sign out not confirmed, status/reader/writer/mint/app-signout 503; nothing writes the anchor', async () => {
+    reset(); dropAnchor();
+    assert.deepEqual(await ck(sid(30)), { kind: 'unavailable', reason: 'authority_absent' });
+    await unavailableEverywhere('absent');
+    assert.equal(blobs.get('iaos-write-receipts', ANCHOR_KEY), null, 'the anchor is still absent: no code path created it');
+  });
+  for (const [label, text] of [
+    ['malformed JSON', '{"v":1,'],
+    ['empty value', ''],
+    ['non-canonical key order', JSON.stringify({ v: 1, kind: 'iaos-session-revocation-authority', env: 'test', siteID: SITE, epoch: EPOCH })],
+    ['extra field', anchorText({ extra: { note: 'x' } })],
+    ['missing epoch', JSON.stringify(Object.fromEntries(Object.entries({ env: 'test', kind: 'iaos-session-revocation-authority', siteID: SITE, v: 1 }).sort()))],
+    ['epoch too short', anchorText({ epoch: 'short-epoch' })],
+    ['epoch with a forbidden character', anchorText({ epoch: 'fixture-epoch/0001' })],
+    ['epoch too long', anchorText({ epoch: 'e'.repeat(65) })],
+    ['wrong version', anchorText({ v: 2 })],
+    ['wrong kind', anchorText({ kind: 'iaos-session-revocation' })],
+    ['a revocation record at the anchor key', RECORD('test', sid(30)).text],
+  ]) {
+    await check(`H2 anchor MALFORMED (${label}) -> unavailable (authority_invalid), Sign out not confirmed`, async () => {
+      reset(); seedAnchor(text);
+      assert.deepEqual(await ck(sid(30)), { kind: 'unavailable', reason: 'authority_invalid' });
+      assert.equal((await rr(sid(31))).kind, 'unconfirmed');
+    });
+  }
+  await check('H3 anchor ENV MISMATCH (a production anchor in the Test store) -> unavailable everywhere', async () => {
+    reset(); seedAnchor({ env: 'production', siteID: PROD_SITE });
+    assert.deepEqual(await ck(sid(30)), { kind: 'unavailable', reason: 'authority_invalid' });
+    reset(); seedAnchor({ env: 'production', siteID: SITE });
+    await unavailableEverywhere('env mismatch');
+  });
+  await check('H4 anchor SITE MISMATCH (anchor names another site) -> unavailable everywhere', async () => {
+    reset(); seedAnchor({ siteID: PROD_SITE });
+    assert.deepEqual(await ck(sid(30)), { kind: 'unavailable', reason: 'authority_invalid' });
+    reset(); seedAnchor({ siteID: 'aaaaaaaa-0000-0000-0000-000000000000' });
+    await unavailableEverywhere('site mismatch');
+  });
+  await check('H5 configured site id != the pinned id (or IAOS_ENV unbound) -> unavailable with ZERO requests, Sign out not confirmed', async () => {
+    for (const [label, over] of [['production site id in Test', { IAOS_SESSION_REVOCATION_SITE_ID: PROD_SITE }], ['arbitrary site id', { IAOS_SESSION_REVOCATION_SITE_ID: 'fixture-site-id' }]]) {
+      reset(); setEnv('test', over);
+      assert.deepEqual(rev.revocationSetup(process.env), { kind: 'not_configured', reason: 'site_not_pinned' }, label);
+      assert.deepEqual(await ck(sid(30)), { kind: 'unavailable', reason: 'site_not_pinned' }, label);
+      assert.deepEqual(await rr(sid(31)), { kind: 'unconfirmed', reason: 'site_not_pinned' }, label);
+      assert.equal((await status(readCookie({ s: sid(30) }))).statusCode, 503, label);
+      assert.equal(blobCount(), 0, label);
+    }
+    assert.deepEqual(rev.revocationSetup({ ...BASE_ENV, IAOS_ENV: 'staging' }), { kind: 'not_configured', reason: 'environment_unbound' });
+    assert.deepEqual(rev.revocationSetup({ ...BASE_ENV, IAOS_ENV: 'production' }), { kind: 'not_configured', reason: 'site_not_pinned' }, 'the Test site id is not Production\'s authority');
+    assert.equal(rev.revocationSetup({ ...BASE_ENV, IAOS_ENV: 'production', IAOS_SESSION_REVOCATION_SITE_ID: PROD_SITE }).kind, 'ready');
+  });
+  await check('H6 the runtime site header x-nf-site-id: missing, mismatched or ambiguous -> unavailable with ZERO requests (check, Sign out, reader, writer, mint, status, app-signout); any header-name case accepted', async () => {
+    reset();
+    for (const [label, ev2] of [['missing', { headers: {} }], ['production site', { headers: { 'x-nf-site-id': PROD_SITE } }], ['empty', { headers: { 'x-nf-site-id': '' } }],
+      ['ambiguous', { headers: { 'x-nf-site-id': SITE }, multiValueHeaders: { 'X-Nf-Site-Id': [SITE, PROD_SITE] } }], [' padded', { headers: { 'x-nf-site-id': ` ${SITE}` } }]]) {
+      blobs.log.length = 0;
+      assert.deepEqual(await ck(sid(30), { event: ev2 }), { kind: 'unavailable', reason: 'runtime_site_mismatch' }, label);
+      assert.deepEqual(await rr(sid(31), { event: ev2 }), { kind: 'unconfirmed', reason: 'runtime_site_mismatch' }, label);
+      assert.equal(blobCount(), 0, label);
+    }
+    assert.deepEqual(await ck(sid(30), { event: { headers: { 'X-NF-Site-ID': SITE } } }), { kind: 'absent' }, 'case-insensitive header name');
+    const noHdr = { 'x-nf-site-id': undefined };
+    const c = readCookie({ s: sid(33) });
+    blobs.log.length = 0;
+    assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: c, headers: noHdr }))).statusCode, 503);
+    assert.equal((await rev.sessionWriteRefusal(ev({ bearer: bound(sid(33)), headers: noHdr }))).statusCode, 503);
+    assert.equal((await mint(tokenEv(c, { headers: noHdr }))).statusCode, 503);
+    assert.equal((await load('app-read-session')(ev({ method: 'GET', cookie: c, headers: noHdr }))).statusCode, 503);
+    const handle = rev.issueSignoutHandle({ sid: sid(33), expiresAt: new Date(Date.now() + 3600_000).toISOString() }, readAuth.appReadConfig());
+    const so = await signOut(signOutEv(handle, { headers: { 'x-nf-site-id': PROD_SITE } }));
+    assert.equal(so.statusCode, 503); assert.equal(parse(so).state, 'not_confirmed');
+    assert.equal(blobCount(), 0, 'no Blob request without the pinned runtime site');
+  });
+  await check('H7 epoch MISMATCH (operator rotated the anchor after a restore) -> REVOKED: check revoked/epoch, reader 401 revoked, writer 401 revoked, mint 401 revoked, status "revoked" -- never 503', async () => {
+    reset(); const c = readCookie({ s: sid(34) }); const t = bound(sid(34));
+    assert.equal(await rev.sessionReadRefusal(ev({ method: 'GET', cookie: c })), null, 'before rotation: allowed');
+    seedAnchor({ epoch: EPOCH2 });
+    assert.deepEqual(await ck(sid(34)), { kind: 'revoked', reason: 'epoch' });
+    const rd = await rev.sessionReadRefusal(ev({ method: 'GET', cookie: c })); assert.equal(rd.statusCode, 401); assert.equal(parse(rd).reason, 'revoked');
+    const wr = await rev.sessionWriteRefusal(ev({ bearer: t })); assert.equal(wr.statusCode, 401); assert.equal(parse(wr).reason, 'revoked');
+    const mt = await mint(tokenEv(c)); assert.equal(mt.statusCode, 401); assert.equal(parse(mt).reason, 'revoked'); noCredentialLeak(mt);
+    const st = parse(await status(c)); assert.equal(st.state, 'revoked'); assert.equal(st.signedIn, false); assert.equal(st.handle, undefined);
+    assert.equal((await load('ghl-contact')(ev({ method: 'GET', cookie: c, query: { id: 'fixtureContact' } }))).statusCode, 401);
+  });
+  await check('H7b a lost revocation does NOT revive after a restore: the record is gone but the rotated epoch still refuses the old session', async () => {
+    reset(); const c = readCookie({ s: sid(35) });
+    assert.equal((await rr(sid(35))).kind, 'verified'); assert.deepEqual(await ck(sid(35)), { kind: 'revoked' });
+    blobs.reset(); seedAnchor({ epoch: EPOCH2 });       // a restore lost the record; the operator rotated the epoch
+    assert.deepEqual(await ck(sid(35)), { kind: 'revoked', reason: 'epoch' });
+    assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: c }))).statusCode, 401);
+  });
+  await check('H8 a session or token WITHOUT an epoch is refused like a sid-less one (reader 401 sign_in_again, status signed_out, writer sign_in_again) with zero Blob requests; epoch without sid / malformed epoch cannot be issued', async () => {
+    reset(); blobs.log.length = 0;
+    const c = readCookie({ s: sid(36), epoch: null });
+    const rd = await rev.sessionReadRefusal(ev({ method: 'GET', cookie: c })); assert.equal(rd.statusCode, 401); assert.equal(parse(rd).reason, 'sign_in_again');
+    assert.equal(parse(await status(c)).state, 'signed_out');
+    const claims = { iss: 'iaos', aud: 'iaos-app-write', sub: 'brad@example.invalid', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 900, env: 'test', sid: sid(36), pexp: FUTURE };
+    const crypto = require('node:crypto'); const input = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url') + '.' + Buffer.from(JSON.stringify(claims)).toString('base64url');
+    const noEpoch = input + '.' + crypto.createHmac('sha256', BASE_ENV.IAOS_APP_WRITE_SESSION_SECRET).update(input).digest('base64url');
+    const wr = await rev.sessionWriteRefusal(ev({ bearer: noEpoch })); assert.equal(wr.statusCode, 401); assert.equal(parse(wr).reason, 'sign_in_again');
+    assert.equal(blobCount(), 0);
+    assert.throws(() => readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now(), undefined, EPOCH));
+    assert.throws(() => readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now(), sid(36), 'bad'));
+    assert.throws(() => writeAuth.issueBoundAppSession('brad@example.invalid', { env: 'test', sid: sid(36), pexp: FUTURE }));
+    assert.equal((await rev.checkRevocation(sid(36), 'test', { event: NF })).kind, 'unavailable', 'the module refuses a check with no epoch');
+  });
+  await check('H9 the saving token carries the session epoch and is checked on every write: after rotation the EARLIER token is refused (401 revoked); a fresh sign-in under the new epoch mints and saves', async () => {
+    reset(); const c = readCookie({ s: sid(37) });
+    const t = parse(await mint(tokenEv(c))).token; assert.equal(decode(t).epoch, EPOCH);
+    assert.equal(await rev.sessionWriteRefusal(ev({ bearer: t })), null);
+    seedAnchor({ epoch: EPOCH2 });
+    const w = await rev.sessionWriteRefusal(ev({ bearer: t })); assert.equal(w.statusCode, 401); assert.equal(parse(w).reason, 'revoked');
+    const tamper = (() => { const [h, p, s] = t.split('.'); const cl = JSON.parse(Buffer.from(p, 'base64url')); cl.epoch = EPOCH2; return [h, Buffer.from(JSON.stringify(cl)).toString('base64url'), s].join('.'); })();
+    assert.equal((await rev.sessionWriteRefusal(ev({ bearer: tamper }))).statusCode, 401, 'a token whose epoch was edited is refused (signature)');
+    const fresh = /__Host-iaos_read=([^;]+)/.exec((await signIn()).headers['Set-Cookie'])[1];
+    assert.equal(decode(fresh).epoch, EPOCH2);
+    const t2 = parse(await mint(tokenEv(fresh))).token; assert.equal(decode(t2).epoch, EPOCH2);
+    assert.equal(await rev.sessionWriteRefusal(ev({ bearer: t2 })), null);
+  });
+  for (const [label, prep] of [
+    ['anchor absent', () => dropAnchor()],
+    ['anchor malformed', () => seedAnchor('{"v":1}')],
+    ['anchor env mismatch', () => seedAnchor({ env: 'production' })],
+    ['anchor unreadable (blob 500)', () => blobs.rule({ stage: 'blob', method: 'GET', status: 500 })],
+    ['runtime site header missing', () => 'no-header'],
+    ['configured site not pinned', () => setEnv('test', { IAOS_SESSION_REVOCATION_SITE_ID: PROD_SITE })],
+  ]) {
+    await check(`H10 sign-in with ${label} -> 503 unavailable, NO session issued (no Set-Cookie), Google identity verified first`, async () => {
+      reset(); const mode = prep();
+      const r = await load('app-read-session')(ev({ body: JSON.stringify({ googleIdToken: 'fixture-google-token' }), ...(mode === 'no-header' ? { headers: { 'x-nf-site-id': undefined } } : {}) }));
+      assert.equal(r.statusCode, 503, r.body); assert.equal(parse(r).state, 'unavailable'); assert.equal(parse(r).by, 'iaos-session-unavailable');
+      assert.equal(r.headers['Set-Cookie'], undefined); assert.ok(!/eyJ/.test(r.body));
+    });
+  }
+  await check('H10b a refused Google identity at sign-in reads nothing from the store (401, zero Blob requests)', async () => {
+    reset(); const h = load('app-read-session');
+    const r = await h(ev({ body: JSON.stringify({ googleIdToken: 'x' }), headers: { origin: 'https://evil.example.invalid' } }));
+    assert.equal(r.statusCode, 401); assert.equal(blobCount(), 0);
+  });
+  await check('H11 the anchor and sid reads run IN PARALLEL within the ONE check budget (two 400 ms reads fit a 700 ms budget); single attempt each', async () => {
+    reset();
+    blobs.rule({ stage: 'blob', method: 'GET', delayMs: 400, key: ANCHOR_KEY }, { stage: 'blob', method: 'GET', delayMs: 400, key: rev.revocationKey('test', sid(38)) });
+    const t0 = Date.now(); const r = await ck(sid(38), { budgetMs: 700 });
+    assert.deepEqual(r, { kind: 'absent' }, `parallel within one budget (${Date.now() - t0} ms)`);
+    assert.deepEqual(keysOf('anchor'), ['sign:GET', 'blob:GET']); assert.deepEqual(keysOf('sid'), ['sign:GET', 'blob:GET']);
+    reset(); blobs.rule({ stage: 'blob', method: 'GET', status: 503, key: ANCHOR_KEY });
+    assert.equal((await ck(sid(38))).kind, 'unavailable');
+    assert.deepEqual(keysOf('anchor'), ['sign:GET', 'blob:GET'], 'no retry of the anchor read');
+  });
+  await check('H11b a LATE anchor never grants: anchor answered after the deadline -> unavailable (check) / not confirmed (Sign out); a hung anchor is bounded by the same deadline', async () => {
+    reset(); let t = 3_000_000;
+    const anchorUrls = new Set();
+    const lateAnchor = async (u, i) => {
+      const res = await blobs.fetch(u, i);
+      if (String(u).startsWith('https://api.netlify.com/') && decodeURIComponent(String(u)).includes(ANCHOR_KEY) && res.status === 200) {
+        anchorUrls.add((await res.clone().json()).url);
+      } else if (anchorUrls.has(String(u))) t += 5_000;       // the anchor's answer arrives after the deadline
+      return res;
+    };
+    assert.equal((await rev.checkRevocation(sid(39), 'test', { event: NF, epoch: EPOCH, fetch: lateAnchor, now: () => t })).kind, 'unavailable');
+    assert.equal((await rev.recordRevocation(sid(39), 'test', { event: NF, fetch: lateAnchor, now: () => t })).kind, 'unconfirmed');
+    reset(); blobs.rule({ stage: 'blob', method: 'GET', hang: true, ignoreAbort: true, key: ANCHOR_KEY });
+    const t0 = Date.now(); const r = await ck(sid(39), { budgetMs: 600 });
+    assert.equal(r.kind, 'unavailable'); assert.ok(Date.now() - t0 < 1500, `bounded: ${Date.now() - t0} ms`);
+  });
+  await check('H12 static scan: NO code path writes the anchor -- the key literal appears ONLY in session-revocation.ts (once); the anchor key is used only by strongRead; the module\'s only write is createOnce, called once with revocationKey(...)', async () => {
+    const roots = ['netlify', 'src', 'shared'].map((d) => path.join(APP, d));
+    const files = [];
+    const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.name === 'node_modules') continue; const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/\.(ts|tsx|js|cjs|mjs)$/.test(e.name)) files.push(p); } };
+    roots.forEach(walk);
+    const ANCHOR_REF = /session-revocation\/_authority|[\/"'`]_authority\b/;
+    const hits = files.filter((f) => ANCHOR_REF.test(fs.readFileSync(f, 'utf8')));
+    assert.deepEqual(hits.map((f) => path.relative(APP, f).split(path.sep).join('/')), ['netlify/functions/lib/session-revocation.ts']);
+    const src = fs.readFileSync(path.join(FUNCTIONS, 'lib/session-revocation.ts'), 'utf8');
+    assert.equal((src.match(/_authority/g) || []).length, 1, 'the literal once');
+    assert.match(src, /^const AUTHORITY_KEY = "session-revocation\/_authority";$/m);
+    const uses = src.match(/AUTHORITY_KEY/g) || [];
+    assert.equal(uses.length, 2, 'declaration + exactly one use');
+    assert.match(src, /strongRead\(ctx, AUTHORITY_KEY\)/);
+    assert.equal((src.match(/\.set\(/g) || []).length, 1, 'exactly one write call in the module');
+    assert.match(src, /storeFor\(ctx, rec\.fetch\)\.set\(key, text, \{ onlyIfNew: true \}\)/);
+    assert.equal((src.match(/createOnce\(/g) || []).length, 2, 'createOnce: definition + one call');
+    assert.match(src, /const key = revocationKey\(deployment, sid\);[^]*createOnce\(ctx, key, text\)/);
+    assert.ok(!/\.(setJSON|delete)\(/.test(src), 'no setJSON / delete');
+    assert.equal(anchorWrites.length, 0, 'no anchor write observed so far in this run: ' + JSON.stringify(anchorWrites));
+  });
+
   flag(false);
+  await check('Z no request in the WHOLE run wrote or deleted the authority anchor', async () => {
+    assert.deepEqual(anchorWrites, []);
+  });
+  const FLOOR = 184;
+  if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (server): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;
 })().catch((e) => { console.log('FAIL  suite aborted -- ' + (e && e.stack)); process.exitCode = 1; });

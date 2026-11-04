@@ -44,7 +44,8 @@ Module._resolveFilename = ((original) => function (name, parent, ...rest) {
 })(Module._resolveFilename);
 
 const ORIGIN = 'https://proof.example.invalid';
-const SITE = 'fixture-site-id';
+const SITE = '07ca1f1a-60fd-4229-a076-528970957912';   // the PINNED Test revocation site (B15-29 H2)
+const EPOCH = 'fixture-epoch-0001';
 const BLOB_TOKEN = 'fixture-blob-token-not-real';
 Object.assign(process.env, {
   IAOS_ENV: 'test',
@@ -62,6 +63,8 @@ Object.assign(process.env, {
 delete process.env.IAOS_VOICE_SESSION_SECRET;
 
 const blobs = createFakeBlobs({ siteID: SITE, token: BLOB_TOKEN });
+// The operator-provisioned authority anchor (fixture only; no code path writes it).
+blobs.put('iaos-write-receipts', 'session-revocation/_authority', JSON.stringify({ env: 'test', epoch: EPOCH, kind: 'iaos-session-revocation-authority', siteID: SITE, v: 1 }));
 const nodeFetch = global.fetch;
 global.fetch = async (url, init) => {
   const u = String(url);
@@ -88,7 +91,7 @@ function check(name, ok, detail) {
 
 // ── the browser's one IAOS session ──
 let jar = null;
-const signInJar = () => { jar = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now(), require('node:crypto').randomBytes(16).toString('base64url')).token; };
+const signInJar = () => { jar = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now(), require('node:crypto').randomBytes(16).toString('base64url'), EPOCH).token; };
 const jarSid = () => (jar ? JSON.parse(Buffer.from(jar.split('.')[1], 'base64url')).sid : null);
 let log = [];
 const applied = [];
@@ -122,6 +125,8 @@ async function main() {
     for (const [k, v] of Object.entries(headers)) if (!['cookie', 'origin'].includes(k)) event.headers[k] = v;
     if (headers.origin !== undefined) event.headers.origin = headers.origin === base ? ORIGIN : headers.origin;
     if (jar) event.headers.cookie = `${readAuth.READ_COOKIE}=${jar}`;
+    event.headers['x-nf-site-id'] = SITE;   // the platform's runtime site header
+
     const entry = { tab, fn, method: request.method() };
     log.push(entry);
     let res;
@@ -210,7 +215,8 @@ async function main() {
     await C.getByRole('button', { name: 'Sign in' }).click();
     await until(() => shown(C, 'read-access-signed-in'));
     await C.getByTestId('draft').fill('draft kept through an outage');
-    for (let i = 0; i < 6; i += 1) blobs.rule({ stage: 'blob', method: 'GET', status: 500 });
+    // Each check now reads the anchor AND the sid record: 12 failing GETs cover the same 6 checks as before.
+    for (let i = 0; i < 12; i += 1) blobs.rule({ stage: 'blob', method: 'GET', status: 500 });
     await C.evaluate(() => window.dispatchEvent(new Event('focus')));
     await until(() => has(C, "IAOS can't confirm your sign-in right now"));
     check('P5 store unavailable: "IAOS can\'t confirm your sign-in right now" with Try again', await has(C, "IAOS can't confirm your sign-in right now") && await shown(C, 'one-login-try-again'));

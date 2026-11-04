@@ -64,24 +64,25 @@ export const handler = async (event: any) => {
     return json(403, { error: "Saving-token request refused", by: SAVING_TOKEN_REFUSED });
   }
 
-  let session: { email: string; expiresAt: string; sid?: string };
+  let session: { email: string; expiresAt: string; sid?: string; epoch?: string };
   try {
     session = verifyReadSession(readSessionToken(event), readConfig);
     if (!appAuthConfig().emails.includes(session.email)) throw new Error("Not a saving operator");
   } catch {
     return json(401, { error: "Sign in to IAOS to save", by: SAVING_TOKEN_REFUSED });
   }
-  if (!session.sid) return json(401, { error: "Sign in to IAOS to save", by: SAVING_TOKEN_REFUSED, reason: "sign_in_again" });
+  // No sid, or no revocation-authority epoch (B15-29 H2): the session cannot be revoked / restore-invalidated.
+  if (!session.sid || !session.epoch) return json(401, { error: "Sign in to IAOS to save", by: SAVING_TOKEN_REFUSED, reason: "sign_in_again" });
 
   // Outside the credential catch: an unreadable store is never reported as a sign-in problem (C1).
-  const revocation = await checkRevocation(session.sid, readConfig.deployment);
+  const revocation = await checkRevocation(session.sid, readConfig.deployment, { event, epoch: session.epoch });
   if (revocation.kind === "revoked") return json(401, { error: "Signed out of IAOS", by: SAVING_TOKEN_REFUSED, reason: "revoked" });
   if (revocation.kind !== "absent") return sessionUnavailableResponse();
 
   try {
     const now = Date.now();
     const pexp = Math.floor(Date.parse(session.expiresAt) / 1000);
-    const issued = issueBoundAppSession(session.email, { env: readConfig.deployment, sid: session.sid, pexp }, process.env, now);
+    const issued = issueBoundAppSession(session.email, { env: readConfig.deployment, sid: session.sid, pexp, epoch: session.epoch }, process.env, now);
     // expiresInSeconds lets the browser time the token from when it arrived, so a
     // computer clock that is off by minutes never makes a fresh token look expired.
     return json(200, { ...issued, expiresInSeconds: Math.floor((Date.parse(issued.expiresAt) - now) / 1000) });

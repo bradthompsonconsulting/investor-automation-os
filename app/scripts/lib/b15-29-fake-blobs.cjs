@@ -8,7 +8,7 @@
  * conditional-create atomicity, real status codes).
  *
  * Fault rules (consumed once each, first match wins): { stage: 'sign'|'blob', method?, status?, throw?, hang?,
- * ignoreAbort?, stallBody?, apply?, delayMs? }.
+ * ignoreAbort?, stallBody?, apply?, delayMs?, key? }. `key` limits a rule to requests for that blob key.
  *   status   answer this status (for a blob PUT with apply:true the write is applied first)
  *   throw    reject (transport error); with apply:true a blob PUT is applied first (applied, acknowledgement lost)
  *   hang     never answer; rejects on abort unless ignoreAbort
@@ -55,7 +55,11 @@ function createFakeBlobs({ siteID, token, clock = () => Date.now() } = {}) {
     const u = new URL(url);
     const isSign = u.origin === 'https://api.netlify.com' && u.pathname.startsWith('/api/v1/blobs/') && headers.accept === 'application/json;type=signed-url';
     const stage = isSign ? 'sign' : 'blob';
-    const rule = rules.find((r) => r.stage === stage && (!r.method || r.method === method));
+    // The key this request is for (sign: from the API path; blob: from the signed URL it was given), for `key` rules.
+    const reqKey = isSign
+      ? u.pathname.slice('/api/v1/blobs/'.length).split('/').map(decodeURIComponent).slice(2).join('/')
+      : u.origin === 'https://signed.blobs.invalid' ? ((signed.get(u.pathname.slice('/s/'.length)) || {}).key || null) : null;
+    const rule = rules.find((r) => r.stage === stage && (!r.method || r.method === method) && (!r.key || r.key === reqKey));
     if (rule) rules = rules.filter((r) => r !== rule);
     if (isSign) {
       const [site, storeName, ...rest] = u.pathname.slice('/api/v1/blobs/'.length).split('/').map(decodeURIComponent);
@@ -105,6 +109,8 @@ function createFakeBlobs({ siteID, token, clock = () => Date.now() } = {}) {
     reset: () => { store.clear(); signed.clear(); log.length = 0; violations.length = 0; rules = []; },
     /** Write a raw value at a key (test setup only, never through the module). */
     put: (storeName, key, text) => { store.set(k(siteID, 'site:' + storeName, key), { text, etag: `"seed${++etagN}"` }); },
+    /** Remove a value at a key (test setup only). */
+    remove: (storeName, key) => { store.delete(k(siteID, 'site:' + storeName, key)); },
     keys: () => [...store.keys()],
     get: (storeName, key) => store.get(k(siteID, 'site:' + storeName, key)) || null,
   };

@@ -48,6 +48,29 @@
  * evidence any credential is dead). It is accepted ONLY by app-signout; it is
  * never a read cookie, a saving bearer, a token-issue credential or a sign-in.
  *
+ * Authority binding (Bones H2, binding/restore part): absence of R(sid) is
+ * evidence of "not revoked" ONLY from the intended authority. So:
+ *   1. the revocation site is PINNED per environment in this file
+ *      (PINNED_REVOCATION_SITES); IAOS_ENV must be exactly test|production and
+ *      IAOS_SESSION_REVOCATION_SITE_ID must equal that environment's pinned id;
+ *   2. at request time the platform's own site id (request header
+ *      x-nf-site-id) must be present exactly once and equal the pinned id, so a
+ *      deploy of this code on another site cannot read "absence" from ours;
+ *   3. every check and every Sign out strongly reads the operator-provisioned
+ *      authority anchor (the one anchor key constant below; same budget, same
+ *      single-attempt recorder, in parallel with the sid read). Absent,
+ *      malformed, foreign env or foreign site -> unavailable, never absence.
+ *      NO code path creates or modifies the anchor (operator-only, see
+ *      docs/B15-29_SESSION_REVOCATION_RUNBOOK.md);
+ *   4. RESTORE EPOCH: each session is bound at sign-in to the anchor's epoch
+ *      (read cookie claim `epoch`, carried into the saving token). A check
+ *      whose session epoch differs from the anchor's current epoch is
+ *      REVOKED. After any store restore or suspected loss of revocation
+ *      records the operator writes a new epoch, which signs out every older
+ *      session at once -- so a revocation lost in the restore cannot revive a
+ *      credential issued before it.
+ * Any setup or binding failure is "unavailable" (503 / Sign out not confirmed).
+ *
  * What the offline tests show is OUR behaviour against a fake Blob service.
  * Provider guarantees (API-mode read-after-write freshness, conditional-create
  * atomicity, status codes) are open assumptions, not proven here.
@@ -56,7 +79,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { getStore } from "@netlify/blobs";
 import { oneLoginActiveFor } from "../../../shared/ghl-config";
 import {
-  READ_AUTH_REFUSED, READ_AUTH_UNCONFIGURED, ReadAuthUnconfigured, appReadConfig, isCanonicalSid, readSessionToken,
+  READ_AUTH_REFUSED, READ_AUTH_UNCONFIGURED, ReadAuthUnconfigured, appReadConfig, isCanonicalEpoch, isCanonicalSid, readSessionToken,
   verifyReadSession, type ReadAuthConfig,
 } from "./app-read-auth";
 import { appWriteSessionBinding } from "./app-write-auth";
@@ -93,13 +116,47 @@ const respond = (statusCode: number, body: unknown) => ({ statusCode, headers: {
 
 // ------------------------------------------------------------------ setup ---
 
-export type RevocationSetup = { kind: "ready"; siteID: string; token: string } | { kind: "not_configured" };
-/** Environment variables only; no I/O. Missing -> every check is "unavailable" and every Sign out "not confirmed". */
+/**
+ * The intended revocation authority per environment: the Netlify site whose receipts store holds the records.
+ * Public site ids (iaos-app-test / iaos-app). Changing one is a reviewed code change, never configuration.
+ */
+export const PINNED_REVOCATION_SITES: Readonly<Record<Deployment, string>> = Object.freeze({
+  test: "07ca1f1a-60fd-4229-a076-528970957912",
+  production: "19fcbf6a-7c3c-40e3-af20-bd077f0f8ec8",
+});
+/** The platform's runtime site id header (the one @netlify/blobs connectLambda reads). */
+export const RUNTIME_SITE_HEADER = "x-nf-site-id";
+/** The operator-provisioned authority anchor. READ ONLY here: no code path writes it. */
+const AUTHORITY_KEY = "session-revocation/_authority";
+const AUTHORITY_KIND = "iaos-session-revocation-authority";
+
+export type RevocationSetup = { kind: "ready"; deployment: Deployment; siteID: string; token: string } | { kind: "not_configured"; reason: string };
+/**
+ * Environment variables only; no I/O. Missing, an IAOS_ENV other than exactly test|production, or a site id that is
+ * not the pinned one -> every check is "unavailable" and every Sign out "not confirmed" (never absence).
+ */
 export function revocationSetup(env: NodeJS.ProcessEnv = process.env): RevocationSetup {
+  const deployment = env.IAOS_ENV;
   const siteID = env.IAOS_SESSION_REVOCATION_SITE_ID?.trim();
   const token = env.IAOS_SESSION_REVOCATION_TOKEN?.trim();
-  if (!siteID || !token) return { kind: "not_configured" };
-  return { kind: "ready", siteID, token };
+  if (!siteID || !token) return { kind: "not_configured", reason: "not_configured" };
+  if (deployment !== "test" && deployment !== "production") return { kind: "not_configured", reason: "environment_unbound" };
+  if (siteID !== PINNED_REVOCATION_SITES[deployment]) return { kind: "not_configured", reason: "site_not_pinned" };
+  return { kind: "ready", deployment, siteID, token };
+}
+
+/** Strict parse of the anchor: exact canonical JSON for THIS env and its pinned site; returns the epoch or null. */
+export function authorityEpoch(text: unknown, deployment: string): string | null {
+  if (typeof text !== "string" || text.length > 1024) return null;
+  if (deployment !== "test" && deployment !== "production") return null;
+  let v: unknown;
+  try { v = JSON.parse(text); } catch { return null; }
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const r = v as Record<string, unknown>;
+  if (Object.keys(r).sort().join(",") !== "env,epoch,kind,siteID,v") return null;
+  if (r.v !== 1 || r.kind !== AUTHORITY_KIND || r.env !== deployment || r.siteID !== PINNED_REVOCATION_SITES[deployment]) return null;
+  if (!isCanonicalEpoch(r.epoch)) return null;
+  return canonicalJson(r) === text ? r.epoch : null;
 }
 
 export function revocationKey(deployment: string, sid: string): string {
@@ -211,26 +268,58 @@ async function createOnce(ctx: Ctx, key: string, text: string): Promise<void> {
   await bounded<void>(ctx, rec, async () => { try { await storeFor(ctx, rec.fetch).set(key, text, { onlyIfNew: true }); } catch { /* readback decides */ } }, undefined);
 }
 
-function context(env: NodeJS.ProcessEnv, budgetMs: number, opts: { fetch?: typeof fetch; now?: Clock }): Ctx | null {
+type OpOpts = { env?: NodeJS.ProcessEnv; fetch?: typeof fetch; now?: Clock; budgetMs?: number; event?: any };
+
+/** Setup + environment binding + the platform's runtime site id; no I/O. A refusal reason, or a context. */
+function context(env: NodeJS.ProcessEnv, deployment: string, budgetMs: number, opts: OpOpts): Ctx | { refused: string } {
   const setup = revocationSetup(env);
-  if (setup.kind !== "ready") return null;
+  if (setup.kind !== "ready") return { refused: setup.reason };
+  if (setup.deployment !== deployment) return { refused: "environment_unbound" };
+  const runtime = headerValues(opts.event, RUNTIME_SITE_HEADER);
+  if (runtime.length !== 1 || runtime[0] !== setup.siteID) return { refused: "runtime_site_mismatch" };
   const now = opts.now ?? Date.now;
   // The global fetch is read at call time (never captured at module load).
   return { setup, fetchImpl: opts.fetch ?? globalThis.fetch, now, deadline: now() + budgetMs };
 }
 
+type Authority = { kind: "valid"; epoch: string } | { kind: "unavailable"; reason: string };
+/** One strong read of the anchor within the caller's context (its deadline and single-attempt rules). */
+async function readAuthority(ctx: Ctx): Promise<Authority> {
+  const r = await strongRead(ctx, AUTHORITY_KEY);
+  if (r.kind === "absent") return { kind: "unavailable", reason: "authority_absent" };
+  if (r.kind === "unavailable") return r;
+  const epoch = authorityEpoch(r.text, ctx.setup.deployment);
+  return epoch ? { kind: "valid", epoch } : { kind: "unavailable", reason: "authority_invalid" };
+}
+
 // -------------------------------------------------------------- operations ---
 
-export type RevocationStatus = { kind: "absent" } | { kind: "revoked" } | { kind: "unavailable"; reason: string };
+export type RevocationStatus = { kind: "absent" } | { kind: "revoked"; reason?: "epoch" } | { kind: "unavailable"; reason: string };
 
-/** One strong read of R(env, sid), bounded by CHECK_BUDGET_MS. Never throws. */
-export async function checkRevocation(sid: string, deployment: string, opts: { env?: NodeJS.ProcessEnv; fetch?: typeof fetch; now?: Clock; budgetMs?: number } = {}): Promise<RevocationStatus> {
-  if (!isCanonicalSid(sid) || (deployment !== "test" && deployment !== "production")) return { kind: "unavailable", reason: "refused_input" };
-  const ctx = context(opts.env ?? process.env, opts.budgetMs ?? CHECK_BUDGET_MS, opts);
-  if (!ctx) return { kind: "unavailable", reason: "not_configured" };
-  const r = await strongRead(ctx, revocationKey(deployment, sid));
+/** The anchor's current epoch (sign-in binds a new session to it), bounded by CHECK_BUDGET_MS. Never throws. */
+export async function readRevocationAuthority(deployment: string, opts: OpOpts = {}): Promise<Authority> {
+  const ctx = context(opts.env ?? process.env, deployment, opts.budgetMs ?? CHECK_BUDGET_MS, opts);
+  if ("refused" in ctx) return { kind: "unavailable", reason: ctx.refused };
+  const a = await readAuthority(ctx);
+  if (ctx.now() > ctx.deadline) return { kind: "unavailable", reason: "deadline" };
+  return a;
+}
+
+/**
+ * The anchor and R(env, sid), each one strong single-attempt read, IN PARALLEL under one CHECK_BUDGET_MS deadline.
+ * `epoch` is the session's (or token's) bound epoch. Never throws.
+ */
+export async function checkRevocation(sid: string, deployment: string, opts: OpOpts & { epoch?: unknown } = {}): Promise<RevocationStatus> {
+  if (!isCanonicalSid(sid) || (deployment !== "test" && deployment !== "production") || !isCanonicalEpoch(opts.epoch)) return { kind: "unavailable", reason: "refused_input" };
+  const ctx = context(opts.env ?? process.env, deployment, opts.budgetMs ?? CHECK_BUDGET_MS, opts);
+  if ("refused" in ctx) return { kind: "unavailable", reason: ctx.refused };
+  const [anchor, r] = await Promise.all([readAuthority(ctx), strongRead(ctx, revocationKey(deployment, sid))]);
   // Final caller check: an answer that arrives after the deadline grants nothing (a late 404 is not "absent").
   if (ctx.now() > ctx.deadline) return { kind: "unavailable", reason: "deadline" };
+  // Without a valid anchor, absence proves nothing (empty / wrong / restored store): unavailable.
+  if (anchor.kind !== "valid") return anchor;
+  // A session issued under an older epoch is signed out by the operator's restore/loss rotation.
+  if (anchor.epoch !== opts.epoch) return { kind: "revoked", reason: "epoch" };
   if (r.kind === "absent") return { kind: "absent" };
   if (r.kind === "unavailable") return r;
   return validRevocationText(r.text, deployment, sid) ? { kind: "revoked" } : { kind: "unavailable", reason: "invalid_record" };
@@ -238,14 +327,19 @@ export async function checkRevocation(sid: string, deployment: string, opts: { e
 
 export type RevokeResult = { kind: "verified" } | { kind: "unconfirmed"; reason: string };
 
-/** Conditional create of R(env, sid), then a strong readback that alone decides. Bounded by SIGNOUT_BUDGET_MS. */
-export async function recordRevocation(sid: string, deployment: string, opts: { env?: NodeJS.ProcessEnv; fetch?: typeof fetch; now?: Clock; budgetMs?: number } = {}): Promise<RevokeResult> {
+/**
+ * Conditional create of R(env, sid) -- in parallel with one strong read of the anchor -- then a strong readback.
+ * Verified ONLY with a valid anchor AND a valid readback. Bounded by SIGNOUT_BUDGET_MS. Never writes the anchor.
+ */
+export async function recordRevocation(sid: string, deployment: string, opts: OpOpts = {}): Promise<RevokeResult> {
   if (!isCanonicalSid(sid) || (deployment !== "test" && deployment !== "production")) return { kind: "unconfirmed", reason: "refused_input" };
-  const ctx = context(opts.env ?? process.env, opts.budgetMs ?? SIGNOUT_BUDGET_MS, opts);
-  if (!ctx) return { kind: "unconfirmed", reason: "not_configured" };
+  const ctx = context(opts.env ?? process.env, deployment, opts.budgetMs ?? SIGNOUT_BUDGET_MS, opts);
+  if ("refused" in ctx) return { kind: "unconfirmed", reason: ctx.refused };
   const key = revocationKey(deployment, sid);
   const text = canonicalJson({ schema: 1, kind: RECORD_KIND, env: deployment, sidDigest: sidDigest(deployment, sid), revokedAt: new Date(ctx.now()).toISOString() });
-  await createOnce(ctx, key, text);
+  // A record created while the anchor turns out invalid is conservative: it only ever revokes this signed sid.
+  const [anchor] = await Promise.all([readAuthority(ctx), createOnce(ctx, key, text)]);
+  if (anchor.kind !== "valid") return { kind: "unconfirmed", reason: anchor.reason };
   const back = await strongRead(ctx, key);
   if (ctx.now() > ctx.deadline) return { kind: "unconfirmed", reason: "deadline" };
   if (back.kind !== "present") return { kind: "unconfirmed", reason: back.kind === "absent" ? "not_found_after_write" : back.reason };
@@ -322,15 +416,16 @@ export function sessionUnavailableResponse() {
 export async function sessionReadRefusal(event: any, env: NodeJS.ProcessEnv = process.env, now = Date.now()) {
   if (!oneLoginActiveFor(env.IAOS_ENV)) return null;
   let config: ReadAuthConfig;
-  let session: { sid?: string };
+  let session: { sid?: string; epoch?: string };
   try { config = appReadConfig(env); session = verifyReadSession(readSessionToken(event), config, now); }
   catch (error) {
     if (error instanceof ReadAuthUnconfigured) return respond(503, { error: "Read sign-in is not configured for this site", by: READ_AUTH_UNCONFIGURED });
     return respond(401, { error: "Sign in to read IAOS data", by: READ_AUTH_REFUSED });
   }
   // A session from before one IAOS sign-in (no sid) cannot be revoked, so it is not accepted: one fresh sign-in (D6).
-  if (!session.sid) return respond(401, { error: "Sign in to read IAOS data", by: READ_AUTH_REFUSED, reason: "sign_in_again" });
-  const r = await checkRevocation(session.sid, config.deployment, { env });
+  // Likewise a session not bound to an authority epoch cannot be invalidated by a restore rotation.
+  if (!session.sid || !session.epoch) return respond(401, { error: "Sign in to read IAOS data", by: READ_AUTH_REFUSED, reason: "sign_in_again" });
+  const r = await checkRevocation(session.sid, config.deployment, { env, event, epoch: session.epoch });
   if (r.kind === "absent") return null;
   if (r.kind === "revoked") return respond(401, { error: "Signed out of IAOS", by: READ_AUTH_REFUSED, reason: "revoked" });
   return sessionUnavailableResponse();
@@ -344,13 +439,15 @@ export async function sessionReadRefusal(event: any, env: NodeJS.ProcessEnv = pr
 export async function sessionWriteRefusal(event: any, env: NodeJS.ProcessEnv = process.env, now = Date.now()) {
   if (!oneLoginActiveFor(env.IAOS_ENV)) return null;
   const refused = (reason?: string) => respond(401, { error: "Application write sign-in required", by: "iaos-app-write-auth", ...(reason ? { reason } : {}) });
-  let binding: { sid: string | null; env: string | null; pexp: number | null };
+  let binding: { sid: string | null; env: string | null; pexp: number | null; epoch: string | null };
   try { binding = appWriteSessionBinding(event, env, now); } catch { return refused(); }
   // Sid-less saving tokens (the retired popup issuer) and tokens bound to another environment are refused.
   if (!binding.sid || !isCanonicalSid(binding.sid) || binding.env !== env.IAOS_ENV || binding.pexp === null) return refused("sign_in_again");
+  // A token without the session's authority epoch is refused like a sid-less one.
+  if (!isCanonicalEpoch(binding.epoch)) return refused("sign_in_again");
   // The parent IAOS session has expired: saving pauses with it, even though the token's own 900 s have not run out.
   if (binding.pexp <= Math.floor(now / 1000)) return refused("session_expired");
-  const r = await checkRevocation(binding.sid, binding.env, { env });
+  const r = await checkRevocation(binding.sid, binding.env, { env, event, epoch: binding.epoch });
   if (r.kind === "absent") return null;
   if (r.kind === "revoked") return refused("revoked");
   return sessionUnavailableResponse();

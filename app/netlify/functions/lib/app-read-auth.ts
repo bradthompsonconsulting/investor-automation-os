@@ -74,20 +74,30 @@ export function isCanonicalSid(value: unknown): value is string {
     Buffer.from(value, "base64url").toString("base64url") === value;
 }
 
-export function issueReadSession(email: string, config: ReadAuthConfig, now = Date.now(), sid?: string) {
+/**
+ * B15-29 (H2 restore epoch): the revocation authority anchor's opaque epoch, 16-64 characters [A-Za-z0-9_-].
+ * Present ONLY together with a sid, on sessions issued while one IAOS sign-in is on. Not a secret.
+ */
+export const EPOCH_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+export function isCanonicalEpoch(value: unknown): value is string {
+  return typeof value === "string" && EPOCH_PATTERN.test(value);
+}
+
+export function issueReadSession(email: string, config: ReadAuthConfig, now = Date.now(), sid?: string, epoch?: string) {
   const sub = email.trim().toLowerCase();
   if (!config.emails.includes(sub)) throw new ReadAuthRefused("Operator is not authorized to read");
   if (sid !== undefined && !isCanonicalSid(sid)) throw new ReadAuthRefused("Invalid session id");
+  if (epoch !== undefined && (sid === undefined || !isCanonicalEpoch(epoch))) throw new ReadAuthRefused("Invalid session epoch");
   const iat = Math.floor(now / 1000);
   const base = { iss: "iaos", aud: READ_AUDIENCE, env: config.deployment, sub, iat, exp: iat + READ_SESSION_SECONDS };
-  const claims = sid === undefined ? base : { ...base, sid };
+  const claims = sid === undefined ? base : epoch === undefined ? { ...base, sid } : { ...base, sid, epoch };
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const input = `${header}.${payload}`;
   return { token: `${input}.${sign(input, config.secret).toString("base64url")}`, expiresAt: new Date(claims.exp * 1000).toISOString() };
 }
 
-export function verifyReadSession(token: string, config: ReadAuthConfig, now = Date.now()): { email: string; expiresAt: string; sid?: string } {
+export function verifyReadSession(token: string, config: ReadAuthConfig, now = Date.now()): { email: string; expiresAt: string; sid?: string; epoch?: string } {
   const parts = token.split(".");
   if (parts.length !== 3) throw new ReadAuthRefused("Invalid read session");
   const expected = sign(`${parts[0]}.${parts[1]}`, config.secret);
@@ -107,6 +117,9 @@ export function verifyReadSession(token: string, config: ReadAuthConfig, now = D
   }
   // B15-29: a present sid must be canonical; a session without one keeps the previous result shape exactly.
   if ("sid" in claims && !isCanonicalSid(claims.sid)) throw new ReadAuthRefused("Invalid read session");
+  // B15-29 (H2): a present epoch must be canonical and accompany a sid.
+  if ("epoch" in claims && (!("sid" in claims) || !isCanonicalEpoch(claims.epoch))) throw new ReadAuthRefused("Invalid read session");
+  if ("epoch" in claims) return { email: claims.sub, expiresAt: new Date(claims.exp * 1000).toISOString(), sid: claims.sid, epoch: claims.epoch };
   if ("sid" in claims) return { email: claims.sub, expiresAt: new Date(claims.exp * 1000).toISOString(), sid: claims.sid };
   return { email: claims.sub, expiresAt: new Date(claims.exp * 1000).toISOString() };
 }

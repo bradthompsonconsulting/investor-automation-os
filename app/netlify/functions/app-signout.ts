@@ -50,7 +50,8 @@ export const handler = async (event: any) => {
   } catch {
     return json(400, { state: "not_confirmed", error: "IAOS could not verify this Sign out" });
   }
-  const result = await recordRevocation(sid, config.deployment);
+  // The pinned-site, runtime-site and authority-anchor checks need this request (x-nf-site-id).
+  const result = await recordRevocation(sid, config.deployment, { event });
   if (result.kind === "verified") return json(200, { state: "revoked" });
   return json(503, { state: "not_confirmed", error: "IAOS could not verify this Sign out", by: "iaos-session-unavailable" });
 };

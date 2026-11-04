@@ -43,7 +43,9 @@ Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
 }).outputText, filename);
 
 const ORIGIN = 'https://proof.example.invalid';
-const SITE = 'fixture-site-id';
+const SITE = '07ca1f1a-60fd-4229-a076-528970957912';   // the PINNED Test revocation site (B15-29 H2)
+const EPOCH = 'fixture-epoch-0001';
+const NF = { 'x-nf-site-id': SITE };                   // the platform's runtime site header
 const BLOB_TOKEN = 'fixture-blob-token-not-real';
 Object.assign(process.env, {
   IAOS_ENV: 'test',
@@ -78,6 +80,9 @@ const readAuth = require(path.join(FUNCTIONS, 'lib/app-read-auth.ts'));
 const writeAuth = require(path.join(FUNCTIONS, 'lib/app-write-auth.ts'));
 const rev = require(path.join(FUNCTIONS, 'lib/session-revocation.ts'));
 const blobs = createFakeBlobs({ siteID: SITE, token: BLOB_TOKEN, clock: () => T });
+// The operator-provisioned authority anchor (fixture only; no code path writes it).
+const seedAnchor = () => blobs.put('iaos-write-receipts', 'session-revocation/_authority', JSON.stringify({ env: 'test', epoch: EPOCH, kind: 'iaos-session-revocation-authority', siteID: SITE, v: 1 }));
+seedAnchor();
 const basePayload = () => ({ ...cfg.projectRuntimeConfig(cfg.getConfig('test'), 'test'), repairApproval: { active: false } });
 const setFlag = (on) => {
   cfg.getConfig('test').oneLogin = on ? cfg.ONE_LOGIN_ENABLED : cfg.ONE_LOGIN_DISABLED;
@@ -88,7 +93,7 @@ const tokenHandler = require(path.join(FUNCTIONS, 'app-write-token.ts')).handler
 // ---- the browser's one IAOS session (cookie jar) ----
 let jar = null;
 const sid = (n) => Buffer.alloc(16, n).toString('base64url');
-const signIn = (n, at = T) => { jar = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), at, sid(n)).token; };
+const signIn = (n, at = T) => { jar = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), at, sid(n), EPOCH).token; };
 
 // ---- request log + routing ----
 let log = [];
@@ -106,7 +111,7 @@ global.fetch = async (url, init = {}) => {
     if (tokenMode === 'bad-lifetime') return new Response(JSON.stringify({ token: 'x.y.z', expiresAt: 'x', expiresInSeconds: 3600 }), { status: 200 });
     if (tokenMode === 'no-token') return new Response(JSON.stringify({ expiresInSeconds: 900 }), { status: 200 });
     if (tokenMode === 'hold') await new Promise((r) => { held = r; });
-    const event = { httpMethod: init.method, headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin', ...headers }, body: init.body || '' };
+    const event = { httpMethod: init.method, headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin', ...NF, ...headers }, body: init.body || '' };
     if (jar) event.headers.cookie = `${readAuth.READ_COOKIE}=${jar}`;
     const res = await tokenHandler(event);
     entry.status = res.statusCode;
@@ -115,7 +120,7 @@ global.fetch = async (url, init = {}) => {
   if (u === '/.netlify/functions/ghl-write') {
     const body = JSON.parse(init.body);
     const entry = { kind: 'write', id: body.id, at: T, auth: headers.authorization }; log.push(entry);
-    const event = { httpMethod: 'POST', headers: { authorization: headers.authorization, origin: ORIGIN } };
+    const event = { httpMethod: 'POST', headers: { authorization: headers.authorization, origin: ORIGIN, ...NF } };
     try { writeAuth.requireAppWriter(event); } catch { entry.status = 401; return new Response(JSON.stringify({ error: 'Application write sign-in required' }), { status: 401 }); }
     const refusal = await rev.sessionWriteRefusal(event);
     if (refusal) { entry.status = refusal.statusCode; entry.reason = JSON.parse(refusal.body).reason; return new Response(refusal.body, { status: refusal.statusCode }); }
@@ -143,7 +148,7 @@ async function check(name, fn) {
   try { await fn(); console.log('PASS  ' + name); }
   catch (err) { failures += 1; console.log('FAIL  ' + name + ' -- ' + (err && err.message)); }
 }
-const resetAll = () => { log = []; events.length = 0; blobs.reset(); tokenMode = 'real'; writeStore = []; S.clearAppWriteToken(); S.resumeAppWriteAccess(); };
+const resetAll = () => { log = []; events.length = 0; blobs.reset(); seedAnchor(); tokenMode = 'real'; writeStore = []; S.clearAppWriteToken(); S.resumeAppWriteAccess(); };
 
 (async () => {
   await check('C0 no BroadcastChannel, localStorage or sessionStorage exists in this process, and the saving module uses none', async () => {
@@ -238,7 +243,7 @@ const resetAll = () => { log = []; events.length = 0; blobs.reset(); tokenMode =
   await check('C5 Sign out in ANOTHER tab mid-call (server revocation; no channel exists): the earlier token is refused at the writer (401 revoked), not re-sent; the next save is refused before sending', async () => {
     assert.equal((await save()).out, 'sent:200');
     advance(60_000);
-    assert.equal((await rev.recordRevocation(sid(7), 'test')).kind, 'verified');   // the other tab's confirmed Sign out
+    assert.equal((await rev.recordRevocation(sid(7), 'test', { event: { headers: NF } })).kind, 'verified');   // the other tab's confirmed Sign out
     const r = await save();
     assert.equal(r.out, 'sent:401'); assert.equal(writes()[writes().length - 1].reason, 'revoked');
     const n = writes().length;
