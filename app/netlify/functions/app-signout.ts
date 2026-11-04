@@ -6,9 +6,9 @@
  *
  *   POST {"handle": "<revoke-only handle>"}
  *     200 {state:"revoked"}         ONLY after a verified revocation of the
- *                                   handle's sid (conditional create + strong
- *                                   readback of a valid record, or an existing
- *                                   valid record: idempotent)
+ *                                   handle's sid (r5: the revoked bytes written
+ *                                   unconditionally, then re-written onlyIfMatch
+ *                                   that answer's ETag; both 200; idempotent)
  *     503 {state:"not_confirmed"}   storage unavailable / uncertain / deadline
  *     400 {state:"not_confirmed"}   missing, malformed, expired or foreign handle
  *     403 / 405                     cross-site request, wrong method
@@ -22,7 +22,7 @@
  * logged (no handle, cookie or reason).
  */
 import { appReadConfig, requireReadOrigin } from "./lib/app-read-auth";
-import { recordRevocation, requireSameSiteRequest, verifySignoutHandle } from "./lib/session-revocation";
+import { revokeSession, requireSameSiteRequest, verifySignoutHandle } from "./lib/session-revocation";
 import { oneLoginActiveFor } from "../../shared/ghl-config";
 
 export const SIGN_OUT_HEADER_VALUE = "sign-out";
@@ -41,17 +41,17 @@ export const handler = async (event: any) => {
   } catch {
     return json(403, { state: "not_confirmed", error: "Sign-out request refused" });
   }
-  let sid: string;
+  let sid: string, epoch: string;
   try {
     if (event.isBase64Encoded || typeof event.body !== "string" || event.body.length > 2048) throw new Error("body");
     const body = JSON.parse(event.body);
     if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).join() !== "handle") throw new Error("body");
-    ({ sid } = verifySignoutHandle(body.handle, config));
+    ({ sid, epoch } = verifySignoutHandle(body.handle, config));
   } catch {
     return json(400, { state: "not_confirmed", error: "IAOS could not verify this Sign out" });
   }
-  // The pinned-site, runtime-site and authority-anchor checks need this request (x-nf-site-id).
-  const result = await recordRevocation(sid, config.deployment, { event });
+  // The pinned-site check and the Lambda Blobs context need this request (x-nf-site-id, blobs).
+  const result = await revokeSession(sid, epoch, config.deployment, { event });
   if (result.kind === "verified") return json(200, { state: "revoked" });
   return json(503, { state: "not_confirmed", error: "IAOS could not verify this Sign out", by: "iaos-session-unavailable" });
 };

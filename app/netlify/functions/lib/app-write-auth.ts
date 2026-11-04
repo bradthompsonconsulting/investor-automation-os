@@ -44,15 +44,18 @@ export function requireAppWriter(event: any, env = process.env, now = Date.now()
  * claims and checks the sid's revocation on every write. Never used while one
  * IAOS sign-in is off.
  */
-export function issueBoundAppSession(email: string, binding: { env: "test" | "production"; sid: string; pexp: number; epoch: string }, env = process.env, now = Date.now()) {
+export function issueBoundAppSession(email: string, binding: { env: "test" | "production"; sid: string; pexp: number; epoch: string; aetag: string; setag: string }, env = process.env, now = Date.now()) {
   const config = appAuthConfig(env);
   if (!config.emails.includes(email)) throw new Error("Operator is not authorized");
   if ((binding.env !== "test" && binding.env !== "production") || typeof binding.sid !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(binding.sid) ||
-      !Number.isInteger(binding.pexp) || typeof binding.epoch !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(binding.epoch)) throw new Error("Invalid session binding");
+      !Number.isInteger(binding.pexp) || typeof binding.epoch !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(binding.epoch) ||
+      [binding.aetag, binding.setag].some((e) => typeof e !== "string" || !/^[!-~]{1,200}$/.test(e))) throw new Error("Invalid session binding");
   const iat = Math.floor(now / 1000);
   // pexp: the parent read session's expiry. The token keeps its 900 s lifetime; writers ALSO refuse it once pexp passes.
   // epoch: the parent session's revocation-authority epoch (B15-29 H2); writers refuse it once the anchor's epoch changes.
-  const claims = { iss: "iaos", aud: audience, sub: email, iat, exp: iat + 900, env: binding.env, sid: binding.sid, pexp: binding.pexp, epoch: binding.epoch };
+  // aetag/setag (B15-29 r5): the parent session's store ETags; every write re-runs the conditional-write check with them.
+  // The token can never authorize past the session: writers refuse it once pexp passes (r6), whatever its own exp says.
+  const claims = { iss: "iaos", aud: audience, sub: email, iat, exp: iat + 900, env: binding.env, sid: binding.sid, pexp: binding.pexp, epoch: binding.epoch, aetag: binding.aetag, setag: binding.setag };
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const input = `${header}.${payload}`;
@@ -64,12 +67,13 @@ export function issueBoundAppSession(email: string, binding: { env: "test" | "pr
  * decode alone). `sid`/`env` are null when the token carries none (a token
  * from the old popup issuer).
  */
-export function appWriteSessionBinding(event: any, env = process.env, now = Date.now()): { sub: string; sid: string | null; env: string | null; pexp: number | null; epoch: string | null } {
+export function appWriteSessionBinding(event: any, env = process.env, now = Date.now()): { sub: string; sid: string | null; env: string | null; pexp: number | null; epoch: string | null; aetag: string | null; setag: string | null } {
   const sub = requireAppWriter(event, env, now);
   const auth = String(event.headers?.authorization ?? event.headers?.Authorization);
   const claims = JSON.parse(Buffer.from(auth.slice(7).split(".")[1], "base64url").toString("utf8"));
   return { sub, sid: typeof claims.sid === "string" ? claims.sid : null, env: typeof claims.env === "string" ? claims.env : null,
-    pexp: Number.isInteger(claims.pexp) ? claims.pexp : null, epoch: typeof claims.epoch === "string" ? claims.epoch : null };
+    pexp: Number.isInteger(claims.pexp) ? claims.pexp : null, epoch: typeof claims.epoch === "string" ? claims.epoch : null,
+    aetag: typeof claims.aetag === "string" ? claims.aetag : null, setag: typeof claims.setag === "string" ? claims.setag : null };
 }
 export async function googleAppIdentity(idToken: string, fetcher: typeof fetch = fetch, env = process.env, now = Date.now()) {
   const config = appAuthConfig(env);

@@ -24,6 +24,7 @@
  * by every writer. The paragraph above describes the OFF behaviour.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { oneLoginActiveFor } from "../../../shared/ghl-config";
 
 export const READ_AUDIENCE = "iaos-app-read";
 export const READ_SESSION_SECONDS = 8 * 60 * 60;
@@ -83,21 +84,40 @@ export function isCanonicalEpoch(value: unknown): value is string {
   return typeof value === "string" && EPOCH_PATTERN.test(value);
 }
 
-export function issueReadSession(email: string, config: ReadAuthConfig, now = Date.now(), sid?: string, epoch?: string) {
+/**
+ * B15-29 r6 (Captain ruling; one IAOS sign-in ON only): a session is valid for exactly 30 days from the Google
+ * sign-in (`iat` = authAt, `exp` = authAt + 30 days) and is NEVER extended -- no code path re-issues it. It is
+ * accepted ONLY while one IAOS sign-in is on for this IAOS_ENV, so turning the switch off (a rollback) can never
+ * leave a non-revocable 30-day session usable. Off: the 8-hour session above, unchanged.
+ */
+export const ONE_LOGIN_SESSION_SECONDS = 30 * 24 * 60 * 60;
+/**
+ * B15-29 r5/r6: an ETag from the session store's conditional writes at sign-in, carried in the session so every check
+ * can re-write the identical bytes `onlyIfMatch` it. Opaque; printable ASCII without spaces, 1-200 characters.
+ */
+export function isCanonicalEtag(value: unknown): value is string {
+  return typeof value === "string" && /^[!-~]{1,200}$/.test(value);
+}
+/** The anchor and session-record ETags bound into a one-IAOS-sign-in session at sign-in. */
+export type SessionEtags = { aetag: string; setag: string };
+
+export function issueReadSession(email: string, config: ReadAuthConfig, now = Date.now(), sid?: string, epoch?: string, etags?: SessionEtags) {
   const sub = email.trim().toLowerCase();
   if (!config.emails.includes(sub)) throw new ReadAuthRefused("Operator is not authorized to read");
   if (sid !== undefined && !isCanonicalSid(sid)) throw new ReadAuthRefused("Invalid session id");
   if (epoch !== undefined && (sid === undefined || !isCanonicalEpoch(epoch))) throw new ReadAuthRefused("Invalid session epoch");
+  if (etags !== undefined && (epoch === undefined || !isCanonicalEtag(etags.aetag) || !isCanonicalEtag(etags.setag))) throw new ReadAuthRefused("Invalid session etags");
   const iat = Math.floor(now / 1000);
-  const base = { iss: "iaos", aud: READ_AUDIENCE, env: config.deployment, sub, iat, exp: iat + READ_SESSION_SECONDS };
-  const claims = sid === undefined ? base : epoch === undefined ? { ...base, sid } : { ...base, sid, epoch };
+  const base = { iss: "iaos", aud: READ_AUDIENCE, env: config.deployment, sub, iat, exp: iat + (etags === undefined ? READ_SESSION_SECONDS : ONE_LOGIN_SESSION_SECONDS) };
+  const claims = sid === undefined ? base : epoch === undefined ? { ...base, sid } : etags === undefined ? { ...base, sid, epoch }
+    : { ...base, sid, epoch, aetag: etags.aetag, setag: etags.setag };
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const input = `${header}.${payload}`;
   return { token: `${input}.${sign(input, config.secret).toString("base64url")}`, expiresAt: new Date(claims.exp * 1000).toISOString() };
 }
 
-export function verifyReadSession(token: string, config: ReadAuthConfig, now = Date.now()): { email: string; expiresAt: string; sid?: string; epoch?: string } {
+export function verifyReadSession(token: string, config: ReadAuthConfig, now = Date.now()): { email: string; expiresAt: string; sid?: string; epoch?: string; aetag?: string; setag?: string } {
   const parts = token.split(".");
   if (parts.length !== 3) throw new ReadAuthRefused("Invalid read session");
   const expected = sign(`${parts[0]}.${parts[1]}`, config.secret);
@@ -109,9 +129,12 @@ export function verifyReadSession(token: string, config: ReadAuthConfig, now = D
     claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
   } catch { throw new ReadAuthRefused("Invalid read session"); }
   const seconds = Math.floor(now / 1000);
+  // B15-29 r6: the 30-day shape (it alone carries the store ETags) exists only while one IAOS sign-in is on.
+  const oneLogin = !!claims && typeof claims === "object" && ("aetag" in claims || "setag" in claims);
+  if (oneLogin && !oneLoginActiveFor(config.deployment)) throw new ReadAuthRefused("Expired or unauthorized read session");
   if (header?.alg !== "HS256" || header?.typ !== "JWT" || claims?.iss !== "iaos" || claims.aud !== READ_AUDIENCE ||
       claims.env !== config.deployment || !Number.isInteger(claims.iat) || !Number.isInteger(claims.exp) ||
-      claims.exp - claims.iat !== READ_SESSION_SECONDS || claims.exp <= seconds || claims.iat > seconds + 30 ||
+      claims.exp - claims.iat !== (oneLogin ? ONE_LOGIN_SESSION_SECONDS : READ_SESSION_SECONDS) || claims.exp <= seconds || claims.iat > seconds + 30 ||
       typeof claims.sub !== "string" || !config.emails.includes(claims.sub)) {
     throw new ReadAuthRefused("Expired or unauthorized read session");
   }
@@ -119,6 +142,12 @@ export function verifyReadSession(token: string, config: ReadAuthConfig, now = D
   if ("sid" in claims && !isCanonicalSid(claims.sid)) throw new ReadAuthRefused("Invalid read session");
   // B15-29 (H2): a present epoch must be canonical and accompany a sid.
   if ("epoch" in claims && (!("sid" in claims) || !isCanonicalEpoch(claims.epoch))) throw new ReadAuthRefused("Invalid read session");
+  if (oneLogin) {
+    if (Object.keys(claims).sort().join(",") !== "aetag,aud,env,epoch,exp,iat,iss,setag,sid,sub" || !isCanonicalEtag(claims.aetag) || !isCanonicalEtag(claims.setag)) {
+      throw new ReadAuthRefused("Invalid read session");
+    }
+    return { email: claims.sub, expiresAt: new Date(claims.exp * 1000).toISOString(), sid: claims.sid, epoch: claims.epoch, aetag: claims.aetag, setag: claims.setag };
+  }
   if ("epoch" in claims) return { email: claims.sub, expiresAt: new Date(claims.exp * 1000).toISOString(), sid: claims.sid, epoch: claims.epoch };
   if ("sid" in claims) return { email: claims.sub, expiresAt: new Date(claims.exp * 1000).toISOString(), sid: claims.sid };
   return { email: claims.sub, expiresAt: new Date(claims.exp * 1000).toISOString() };
@@ -162,8 +191,11 @@ export function requireReadOrigin(event: any, config: ReadAuthConfig): void {
   }
 }
 
-export function readSessionCookie(token: string) {
-  return `${READ_COOKIE}=${token}; Path=/; Max-Age=${READ_SESSION_SECONDS}; HttpOnly; Secure; SameSite=Strict`;
+export function readSessionCookie(token: string, maxAgeSeconds: number = READ_SESSION_SECONDS) {
+  // B15-29 r6: one IAOS sign-in passes the seconds left until the session's fixed exp (a PERSISTENT cookie that
+  // survives closing the browser and ends with the session). Off: always the unchanged 8 hours.
+  if (!Number.isInteger(maxAgeSeconds) || maxAgeSeconds <= 0 || maxAgeSeconds > ONE_LOGIN_SESSION_SECONDS) throw new ReadAuthRefused("Invalid cookie lifetime");
+  return `${READ_COOKIE}=${token}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=Strict`;
 }
 export function clearedReadSessionCookie() {
   return `${READ_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict`;

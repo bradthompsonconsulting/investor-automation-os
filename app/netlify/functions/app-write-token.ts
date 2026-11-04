@@ -18,16 +18,22 @@
  *      cross-site page cannot send it without a CORS preflight this function
  *      never grants); no request body;
  *   2. session validity: the one __Host-iaos_read cookie verifies (signature,
- *      audience, fixed 8-hour lifetime, expiry, read allowlist) AND carries a
- *      session id -- a pre-one-sign-in session without one is refused (D6);
+ *      audience, the fixed 30-day one-sign-in lifetime, expiry, read allowlist)
+ *      AND carries a session id, epoch and both store ETags -- a session
+ *      without them is refused (D6);
  *   3. environment separation: the session's env claim equals THIS IAOS_ENV;
  *      the token is signed with this deployment's IAOS_APP_WRITE_SESSION_SECRET
  *      and carries env + sid claims;
- *   4. saving authorization: the email is on IAOS_APP_WRITE_BRAD_EMAILS;
- *   5. revocation (C1): one strong read of the session's revocation record
- *      answered "absent" within the deadline. Revoked -> 401 reason "revoked";
- *      unreadable / unconfigured / late -> 503 iaos-session-unavailable. Never
- *      a token on uncertainty.
+ *   4. saving authorization: the email is on IAOS_APP_WRITE_BRAD_EMAILS, AND
+ *      the authorization seam (lib/authorization.ts, "write") allows it;
+ *   5. the store check (C1, r5 conditional-write authority) answered ACTIVE
+ *      within the deadline. Revoked (412) -> 401 reason "revoked"; anything
+ *      else / late -> 503 iaos-session-unavailable. Never a token on
+ *      uncertainty.
+ * The token never outlives the session (r6): it carries pexp = the session's
+ * fixed expiry, writers refuse it after pexp, and expiresAt / expiresInSeconds
+ * report min(900 s, time left in the session). Minting never extends the
+ * session (no Set-Cookie).
  * Exact Origin alone never authorizes anything.
  *
  * The token is only a prerequisite (Variant S): every write function still
@@ -38,7 +44,8 @@
 import { appReadConfig, readSessionToken, requireReadOrigin, verifyReadSession } from "./lib/app-read-auth";
 import { appAuthConfig, issueBoundAppSession } from "./lib/app-write-auth";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
-import { checkRevocation, requireSameSiteRequest, sessionUnavailableResponse } from "./lib/session-revocation";
+import { checkSession, requireSameSiteRequest, sessionBound, sessionUnavailableResponse } from "./lib/session-revocation";
+import { authorize } from "./lib/authorization";
 import { oneLoginActiveFor } from "../../shared/ghl-config";
 
 export const SAVING_TOKEN_HEADER_VALUE = "saving-token";
@@ -64,28 +71,33 @@ export const handler = async (event: any) => {
     return json(403, { error: "Saving-token request refused", by: SAVING_TOKEN_REFUSED });
   }
 
-  let session: { email: string; expiresAt: string; sid?: string; epoch?: string };
+  let session: { email: string; expiresAt: string; sid?: string; epoch?: string; aetag?: string; setag?: string };
   try {
     session = verifyReadSession(readSessionToken(event), readConfig);
     if (!appAuthConfig().emails.includes(session.email)) throw new Error("Not a saving operator");
   } catch {
     return json(401, { error: "Sign in to IAOS to save", by: SAVING_TOKEN_REFUSED });
   }
-  // No sid, or no revocation-authority epoch (B15-29 H2): the session cannot be revoked / restore-invalidated.
-  if (!session.sid || !session.epoch) return json(401, { error: "Sign in to IAOS to save", by: SAVING_TOKEN_REFUSED, reason: "sign_in_again" });
+  // No sid, epoch or store ETags: the session cannot be checked or revoked -- sign in again.
+  if (!sessionBound(session)) return json(401, { error: "Sign in to IAOS to save", by: SAVING_TOKEN_REFUSED, reason: "sign_in_again" });
+  // r6: authorization is its own layer, evaluated on every mint in addition to the session check.
+  if (!authorize({ sub: session.email, email: session.email }, "write").ok) return json(403, { error: "This account may not save in IAOS", by: SAVING_TOKEN_REFUSED, reason: "not_authorized" });
 
   // Outside the credential catch: an unreadable store is never reported as a sign-in problem (C1).
-  const revocation = await checkRevocation(session.sid, readConfig.deployment, { event, epoch: session.epoch });
-  if (revocation.kind === "revoked") return json(401, { error: "Signed out of IAOS", by: SAVING_TOKEN_REFUSED, reason: "revoked" });
-  if (revocation.kind !== "absent") return sessionUnavailableResponse();
+  const status = await checkSession(session, readConfig.deployment, { event });
+  if (status.kind === "revoked") return json(401, { error: "Signed out of IAOS", by: SAVING_TOKEN_REFUSED, reason: "revoked" });
+  if (status.kind !== "active") return sessionUnavailableResponse();
 
   try {
     const now = Date.now();
     const pexp = Math.floor(Date.parse(session.expiresAt) / 1000);
-    const issued = issueBoundAppSession(session.email, { env: readConfig.deployment, sid: session.sid, pexp, epoch: session.epoch }, process.env, now);
+    const issued = issueBoundAppSession(session.email, { env: readConfig.deployment, sid: session.sid as string, pexp, epoch: session.epoch as string,
+      aetag: session.aetag as string, setag: session.setag as string }, process.env, now);
+    // The token never outlives the session: its usable life is min(900 s, the session's time left).
+    const usableUntil = Math.min(Date.parse(issued.expiresAt), pexp * 1000);
     // expiresInSeconds lets the browser time the token from when it arrived, so a
     // computer clock that is off by minutes never makes a fresh token look expired.
-    return json(200, { ...issued, expiresInSeconds: Math.floor((Date.parse(issued.expiresAt) - now) / 1000) });
+    return json(200, { token: issued.token, expiresAt: new Date(usableUntil).toISOString(), expiresInSeconds: Math.floor((usableUntil - now) / 1000) });
   } catch {
     return json(401, { error: "Sign in to IAOS to save", by: SAVING_TOKEN_REFUSED });
   }

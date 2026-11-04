@@ -14,7 +14,7 @@ import {
   READ_AUTH_UNCONFIGURED, requireReadOrigin, verifyReadSession,
 } from "./lib/app-read-auth";
 import { verifyGoogleIdToken } from "./lib/google-identity";
-import { SESSION_UNAVAILABLE, checkRevocation, issueSignoutHandle, readRevocationAuthority } from "./lib/session-revocation";
+import { SESSION_UNAVAILABLE, beginSession, checkSession, issueSignoutHandle, sessionBound } from "./lib/session-revocation";
 import { oneLoginActiveFor } from "../../shared/ghl-config";
 import { randomBytes } from "node:crypto";
 
@@ -59,29 +59,32 @@ export const handler = async (event: any) => {
 };
 
 /**
- * B15-29 (INV-137), ONLY while one IAOS sign-in is on (C1 status, design r4 §B-§D):
- *   GET    200 {clientId, signedIn:true, expiresAt, state:"signed_in", handle}   verified-absent revocation
- *          200 {clientId, signedIn:false, expiresAt:null, state:"signed_out"}   no/invalid/sid-less cookie
- *          200 {clientId, signedIn:false, expiresAt:null, state:"revoked"}      VERIFIED revocation (grants nothing)
+ * B15-29 (INV-137), ONLY while one IAOS sign-in is on (C1 status, design r4 §B-§D; authority r5; lifetime r6):
+ *   GET    200 {clientId, signedIn:true, expiresAt, state:"signed_in", handle}   the store check answered ACTIVE
+ *          200 {clientId, signedIn:false, expiresAt:null, state:"signed_out"}   no / invalid / expired / unbound cookie
+ *          200 {clientId, signedIn:false, expiresAt:null, state:"revoked"}      the store check answered REVOKED
  *          503 {clientId, state:"unavailable", by:"iaos-session-unavailable"}   anything uncertain -- never signedIn
- *   POST   sign-in exactly as before, plus a fresh random 128-bit session id (sid) and the revocation authority's
- *          current epoch in the session; anchor unavailable -> 503 {state:"unavailable"}, no session issued
+ *   POST   sign-in exactly as before (Google identity verified first), then the store binding (beginSession: anchor
+ *          read + identical-bytes If-Match confirm, session record onlyIfNew) for a fresh random 128-bit sid. The
+ *          session is valid for exactly 30 days from now and is never extended; the cookie is PERSISTENT with
+ *          Max-Age = the seconds left to that fixed expiry (closing the browser does not sign out). Store not
+ *          confirmed -> 503 {state:"unavailable"}, no session, no Set-Cookie.
  *   DELETE 410, no Set-Cookie: cookie clearing is retired (a delayed DELETE can no longer erase a newer sign-in);
  *          Sign out is app-signout's server revocation.
+ * There is no renewal or extension path of any kind (r6).
  * clientId stays in every GET answer so the sign-in landing page always works without granting data access.
  */
 async function oneLogin(event: any, config: ReturnType<typeof appReadConfig>) {
   if (event.httpMethod === "GET") {
-    let session: { email: string; expiresAt: string; sid?: string; epoch?: string } | null = null;
+    let session: { email: string; expiresAt: string; sid?: string; epoch?: string; aetag?: string; setag?: string } | null = null;
     try { session = verifyReadSession(readSessionToken(event), config); } catch { session = null; }
     const out = { clientId: config.clientId, signedIn: false, expiresAt: null };
-    // A session without a sid or without an authority epoch cannot be revoked or restore-invalidated: sign in again.
-    if (!session || !session.sid || !session.epoch) return json(200, { ...out, state: "signed_out" });
-    // An epoch older than the anchor's current one answers "revoked" (the operator's restore rotation signed it out).
-    const r = await checkRevocation(session.sid, config.deployment, { event, epoch: session.epoch });
+    // A session without a sid, epoch or store ETags cannot be checked or revoked: sign in again.
+    if (!session || !sessionBound(session)) return json(200, { ...out, state: "signed_out" });
+    const r = await checkSession(session, config.deployment, { event });
     if (r.kind === "revoked") return json(200, { ...out, state: "revoked" });
-    if (r.kind !== "absent") return json(503, { clientId: config.clientId, state: "unavailable", by: SESSION_UNAVAILABLE });
-    const handle = issueSignoutHandle({ sid: session.sid, expiresAt: session.expiresAt }, config);
+    if (r.kind !== "active") return json(503, { clientId: config.clientId, state: "unavailable", by: SESSION_UNAVAILABLE });
+    const handle = issueSignoutHandle({ sid: session.sid as string, epoch: session.epoch as string, expiresAt: session.expiresAt }, config);
     return json(200, { clientId: config.clientId, signedIn: true, expiresAt: session.expiresAt, state: "signed_in", handle });
   }
   if (event.httpMethod === "POST") {
@@ -95,13 +98,16 @@ async function oneLogin(event: any, config: ReturnType<typeof appReadConfig>) {
     } catch {
       return json(401, { error: "Read sign-in refused" });
     }
-    // B15-29 (H2): the new session is bound to the revocation authority's CURRENT epoch. Without a valid anchor from
-    // the pinned site no session is issued (fail closed, the same unavailable answer as status; no Set-Cookie).
-    const authority = await readRevocationAuthority(config.deployment, { event });
-    if (authority.kind !== "valid") return json(503, { clientId: config.clientId, state: "unavailable", by: SESSION_UNAVAILABLE });
+    // The new session is bound AT ORIGIN to the current anchor (epoch + its ETag) and to its own new session record.
+    // Without both confirmations no session is issued (fail closed, the same unavailable answer as status; no Set-Cookie).
+    const sid = randomBytes(16).toString("base64url");
+    const grant = await beginSession(sid, config.deployment, { event });
+    if (grant.kind !== "issued") return json(503, { clientId: config.clientId, state: "unavailable", by: SESSION_UNAVAILABLE });
     try {
-      const session = issueReadSession(email, config, Date.now(), randomBytes(16).toString("base64url"), authority.epoch);
-      return json(200, { signedIn: true, expiresAt: session.expiresAt }, { "Set-Cookie": readSessionCookie(session.token) });
+      const now = Date.now();
+      const session = issueReadSession(email, config, now, sid, grant.epoch, { aetag: grant.aetag, setag: grant.setag });
+      const maxAge = Math.floor(Date.parse(session.expiresAt) / 1000) - Math.floor(now / 1000);
+      return json(200, { signedIn: true, expiresAt: session.expiresAt }, { "Set-Cookie": readSessionCookie(session.token, maxAge) });
     } catch {
       return json(401, { error: "Read sign-in refused" });
     }
