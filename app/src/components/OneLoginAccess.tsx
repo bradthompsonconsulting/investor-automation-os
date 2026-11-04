@@ -18,6 +18,8 @@ export const SIGN_OUT_ENDPOINT = "/.netlify/functions/app-signout";
 export const SIGN_OUT_CLIENT_TIMEOUT_MS = 10_000;
 export const SIGNED_OUT_TEXT = "Signed out of IAOS.";
 export const SIGN_OUT_NOT_CONFIRMED_TEXT = "Sign-out not confirmed. IAOS could not verify this Sign out. Saving is paused on this page.";
+/** Longest single expiry wait (one day): well under setTimeout's 2^31-1 ms limit. */
+export const MAX_TIMER_MS = 24 * 60 * 60 * 1000;
 export const UNAVAILABLE_TEXT = "IAOS can't confirm your sign-in right now. Your page and unsaved edits are kept.";
 
 type Status =
@@ -129,11 +131,14 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
   }, [check]);
 
   const expiresAt = status.kind === "signed_in" ? status.expiresAt : 0;
+  const [rearm, setRearm] = useState(0);
   useEffect(() => {
     if (!expiresAt) return;
-    const timer = setTimeout(() => { void check("Read session expired. Sign in to continue."); }, Math.max(0, expiresAt - Date.now()));
+    // B15-29 r6: a 30-day expiry is beyond setTimeout's 2^31-1 ms limit (an overflow would fire at once and loop), so the
+    // wait is capped at one day; at that point the status is simply re-checked and the timer re-armed.
+    const timer = setTimeout(() => { setRearm((n) => n + 1); void check("Read session expired. Sign in to continue."); }, Math.min(MAX_TIMER_MS, Math.max(0, expiresAt - Date.now())));
     return () => clearTimeout(timer);
-  }, [expiresAt, check]);
+  }, [expiresAt, check, rearm]);
 
   function signIn() {
     popup.current = window.open("/app-read-login.html", "iaos-app-read-signin", "popup,width=480,height=620");

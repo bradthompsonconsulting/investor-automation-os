@@ -102,9 +102,11 @@ async function requestToken(): Promise<{ token: string; expiresAt: string }> {
   if (!res.ok) throw new AppWriteSignInRequired(SAVE_UNAVAILABLE_MESSAGE);
   const body = await res.json().catch(() => null);
   // Timed from arrival with the server's stated lifetime, so a skewed computer clock cannot make a fresh token look expired.
+  // B15-29 r6: the server caps the lifetime at the session's fixed expiry (min(900 s, time left)), so in the session's
+  // last minutes a fresh token may be shorter than RENEW_MARGIN_MS; it is still used for the save that asked for it.
   const lifetime = body?.expiresInSeconds;
   if (typeof body?.token !== "string" || !body.token || typeof lifetime !== "number" || !Number.isFinite(lifetime) ||
-      lifetime * 1000 <= RENEW_MARGIN_MS || lifetime > 900) {
+      lifetime <= 0 || lifetime > 900) {
     throw new AppWriteSignInRequired(SAVE_UNAVAILABLE_MESSAGE);
   }
   return { token: body.token, expiresAt: new Date(Date.now() + lifetime * 1000).toISOString() };

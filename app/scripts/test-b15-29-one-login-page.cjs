@@ -21,6 +21,11 @@
  *      SAME handle; then confirmed
  *   P7 the IAOS session ends mid-call: the save is NOT sent, "Saving paused" shown, draft kept; after signing in
  *      again the operator's save is sent once
+ *   P8 (r6) every sign-in sets a PERSISTENT 30-day cookie; a new browser holding only that cookie is signed in and
+ *      saves with no sign-in step
+ *   P9 (r6) a 30-day expiry does not overflow the page's expiry timer (no idle status re-checks)
+ * Sign-in goes through the REAL app-read-session POST (Google tokeninfo is a fixture), which binds the session at
+ * the fake store (r5 conditional writes) exactly as deployed code would.
  */
 'use strict';
 process.env.NODE_ENV = 'test';
@@ -46,7 +51,6 @@ Module._resolveFilename = ((original) => function (name, parent, ...rest) {
 const ORIGIN = 'https://proof.example.invalid';
 const SITE = '07ca1f1a-60fd-4229-a076-528970957912';   // the PINNED Test revocation site (B15-29 H2)
 const EPOCH = 'fixture-epoch-0001';
-const BLOB_TOKEN = 'fixture-blob-token-not-real';
 Object.assign(process.env, {
   IAOS_ENV: 'test',
   IAOS_APP_READ_GOOGLE_CLIENT_ID: 'offline-read-client',
@@ -57,18 +61,19 @@ Object.assign(process.env, {
   IAOS_APP_WRITE_SESSION_SECRET: 'offline-write-fixture-only-not-a-real-secret',
   IAOS_APP_WRITE_BRAD_EMAILS: 'brad@example.invalid',
   IAOS_APP_WRITE_ALLOWED_ORIGIN: ORIGIN,
-  IAOS_SESSION_REVOCATION_SITE_ID: SITE,
-  IAOS_SESSION_REVOCATION_TOKEN: BLOB_TOKEN,
 });
 delete process.env.IAOS_VOICE_SESSION_SECRET;
 
-const blobs = createFakeBlobs({ siteID: SITE, token: BLOB_TOKEN });
+const blobs = createFakeBlobs({ siteID: SITE });
 // The operator-provisioned authority anchor (fixture only; no code path writes it).
 blobs.put('iaos-write-receipts', 'session-revocation/_authority', JSON.stringify({ env: 'test', epoch: EPOCH, kind: 'iaos-session-revocation-authority', siteID: SITE, v: 1 }));
 const nodeFetch = global.fetch;
 global.fetch = async (url, init) => {
   const u = String(url);
-  if (u.startsWith('https://api.netlify.com/') || u.startsWith('https://signed.blobs.invalid/')) return blobs.fetch(url, init);
+  if (blobs.handles(u)) return blobs.fetch(url, init);
+  if (u.startsWith('https://oauth2.googleapis.com/tokeninfo')) {
+    return new Response(JSON.stringify({ iss: 'https://accounts.google.com', aud: 'offline-read-client', email: 'brad@example.invalid', email_verified: 'true', exp: String(Math.floor(Date.now() / 1000) + 600) }), { status: 200 });
+  }
   throw new Error('unexpected server-side outbound request: ' + u);
 };
 const cfg = require(path.join(APP, 'shared/ghl-config.ts'));
@@ -91,7 +96,15 @@ function check(name, ok, detail) {
 
 // ── the browser's one IAOS session ──
 let jar = null;
-const signInJar = () => { jar = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now(), require('node:crypto').randomBytes(16).toString('base64url'), EPOCH).token; };
+// The stub popup stands for Google: the REAL sign-in handler binds the session at the (fake) store and sets the cookie.
+const setCookies = [];
+const signInJar = async () => {
+  const res = await H.session({ httpMethod: 'POST', headers: { origin: ORIGIN, 'x-nf-site-id': SITE }, blobs: blobs.lambdaBlobs, body: JSON.stringify({ googleIdToken: 'fixture-google-token' }) });
+  if (res.statusCode !== 200) throw new Error('fixture sign-in failed: ' + res.body);
+  setCookies.push(res.headers['Set-Cookie']);
+  jar = /__Host-iaos_read=([^;]+)/.exec(res.headers['Set-Cookie'])[1];
+};
+const jarClaims = () => JSON.parse(Buffer.from(jar.split('.')[1], 'base64url'));
 const jarSid = () => (jar ? JSON.parse(Buffer.from(jar.split('.')[1], 'base64url')).sid : null);
 let log = [];
 const applied = [];
@@ -116,7 +129,7 @@ async function main() {
   const router = async (route, tab) => {
     const request = route.request();
     const url = request.url();
-    if (url.startsWith(`${base}/app-read-login.html`)) { signInJar(); return route.fulfill({ status: 200, contentType: 'text/html', body: POPUP }); }
+    if (url.startsWith(`${base}/app-read-login.html`)) { await signInJar(); return route.fulfill({ status: 200, contentType: 'text/html', body: POPUP }); }
     if (url.startsWith(base) && !url.includes('/.netlify/functions/')) return route.continue();
     if (!url.includes('/.netlify/functions/')) return route.abort();
     const fn = new URL(url).pathname.replace('/.netlify/functions/', '');
@@ -126,6 +139,7 @@ async function main() {
     if (headers.origin !== undefined) event.headers.origin = headers.origin === base ? ORIGIN : headers.origin;
     if (jar) event.headers.cookie = `${readAuth.READ_COOKIE}=${jar}`;
     event.headers['x-nf-site-id'] = SITE;   // the platform's runtime site header
+    event.blobs = blobs.lambdaBlobs;        // the platform's Lambda Blobs context
 
     const entry = { tab, fn, method: request.method() };
     log.push(entry);
@@ -193,7 +207,7 @@ async function main() {
     await until(() => has(A, 'Signed out of IAOS.'));
     const so = log.filter((e) => e.fn === 'app-signout');
     check('P3 tab A: "Signed out of IAOS." only after the server verified the revocation (200 revoked)', await has(A, 'Signed out of IAOS.') && so.length === 1 && so[0].status === 200, so);
-    check('P3 the revocation record for exactly that session exists in the store', !!blobs.get('iaos-write-receipts', rev.revocationKey('test', sidA)));
+    check('P3 the revocation record for exactly that session exists in the store', (blobs.get('iaos-write-receipts', rev.sessionKey('test', sidA)) || {}).text === rev.sessionRecordText('test', EPOCH, sidA, 'revoked'));
     check('P3 no request from tab A cleared or set a cookie (DELETE is never sent)', log.every((e) => !(e.fn === 'app-read-session' && e.method === 'DELETE')));
 
     // ── P4 ── (tab B has not been focused; no channel or storage exists)
@@ -215,8 +229,8 @@ async function main() {
     await C.getByRole('button', { name: 'Sign in' }).click();
     await until(() => shown(C, 'read-access-signed-in'));
     await C.getByTestId('draft').fill('draft kept through an outage');
-    // Each check now reads the anchor AND the sid record: 12 failing GETs cover the same 6 checks as before.
-    for (let i = 0; i < 12; i += 1) blobs.rule({ stage: 'blob', method: 'GET', status: 500 });
+    // Each check is two conditional writes (session + anchor): 12 failing PUTs cover 6 checks.
+    for (let i = 0; i < 12; i += 1) blobs.rule({ method: 'PUT', status: 500 });
     await C.evaluate(() => window.dispatchEvent(new Event('focus')));
     await until(() => has(C, "IAOS can't confirm your sign-in right now"));
     check('P5 store unavailable: "IAOS can\'t confirm your sign-in right now" with Try again', await has(C, "IAOS can't confirm your sign-in right now") && await shown(C, 'one-login-try-again'));
@@ -229,14 +243,14 @@ async function main() {
 
     // ── P6 ── Sign out not confirmed, then the same handle confirmed
     const sidC = jarSid();
-    blobs.rule({ stage: 'blob', method: 'PUT', lie: true });
+    blobs.rule({ method: 'PUT', key: rev.sessionKey('test', sidC), lie: true });
     await C.getByRole('button', { name: 'Sign out' }).click();
     await until(() => has(C, 'Sign-out not confirmed.'));
     check('P6 provider false success: "Sign-out not confirmed." with Try Sign out again; never "Signed out"', await has(C, 'Sign-out not confirmed.') && await shown(C, 'one-login-retry-sign-out') && !(await has(C, 'Signed out of IAOS.')));
     const firstHandle = log.filter((e) => e.fn === 'app-signout').length;
     await C.getByTestId('one-login-retry-sign-out').click();
     await until(() => has(C, 'Signed out of IAOS.'));
-    check('P6 Try Sign out again: confirmed; the record is for the ORIGINAL session', await has(C, 'Signed out of IAOS.') && !!blobs.get('iaos-write-receipts', rev.revocationKey('test', sidC)) && log.filter((e) => e.fn === 'app-signout').length === firstHandle + 1);
+    check('P6 Try Sign out again: confirmed; the record is for the ORIGINAL session', await has(C, 'Signed out of IAOS.') && (blobs.get('iaos-write-receipts', rev.sessionKey('test', sidC)) || {}).text === rev.sessionRecordText('test', EPOCH, sidC, 'revoked') && log.filter((e) => e.fn === 'app-signout').length === firstHandle + 1);
 
     // ── P7 ── the session ends mid-call
     const ctx3 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -248,7 +262,7 @@ async function main() {
     await D.getByTestId('save').click();
     await until(async () => (await text(D, 'save-result')) === 'Save answered 200');
     // The session ends (expired cookie) and the cached token is past its own life: the next save must renew.
-    jar = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now() - readAuth.READ_SESSION_SECONDS * 1000 - 1000, jarSid()).token;
+    { const c = jarClaims(); jar = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now() - readAuth.ONE_LOGIN_SESSION_SECONDS * 1000 - 1000, c.sid, c.epoch, { aetag: c.aetag, setag: c.setag }).token; }
     await D.evaluate(async () => { const m = await import('/src/lib/app-write-session.ts'); m.clearAppWriteToken(); });
     await D.getByTestId('draft').fill('seller said yes to 142k -- not saved yet');
     const dWrites = log.filter((e) => e.tab === 'D' && e.fn === 'ghl-write').length;
@@ -264,6 +278,27 @@ async function main() {
     await until(async () => (await text(D, 'save-result')) === 'Save answered 200' && log.filter((e) => e.tab === 'D' && e.fn === 'ghl-write').length === dWrites + 1);
     check('P7 the operator\'s own save is then sent exactly once', log.filter((e) => e.tab === 'D' && e.fn === 'ghl-write').length === dWrites + 1 && applied[applied.length - 1].body === 'seller said yes to 142k -- not saved yet');
 
+    // ── P8 ── r6: a persistent 30-day cookie; closing the browser does not sign out
+    check('P8 every sign-in set a PERSISTENT cookie: Max-Age = 2592000 (30 days, the time left to the fixed expiry)',
+      setCookies.length >= 3 && setCookies.every((c) => /; Path=\/; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict$/.test(c)), setCookies.map((c) => c.replace(/=[^;]+;/, '=…;')));
+    const signInsBefore = setCookies.length;
+    await D.close(); await ctx3.close();                       // the browser is closed; the persisted cookie remains (jar)
+    const ctx4 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const E = await newTab(ctx4, 'E');
+    await until(() => shown(E, 'read-access-signed-in'));
+    check('P8 a NEW browser with only the persisted cookie is signed in with no sign-in step', await shown(E, 'read-access-signed-in') && setCookies.length === signInsBefore);
+    await E.getByTestId('draft').fill('saved after reopening the browser');
+    await E.getByTestId('save').click();
+    await until(async () => (await text(E, 'save-result')) === 'Save answered 200');
+    check('P8 ... and saves (its saving token minted silently from the session)', (await text(E, 'save-result')) === 'Save answered 200' && applied[applied.length - 1].body === 'saved after reopening the browser');
+
+    // ── P9 ── the 30-day expiry is beyond setTimeout's limit: no immediate re-check loop
+    const statusBefore = log.filter((e) => e.tab === 'E' && e.fn === 'app-read-session').length;
+    await new Promise((r) => setTimeout(r, 2500));
+    const statusAfter = log.filter((e) => e.tab === 'E' && e.fn === 'app-read-session').length;
+    check('P9 a signed-in page with a 30-day expiry made exactly ONE status request (its load) and none while idle (expiry timer capped: no overflow re-check)', statusAfter === statusBefore && statusAfter === 1, { statusBefore, statusAfter });
+
+    if (checks < 27) { failures += 1; console.error(`FAIL  check floor -- ${checks} checks ran, the floor is 27`); }
     console.log(`B15-29 one IAOS sign-in (real page): ${checks - failures}/${checks} checks passed`);
     await exit(failures ? 1 : 0);
   } catch (e) {

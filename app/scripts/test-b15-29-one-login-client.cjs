@@ -1,22 +1,31 @@
 /**
- * B15-29 (INV-137) one IAOS sign-in -- BROWSER saving module (src/lib/app-write-session.ts), offline, in Node.
+ * B15-29 (INV-137) one IAOS sign-in -- BROWSER saving module (src/lib/app-write-session.ts) with the REAL server
+ * handlers, offline, in Node, on a simulated clock. Design r5 (conditional-write authority) + r6 (fixed 30-day
+ * session, persistent cookie, no renewal, authorization seam).
  *
- * The module's own fetch calls are answered by the REAL server code in this process: app-write-token (the REAL
- * handler, with a cookie jar standing in for the HttpOnly cookie) and, for every save, the REAL per-save checks a
- * writer runs first -- requireAppWriter and sessionWriteRefusal (Variant S). The revocation store is the in-memory
- * fake Blob API. Time is a simulated clock (Date.now) shared by browser and server code, so a 45-minute seller call
- * runs in milliseconds. There is no BroadcastChannel, localStorage or sessionStorage in this process at all.
+ * The module's own fetch calls are answered by the REAL server code in this process: app-read-session (Google sign-in
+ * with a tokeninfo fixture, status + handle), app-write-token, app-signout, a reader (readAuthRefusal +
+ * sessionReadRefusal, as every GHL reader runs them) and, for every save, the REAL per-save checks a writer runs
+ * first (requireAppWriter + sessionWriteRefusal, Variant S). The store is the in-memory fake Lambda Blobs API.
+ * A "device" is a browser cookie jar that honours Set-Cookie Max-Age: closing the browser drops everything in memory
+ * (saving tokens) and keeps only cookies that were persistent and are not expired. Time is a simulated clock
+ * (Date.now) shared by browser and server code, so 30 days run in seconds. There is no BroadcastChannel,
+ * localStorage or sessionStorage in this process.
  *
- *   C1  flag off: exactly the previous behaviour (no token endpoint; "Sign in for application writes" refusal)
+ *   C0  no browser storage / channel
+ *   C1  flag off: exactly the previous behaviour
  *   C2  first save gets its token automatically; concurrent saves share one token request
- *   C3  45-minute call: every save sent exactly once with a live token; renewals silent and bounded
- *   C4  the read session expires mid-call: saving pauses (server pexp + token 401), the save is never re-sent,
- *       the refusal says the edits were not submitted; after a fresh sign-in the next save is sent once
- *   C5  Sign out in ANOTHER tab mid-call (server revocation only): the earlier token is refused (Variant S), the
- *       next save is refused before sending, nothing re-sent
- *   C6  store unavailable: token 503 -> paused before send; a write 503 -> returned once, never re-sent
- *   C7  Sign out on THIS page pauses at the click, discards an in-flight token, resumes only on sign-in
- *   C8  malformed token answers / network failure: refused before send, one token request per attempt
+ *   C3  45-minute call: every save sent exactly once; renewals silent and bounded
+ *   C4  one Google sign-in -> reads + writes across a simulated 29-day span (incl. a 45-minute call), the browser
+ *       closed every night, zero prompts, tokens renewed silently, never a second sign-in      [demonstration a + c]
+ *   C5  at 30 days + 1 s every read, write and mint is refused -> sign in again; no request on the way extended exp [b]
+ *   C6  closing the browser: the persisted cookie alone keeps the operator signed in                                 [c]
+ *   C7  two devices are independent: Sign out on device 1 leaves device 2 working                                   [d]
+ *   C8  cross-tab: tab A's confirmed Sign out refuses tab B's next read, write and mint; L2                          [e]
+ *   C9  expired / revoked / epoch-rotated / wrong-store / allowlist-removed credentials cannot authorize writes     [f]
+ *   C10 store unavailable: paused before send / returned once, never re-sent, never a sign-in prompt
+ *   C11 Sign out on THIS page pauses at the click; malformed token answers refused before send
+ *   C12 the session's last minutes: the token is capped at the session end and still used; never re-sent
  */
 'use strict';
 process.env.NODE_ENV = 'test';
@@ -43,11 +52,10 @@ Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
 }).outputText, filename);
 
 const ORIGIN = 'https://proof.example.invalid';
-const SITE = '07ca1f1a-60fd-4229-a076-528970957912';   // the PINNED Test revocation site (B15-29 H2)
+const SITE = '07ca1f1a-60fd-4229-a076-528970957912';   // the PINNED Test site
 const EPOCH = 'fixture-epoch-0001';
-const NF = { 'x-nf-site-id': SITE };                   // the platform's runtime site header
-const BLOB_TOKEN = 'fixture-blob-token-not-real';
-Object.assign(process.env, {
+const DAY = 24 * 3600_000;
+const ENV = {
   IAOS_ENV: 'test',
   IAOS_APP_READ_GOOGLE_CLIENT_ID: 'offline-read-client',
   IAOS_APP_READ_SESSION_SECRET: 'offline-read-fixture-only-not-a-real-secret',
@@ -57,9 +65,9 @@ Object.assign(process.env, {
   IAOS_APP_WRITE_SESSION_SECRET: 'offline-write-fixture-only-not-a-real-secret',
   IAOS_APP_WRITE_BRAD_EMAILS: 'brad@example.invalid',
   IAOS_APP_WRITE_ALLOWED_ORIGIN: ORIGIN,
-  IAOS_SESSION_REVOCATION_SITE_ID: SITE,
-  IAOS_SESSION_REVOCATION_TOKEN: BLOB_TOKEN,
-});
+  GHL_PRIVATE_API_KEY: 'offline-fixture',
+};
+Object.assign(process.env, ENV);
 delete process.env.IAOS_VOICE_SESSION_SECRET;
 
 // ---- simulated clock shared by browser and server code ----
@@ -67,9 +75,12 @@ const realNow = Date.now;
 let T = realNow.call(Date);
 Date.now = () => T;
 const advance = (ms) => { T += ms; };
+// deterministic PRNG (save minutes)
+let seed = 0x2915;
+const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
 
 // ---- no browser storage or channel exists here ----
-assert.equal(typeof globalThis.BroadcastChannel === 'undefined' || (delete globalThis.BroadcastChannel, true), true);
+if (typeof globalThis.BroadcastChannel !== 'undefined') delete globalThis.BroadcastChannel;
 const window = new EventTarget();
 global.window = window;
 const events = [];
@@ -79,67 +90,114 @@ const cfg = require(path.join(APP, 'shared/ghl-config.ts'));
 const readAuth = require(path.join(FUNCTIONS, 'lib/app-read-auth.ts'));
 const writeAuth = require(path.join(FUNCTIONS, 'lib/app-write-auth.ts'));
 const rev = require(path.join(FUNCTIONS, 'lib/session-revocation.ts'));
-const blobs = createFakeBlobs({ siteID: SITE, token: BLOB_TOKEN, clock: () => T });
-// The operator-provisioned authority anchor (fixture only; no code path writes it).
-const seedAnchor = () => blobs.put('iaos-write-receipts', 'session-revocation/_authority', JSON.stringify({ env: 'test', epoch: EPOCH, kind: 'iaos-session-revocation-authority', siteID: SITE, v: 1 }));
+cfg.getConfig('test').supplementalReadBudget = { enabled: cfg.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'offline-disabled', ceiling: 0 };
+const blobs = createFakeBlobs({ siteID: SITE, clock: () => T });
+const ANCHOR_KEY = 'session-revocation/_authority';
+const anchorText = (epoch = EPOCH) => JSON.stringify({ env: 'test', epoch, kind: 'iaos-session-revocation-authority', siteID: SITE, v: 1 });
+const seedAnchor = (epoch) => blobs.put('iaos-write-receipts', ANCHOR_KEY, anchorText(epoch));
 seedAnchor();
 const basePayload = () => ({ ...cfg.projectRuntimeConfig(cfg.getConfig('test'), 'test'), repairApproval: { active: false } });
 const setFlag = (on) => {
   cfg.getConfig('test').oneLogin = on ? cfg.ONE_LOGIN_ENABLED : cfg.ONE_LOGIN_DISABLED;
   cfg.setRuntimeConfig(on ? { ...basePayload(), oneLogin: { active: true } } : basePayload());
 };
-const tokenHandler = require(path.join(FUNCTIONS, 'app-write-token.ts')).handler;
+const H = {
+  session: require(path.join(FUNCTIONS, 'app-read-session.ts')).handler,
+  token: require(path.join(FUNCTIONS, 'app-write-token.ts')).handler,
+  signout: require(path.join(FUNCTIONS, 'app-signout.ts')).handler,
+};
 
-// ---- the browser's one IAOS session (cookie jar) ----
-let jar = null;
-const sid = (n) => Buffer.alloc(16, n).toString('base64url');
-const signIn = (n, at = T) => { jar = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), at, sid(n), EPOCH).token; };
+// ---- devices: a browser cookie jar honouring Max-Age ----
+const newDevice = (name) => ({ name, cookie: null, cookieExp: null, persistent: false });
+let D = newDevice('laptop');
+function storeCookie(dev, setCookie) {
+  if (!setCookie) return;
+  const m = /^__Host-iaos_read=([^;]*)(.*)$/.exec(setCookie);
+  if (!m) return;
+  const age = /;\s*Max-Age=(-?\d+)/i.exec(m[2]);
+  dev.cookie = m[1]; dev.persistent = !!age; dev.cookieExp = age ? T + Number(age[1]) * 1000 : null;
+  if (age && Number(age[1]) <= 0) dev.cookie = null;
+}
+const cookieOf = (dev) => (dev.cookie && (dev.cookieExp === null || T < dev.cookieExp) ? dev.cookie : null);
+/** Closing the browser: memory (the saving token) is gone; only a persistent, unexpired cookie survives. */
+function closeBrowser(dev, S) { if (!dev.persistent) dev.cookie = null; S.clearAppWriteToken(); }
+const sidOf = (dev) => JSON.parse(Buffer.from(dev.cookie.split('.')[1], 'base64url')).sid;
+const sessionEnd = (dev) => JSON.parse(Buffer.from(dev.cookie.split('.')[1], 'base64url')).exp * 1000;
 
 // ---- request log + routing ----
 let log = [];
+let googleSignIns = 0;
 let tokenMode = 'real';      // 'real' | 'network' | 'bad-lifetime' | 'no-token' | 'hold'
 let held = null;
 let writeStore = [];
+const lambda = (headers) => ({ origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'x-nf-site-id': SITE, ...headers });
 global.fetch = async (url, init = {}) => {
   const u = String(url);
-  if (u.startsWith('https://api.netlify.com/') || u.startsWith('https://signed.blobs.invalid/')) return blobs.fetch(url, init);
+  if (blobs.handles(u)) return blobs.fetch(url, init);
+  if (u.startsWith('https://oauth2.googleapis.com/tokeninfo')) {
+    return new Response(JSON.stringify({ iss: 'https://accounts.google.com', aud: 'offline-read-client', email: 'brad@example.invalid', email_verified: 'true', exp: String(Math.floor(T / 1000) + 600) }), { status: 200 });
+  }
   const headers = {};
   new Headers(init.headers || {}).forEach((v, k) => { headers[k] = v; });
-  if (u === '/.netlify/functions/app-write-token') {
-    const entry = { kind: 'token', at: T }; log.push(entry);
+  const dev = init.device || D;
+  const event = { httpMethod: String(init.method || 'GET').toUpperCase(), headers: lambda(headers), body: init.body || '', blobs: blobs.lambdaBlobs };
+  const c = cookieOf(dev); if (c) event.headers.cookie = `${readAuth.READ_COOKIE}=${c}`;
+  const fn = u.replace('/.netlify/functions/', '');
+  const entry = { kind: fn, dev: dev.name, at: T }; log.push(entry);
+  let res;
+  if (fn === 'app-read-session') { res = await H.session(event); storeCookie(dev, res.headers['Set-Cookie']); }
+  else if (fn === 'app-signout') res = await H.signout(event);
+  else if (fn === 'app-write-token') {
     if (tokenMode === 'network') throw new TypeError('Failed to fetch');
     if (tokenMode === 'bad-lifetime') return new Response(JSON.stringify({ token: 'x.y.z', expiresAt: 'x', expiresInSeconds: 3600 }), { status: 200 });
     if (tokenMode === 'no-token') return new Response(JSON.stringify({ expiresInSeconds: 900 }), { status: 200 });
     if (tokenMode === 'hold') await new Promise((r) => { held = r; });
-    const event = { httpMethod: init.method, headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin', ...NF, ...headers }, body: init.body || '' };
-    if (jar) event.headers.cookie = `${readAuth.READ_COOKIE}=${jar}`;
-    const res = await tokenHandler(event);
-    entry.status = res.statusCode;
-    return new Response(res.body, { status: res.statusCode, headers: res.headers });
-  }
-  if (u === '/.netlify/functions/ghl-write') {
-    const body = JSON.parse(init.body);
-    const entry = { kind: 'write', id: body.id, at: T, auth: headers.authorization }; log.push(entry);
-    const event = { httpMethod: 'POST', headers: { authorization: headers.authorization, origin: ORIGIN, ...NF } };
+    res = await H.token(event); entry.setCookie = res.headers['Set-Cookie'];
+  } else if (fn === 'ghl-write') {
+    const body = JSON.parse(init.body); entry.id = body.id; entry.auth = headers.authorization;
     try { writeAuth.requireAppWriter(event); } catch { entry.status = 401; return new Response(JSON.stringify({ error: 'Application write sign-in required' }), { status: 401 }); }
-    const refusal = await rev.sessionWriteRefusal(event);
-    if (refusal) { entry.status = refusal.statusCode; entry.reason = JSON.parse(refusal.body).reason; return new Response(refusal.body, { status: refusal.statusCode }); }
-    entry.status = 200; writeStore.push(body.id);
-    return new Response(JSON.stringify({ ok: true }), { status: 200 });
-  }
-  throw new Error('unexpected request ' + u);
+    res = await rev.sessionWriteRefusal(event);
+    if (res) entry.reason = JSON.parse(res.body).reason;
+    else { writeStore.push(body.id); res = { statusCode: 200, headers: {}, body: JSON.stringify({ ok: true }) }; }
+  } else if (fn === 'ghl-contact') {
+    res = readAuth.readAuthRefusal(event) || await rev.sessionReadRefusal(event) || { statusCode: 200, headers: {}, body: JSON.stringify({ contact: { id: 'fixture' } }) };
+    if (res.statusCode !== 200) entry.reason = JSON.parse(res.body).reason || JSON.parse(res.body).by;
+  } else throw new Error('unexpected request ' + u);
+  entry.status = res.statusCode;
+  return new Response(res.body, { status: res.statusCode, headers: Object.fromEntries(Object.entries(res.headers || {}).filter(([k]) => k !== 'Set-Cookie')) });
 };
 
-const S = require(path.join(APP, 'src/lib/app-write-session.ts'));
+const loadSavingModule = () => {
+  const p = path.join(APP, 'src/lib/app-write-session.ts');
+  delete require.cache[p];
+  return require(p);
+};
+const S = loadSavingModule();
+const R = require(path.join(APP, 'src/lib/read-session.ts'));
 let saveN = 0;
 /** One operator save: one click = one call. Returns 'sent:<status>' or 'refused:<message>'. Never retries. */
-async function save() {
+async function save(mod = S, device = D) {
   const id = `save-${++saveN}`;
-  try { const r = await S.appWriteFetch('/.netlify/functions/ghl-write', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }); return { id, out: `sent:${r.status}` }; }
-  catch (e) { return { id, out: e instanceof S.AppWriteSignInRequired ? `refused:${e.message}` : `error:${e.message}` }; }
+  // The module's own token request carries no device: the device in use is the one this save runs on.
+  const previous = D; D = device;
+  try { const r = await mod.appWriteFetch('/.netlify/functions/ghl-write', { method: 'POST', device, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }); return { id, out: `sent:${r.status}` }; }
+  catch (e) { return { id, out: e instanceof mod.AppWriteSignInRequired ? `refused:${e.message}` : `error:${e.message}` }; }
+  finally { D = previous; }
 }
-const writes = () => log.filter((e) => e.kind === 'write');
-const tokens = () => log.filter((e) => e.kind === 'token');
+const read = async (device = D) => (await R.readFetch('/.netlify/functions/ghl-contact', { device })).status;
+async function googleSignIn(device = D) {
+  googleSignIns += 1;
+  const r = await fetch('/.netlify/functions/app-read-session', { method: 'POST', device, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ googleIdToken: 'fixture-google-token' }) });
+  assert.equal(r.status, 200, 'fixture sign-in');
+}
+async function statusOf(device = D) { const r = await fetch('/.netlify/functions/app-read-session', { device }); return { status: r.status, body: await r.json() }; }
+async function signOutFrom(device = D) {
+  const st = await statusOf(device);
+  const r = await fetch('/.netlify/functions/app-signout', { method: 'POST', device, headers: { 'Content-Type': 'application/json', 'X-IAOS-Session': 'sign-out' }, body: JSON.stringify({ handle: st.body.handle }) });
+  return { status: r.status, body: await r.json() };
+}
+const writes = () => log.filter((e) => e.kind === 'ghl-write');
+const tokens = () => log.filter((e) => e.kind === 'app-write-token');
 const noDuplicateWrites = () => { const ids = writes().map((w) => w.id); assert.equal(new Set(ids).size, ids.length, 'a save was sent twice: ' + ids.join(',')); };
 
 let checks = 0, failures = 0;
@@ -148,17 +206,22 @@ async function check(name, fn) {
   try { await fn(); console.log('PASS  ' + name); }
   catch (err) { failures += 1; console.log('FAIL  ' + name + ' -- ' + (err && err.message)); }
 }
-const resetAll = () => { log = []; events.length = 0; blobs.reset(); seedAnchor(); tokenMode = 'real'; writeStore = []; S.clearAppWriteToken(); S.resumeAppWriteAccess(); };
+const resetAll = async ({ signIn = true } = {}) => {
+  log = []; events.length = 0; blobs.reset(); seedAnchor(); tokenMode = 'real'; writeStore = []; S.clearAppWriteToken(); S.resumeAppWriteAccess();
+  process.env.IAOS_APP_WRITE_BRAD_EMAILS = ENV.IAOS_APP_WRITE_BRAD_EMAILS;
+  D = newDevice('laptop'); googleSignIns = 0;
+  if (signIn) { await googleSignIn(); log = []; }
+};
 
 (async () => {
-  await check('C0 no BroadcastChannel, localStorage or sessionStorage exists in this process, and the saving module uses none', async () => {
+  await check('C0 no BroadcastChannel, localStorage or sessionStorage exists in this process, and the saving module / gate use none', async () => {
     for (const g of ['BroadcastChannel', 'localStorage', 'sessionStorage', 'indexedDB']) assert.equal(typeof globalThis[g], 'undefined', g);
     const src = fs.readFileSync(path.join(APP, 'src/lib/app-write-session.ts'), 'utf8') + fs.readFileSync(path.join(APP, 'src/components/OneLoginAccess.tsx'), 'utf8');
     assert.ok(!/BroadcastChannel|localStorage|sessionStorage|indexedDB/.test(src));
   });
 
   // ---------------------------------------------------------------- C1 off
-  setFlag(false); resetAll(); signIn(1);
+  setFlag(false); await resetAll({ signIn: false });
   await check('C1 flag OFF: no write session -> the previous refusal, ZERO requests (no token endpoint is ever called)', async () => {
     const r = await save();
     assert.equal(r.out, 'refused:Sign in for application writes before saving. Your edits have not been submitted.');
@@ -173,7 +236,7 @@ const resetAll = () => { log = []; events.length = 0; blobs.reset(); seedAnchor(
   });
 
   // ---------------------------------------------------------------- C2
-  setFlag(true); resetAll(); signIn(2);
+  setFlag(true); await resetAll();
   await check('C2 flag ON: the first save gets its token automatically from the session and is sent once', async () => {
     const r = await save();
     assert.equal(r.out, 'sent:200'); assert.equal(tokens().length, 1); assert.equal(writes().length, 1);
@@ -187,98 +250,175 @@ const resetAll = () => { log = []; events.length = 0; blobs.reset(); seedAnchor(
   });
 
   // ---------------------------------------------------------------- C3 long call
-  resetAll(); signIn(3);
-  await check('C3 a 45-minute seller call, a save every 30 s: all 90 sent exactly once with a live token; 4 silent renewals (t=0, 14, 28, 42 min); one identity notification', async () => {
+  await resetAll();
+  await check('C3 a 45-minute seller call, a save every 30 s: all 90 sent exactly once with a live token; 4 silent renewals (t=0, 14, 28, 42 min); one identity notification; never a cookie change', async () => {
     let notifications = 0; const off = S.subscribeAppWriteSession(() => { notifications += 1; });
-    const start = T; const outs = [];
+    const start = T; const outs = []; const cookie = D.cookie;
     for (let i = 0; i < 90; i += 1) { outs.push((await save()).out); advance(30_000); }
     off();
     assert.ok(outs.every((o) => o === 'sent:200'), JSON.stringify(outs.filter((o) => o !== 'sent:200')));
     assert.equal(writes().length, 90); noDuplicateWrites();
     assert.deepEqual(tokens().map((t) => (t.at - start) / 60_000), [0, 14, 28, 42]);
     assert.equal(notifications, 1, 'renewal under the same operator is silent');
-    assert.ok(writes().every((w) => w.status === 200));
+    assert.equal(D.cookie, cookie, 'renewing the saving token never touches the session');
+    assert.ok(tokens().every((t) => t.setCookie === undefined));
   });
 
-  // ---------------------------------------------------------------- C4 read session expires mid-call
-  resetAll();
-  await check('C4 the read session expires mid-call: the next save asks for a token, is refused (401) and is NOT sent; the read gate is signalled', async () => {
-    signIn(4, T - (8 * 3600_000 - 20 * 60_000));      // 20 minutes of session left
-    assert.equal((await save()).out, 'sent:200');       // token minted now; 15 minutes of token life
-    advance(12 * 60_000); assert.equal((await save()).out, 'sent:200');
-    advance(9 * 60_000);                                // read session ended 1 minute ago; the cached token is past its own life -> renewal is asked
-    const before = writes().length;
+  // ---------------------------------------------------------------- C4 29 days
+  await resetAll();
+  await check('C4 [a][c] ONE Google sign-in -> reads and saves across a simulated 29-day span (8-hour days, saves and reads at random minutes, a 45-minute call on day 3, the browser closed every night): zero refusals, zero sign-in prompts, tokens renewed silently, still exactly one sign-in', async () => {
+    const signInAt = T; const cookieAtSignIn = D.cookie; const outs = []; const reads = [];
+    for (let day = 0; day < 29; day += 1) {
+      T = signInAt + day * DAY + 3600_000;                           // the working day starts
+      const minutes = Array.from({ length: 12 }, () => Math.floor(rand() * 480)).sort((a, b) => a - b);
+      let last = 0;
+      for (const m of minutes) { advance((m - last) * 60_000); last = m; outs.push((await save()).out); reads.push(await read()); }
+      if (day === 3) { for (let i = 0; i < 45; i += 1) { outs.push((await save()).out); advance(60_000); } }
+      closeBrowser(D, S);                                            // night: the browser is closed
+    }
+    assert.ok(T - signInAt > 28 * DAY && T - signInAt < 29 * DAY, 'spanned 28-29 days');
+    assert.ok(outs.length >= 29 * 12 + 45);
+    assert.ok(outs.every((o) => o === 'sent:200'), JSON.stringify(outs.filter((o) => o !== 'sent:200').slice(0, 3)));
+    assert.ok(reads.every((s) => s === 200), JSON.stringify(reads.filter((s) => s !== 200).slice(0, 3)));
+    noDuplicateWrites();
+    assert.equal(googleSignIns, 1, 'one Google sign-in for the whole span');
+    assert.deepEqual(events, [], 'no sign-in prompt or outage signal ever fired');
+    assert.ok(tokens().length >= 29, `tokens renewed silently: ${tokens().length}`);
+    assert.ok(tokens().every((t) => t.status === 200));
+    assert.equal(D.cookie, cookieAtSignIn, 'the session cookie was never re-issued (no extension)');
+  });
+
+  // ---------------------------------------------------------------- C5 day 30
+  await check('C5 [b] the session ends at EXACTLY 30 days: 20 mints and saves in the last 10 minutes never extend it; at 30 days + 1 s every read, save and mint is refused and the read gate is signalled (sign in again)', async () => {
+    const endMs = sessionEnd(D);
+    T = endMs - 10 * 60_000;
+    for (let i = 0; i < 20; i += 1) { S.clearAppWriteToken(); assert.equal((await save()).out, 'sent:200'); advance(25_000); }
+    assert.equal(sessionEnd(D), endMs, 'exp unchanged after 20 mints (cookie never re-issued)');
+    T = endMs + 1000; events.length = 0;
+    D.cookieExp = null;        // even if a browser kept sending the cookie, the SERVER refuses it
+    const n = writes().length;
+    assert.equal(await read(), 401);
     const r = await save();
-    assert.equal(r.out, `refused:${S.SAVE_SIGN_IN_ENDED_MESSAGE}`);
-    assert.equal(writes().length, before, 'nothing sent'); noDuplicateWrites();
+    assert.ok(r.out === 'sent:401' || r.out.startsWith('refused:Saving paused: your IAOS sign-in has ended.'), r.out);
+    S.clearAppWriteToken();
+    const r2 = await save();
+    assert.ok(r2.out.startsWith('refused:Saving paused: your IAOS sign-in has ended.'), r2.out);
+    assert.ok(writes().length - n <= 1 && writes().slice(n).every((w) => w.status === 401));
     assert.equal(tokens()[tokens().length - 1].status, 401);
     assert.ok(events.includes('iaos-read-session-lost'));
+    assert.equal((await statusOf()).body.state, 'signed_out');
   });
-  await check('C4b a cached token minted 2 minutes before the read session ends is refused at the writer after the end (401 session_expired), returned once, not re-sent', async () => {
-    resetAll(); signIn(5, T - (8 * 3600_000 - 2 * 60_000));
-    assert.equal((await save()).out, 'sent:200');
-    advance(3 * 60_000);
-    const r = await save();
-    assert.equal(r.out, 'sent:401'); const last = writes()[writes().length - 1];
-    assert.equal(last.reason, 'session_expired'); noDuplicateWrites();
-    assert.ok(events.includes('iaos-read-session-lost'));
-    const n = writes().length;
-    const again = await save();
-    assert.ok(again.out.startsWith('refused:Saving paused: your IAOS sign-in has ended.') && again.out.endsWith('Your edits have not been submitted.'), again.out);
-    assert.equal(writes().length, n, 'nothing sent');
-  });
-  await check('C4c after the read gate clears the token (as OneLoginAccess does at expiry) the next save is refused BEFORE sending', async () => {
-    S.clearAppWriteToken(); const n = writes().length;
-    const r = await save(); assert.ok(r.out.startsWith('refused:Saving paused:'), r.out); assert.equal(writes().length, n);
-  });
-  await check('C4d after a fresh sign-in the operator\'s NEXT save is sent once; the earlier refused saves are never sent', async () => {
-    signIn(6); const r = await save();
-    assert.equal(r.out, 'sent:200'); noDuplicateWrites();
-    const refusedIds = writes().filter((w) => w.status !== 200).map((w) => w.id);
-    assert.ok(refusedIds.every((id) => !writeStore.includes(id)));
+  await check('C5b after signing in again (a NEW 30-day session) the operator\'s next save is sent once; nothing earlier was re-sent', async () => {
+    await googleSignIn(); S.clearAppWriteToken();
+    const r = await save(); assert.equal(r.out, 'sent:200'); noDuplicateWrites();
+    assert.equal(googleSignIns, 2);
+    assert.equal(sessionEnd(D) - T, 30 * DAY);
   });
 
-  // ---------------------------------------------------------------- C5 Sign out in another tab
-  resetAll(); signIn(7);
-  await check('C5 Sign out in ANOTHER tab mid-call (server revocation; no channel exists): the earlier token is refused at the writer (401 revoked), not re-sent; the next save is refused before sending', async () => {
+  // ---------------------------------------------------------------- C6 browser close
+  await resetAll();
+  await check('C6 [c] closing the browser does NOT sign out: the cookie is persistent (Max-Age = time left to the fixed 30-day expiry); a fresh browser with only that cookie reads and saves with no sign-in', async () => {
+    assert.ok(D.persistent && D.cookieExp - T === 30 * DAY, 'Max-Age = 30 days at sign-in');
     assert.equal((await save()).out, 'sent:200');
-    advance(60_000);
-    assert.equal((await rev.recordRevocation(sid(7), 'test', { event: { headers: NF } })).kind, 'verified');   // the other tab's confirmed Sign out
-    const r = await save();
+    closeBrowser(D, S); advance(10 * 3600_000);
+    const S2 = loadSavingModule();       // a new page load: fresh module state
+    assert.equal((await statusOf()).body.state, 'signed_in');
+    assert.equal(await read(), 200);
+    assert.equal((await save(S2)).out, 'sent:200');
+    assert.equal(googleSignIns, 1);
+  });
+
+  // ---------------------------------------------------------------- C7 two devices
+  await resetAll();
+  await check('C7 [d] two devices: each Google sign-in is its own session; Sign out on device 1 refuses device 1 and leaves device 2 reading and saving', async () => {
+    const laptop = D; const phone = newDevice('phone');
+    await googleSignIn(phone);
+    assert.notEqual(sidOf(laptop), sidOf(phone));
+    const Sphone = loadSavingModule();
+    assert.equal((await save(S, laptop)).out, 'sent:200'); assert.equal((await save(Sphone, phone)).out, 'sent:200');
+    const so = await signOutFrom(laptop); assert.equal(so.status, 200); assert.equal(so.body.state, 'revoked');
+    assert.equal(await read(laptop), 401);
+    const l = await save(S, laptop); assert.equal(l.out, 'sent:401');
+    assert.equal(await read(phone), 200);
+    assert.equal((await save(Sphone, phone)).out, 'sent:200');
+    Sphone.clearAppWriteToken(); assert.equal((await save(Sphone, phone)).out, 'sent:200', 'device 2 mints again');
+    assert.equal((await statusOf(phone)).body.state, 'signed_in');
+  });
+
+  // ---------------------------------------------------------------- C8 cross-tab
+  await resetAll();
+  await check('C8 [e] cross-tab within ONE session: tab B holds a token; tab A\'s confirmed Sign out -> tab B\'s next save is refused at the writer (401 revoked, not re-sent), its next mint and read are refused; no channel exists', async () => {
+    const tabB = loadSavingModule();
+    assert.equal((await save(tabB)).out, 'sent:200');
+    const so = await signOutFrom(D); assert.equal(so.status, 200);
+    const r = await save(tabB);
     assert.equal(r.out, 'sent:401'); assert.equal(writes()[writes().length - 1].reason, 'revoked');
     const n = writes().length;
-    const r2 = await save();
+    const r2 = await save(tabB);
     assert.ok(r2.out.startsWith('refused:Saving paused: your IAOS sign-in has ended.'), r2.out);
     assert.equal(writes().length, n); noDuplicateWrites();
     assert.equal(tokens()[tokens().length - 1].status, 401);
+    assert.equal(await read(), 401);
+    assert.equal((await statusOf()).body.state, 'revoked');
+  });
+  await check('C8b L2: a save whose writer check passed BEFORE the Sign out completes; the next one with the same token is refused', async () => {
+    await resetAll(); assert.equal((await save()).out, 'sent:200');
+    const event = { headers: lambda({ authorization: writes()[0].auth }), blobs: blobs.lambdaBlobs };
+    const admitted = await rev.sessionWriteRefusal(event);
+    assert.equal((await signOutFrom(D)).status, 200);
+    assert.equal(admitted, null);
+    assert.equal((await rev.sessionWriteRefusal(event)).statusCode, 401);
   });
 
-  // ---------------------------------------------------------------- C6 unavailable
-  resetAll(); signIn(8);
-  await check('C6 store unavailable at token issue -> 503 -> "Saving paused: IAOS can\'t confirm..." before sending; the unavailable event fires; NOT the sign-in event', async () => {
-    blobs.rule({ stage: 'blob', method: 'GET', status: 500 });
+  // ---------------------------------------------------------------- C9 credentials that must not authorize
+  for (const [label, prep, want] of [
+    ['an expired session (30 days + 1 s)', async () => { T += 30 * DAY + 1000; D.cookieExp = null; }, 'sign-in-ended'],
+    ['a revoked session', async () => { await signOutFrom(D); }, 'sign-in-ended'],
+    ['an epoch-rotated anchor (operator restore rotation)', async () => { seedAnchor('fixture-epoch-0002-rotated'); }, 'sign-in-ended'],
+    ['a wrong / empty store', async () => { blobs.reset(); seedAnchor(); }, 'sign-in-ended'],
+    ['a restored ACTIVE record with a rotated anchor', async () => { const k = rev.sessionKey('test', sidOf(D)); const snap = blobs.get('iaos-write-receipts', k); await signOutFrom(D); blobs.reset(); seedAnchor('fixture-epoch-0003-restored'); blobs.store.set(`${SITE}|site:iaos-write-receipts|${k}`, snap); }, 'sign-in-ended'],
+    ['an operator removed from the saving allowlist', async () => { process.env.IAOS_APP_WRITE_BRAD_EMAILS = 'someone-else@example.invalid'; }, 'refused'],
+  ]) {
+    await check(`C9 [f] ${label}: the held token AND a fresh mint cannot authorize a save; nothing is applied`, async () => {
+      await resetAll(); assert.equal((await save()).out, 'sent:200'); const applied = writeStore.length;
+      await prep();
+      const heldSave = await save();
+      assert.ok(heldSave.out === 'sent:401' || heldSave.out === 'sent:403' || heldSave.out.startsWith('refused:'), heldSave.out);
+      S.clearAppWriteToken();
+      const fresh = await save();
+      assert.ok(fresh.out.startsWith('refused:') || fresh.out === 'sent:401' || fresh.out === 'sent:403', fresh.out);
+      if (want === 'sign-in-ended') assert.ok(fresh.out.startsWith('refused:Saving paused: your IAOS sign-in has ended.'), fresh.out);
+      assert.equal(writeStore.length, applied, 'nothing applied'); noDuplicateWrites();
+      process.env.IAOS_APP_WRITE_BRAD_EMAILS = ENV.IAOS_APP_WRITE_BRAD_EMAILS;
+    });
+  }
+
+  // ---------------------------------------------------------------- C10 unavailable
+  await resetAll();
+  await check('C10 store unavailable at token issue -> 503 -> "Saving paused: IAOS can\'t confirm..." before sending; the unavailable event fires; NOT the sign-in event', async () => {
+    blobs.rule({ method: 'PUT', status: 500 });
     const r = await save();
     assert.equal(r.out, `refused:${S.SAVE_UNAVAILABLE_MESSAGE}`); assert.equal(writes().length, 0);
     assert.deepEqual(events, ['iaos-session-unavailable']);
   });
-  await check('C6b store unavailable at the WRITE check -> the 503 is returned once and never re-sent; the store recovers -> the next save is sent', async () => {
+  await check('C10b store unavailable at the WRITE check -> the 503 is returned once and never re-sent; the store recovers -> the next save is sent', async () => {
     events.length = 0; assert.equal((await save()).out, 'sent:200');
-    blobs.rule({ stage: 'blob', method: 'GET', status: 503 });
+    blobs.rule({ method: 'PUT', status: 503 });
     const r = await save(); assert.equal(r.out, 'sent:503');
     assert.ok(events.includes('iaos-session-unavailable') && !events.includes('iaos-read-session-lost'));
     const r2 = await save(); assert.equal(r2.out, 'sent:200'); noDuplicateWrites();
     assert.equal(writeStore.length, 2);
   });
 
-  // ---------------------------------------------------------------- C7 Sign out on this page
-  resetAll(); signIn(9);
-  await check('C7 Sign out on THIS page pauses saving at the click with ZERO requests', async () => {
+  // ---------------------------------------------------------------- C11 sign out on this page / malformed
+  await resetAll();
+  await check('C11 Sign out on THIS page pauses saving at the click with ZERO requests', async () => {
     assert.equal((await save()).out, 'sent:200');
     S.pauseAppWriteForSignOut(); log = [];
     const r = await save();
     assert.equal(r.out, `refused:${S.SAVE_SIGNED_OUT_MESSAGE}`); assert.equal(log.length, 0);
   });
-  await check('C7b a token request IN FLIGHT when Sign out is clicked: its token is never used and the save is never sent', async () => {
+  await check('C11b a token request IN FLIGHT when Sign out is clicked: its token is never used and the save is never sent', async () => {
     S.resumeAppWriteAccess(); S.clearAppWriteToken(); log = []; tokenMode = 'hold';
     const p = save();
     await new Promise((r) => setImmediate(r));
@@ -286,20 +426,35 @@ const resetAll = () => { log = []; events.length = 0; blobs.reset(); seedAnchor(
     const r = await p;
     assert.ok(r.out.startsWith('refused:Saving paused:'), r.out); assert.equal(writes().length, 0);
   });
-  await check('C7c only an explicit sign-in resumes; the next save is sent once', async () => {
+  await check('C11c only an explicit sign-in resumes; the next save is sent once', async () => {
     S.resumeAppWriteAccess(); const r = await save(); assert.equal(r.out, 'sent:200'); noDuplicateWrites();
   });
-
-  // ---------------------------------------------------------------- C8 malformed / network
   for (const [label, mode] of [['a network failure', 'network'], ['a lifetime above 900 s', 'bad-lifetime'], ['no token in the answer', 'no-token']]) {
-    await check(`C8 ${label} at token issue -> refused before sending, exactly one token request for this save, no retry`, async () => {
-      resetAll(); signIn(10); tokenMode = mode;
+    await check(`C11d ${label} at token issue -> refused before sending, exactly one token request for this save, no retry`, async () => {
+      await resetAll(); tokenMode = mode;
       const r = await save();
       assert.equal(r.out, `refused:${S.SAVE_UNAVAILABLE_MESSAGE}`); assert.equal(tokens().length, 1); assert.equal(writes().length, 0);
     });
   }
 
+  // ---------------------------------------------------------------- C12 last minutes
+  await resetAll();
+  await check('C12 the session\'s last 40 seconds: the minted token is capped at the session end (pexp = exp) and still used for that save; after the end it is refused at the writer (session_expired) and the save is not re-sent', async () => {
+    const endMs = sessionEnd(D);
+    T = endMs - 40_000;
+    assert.equal((await save()).out, 'sent:200');
+    const lastToken = writes()[writes().length - 1].auth.slice(7);
+    assert.equal(JSON.parse(Buffer.from(lastToken.split('.')[1], 'base64url')).pexp * 1000, endMs);
+    T = endMs + 5_000; D.cookieExp = null;
+    const n = writes().length; const r = await save();
+    assert.ok(r.out === 'sent:401' || r.out.startsWith('refused:Saving paused'), r.out);
+    if (r.out === 'sent:401') assert.equal(writes()[writes().length - 1].reason, 'session_expired');
+    assert.ok(writes().length - n <= 1); noDuplicateWrites();
+  });
+
   Date.now = realNow; setFlag(false);
+  const FLOOR = 28;
+  if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (client): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;
 })().catch((e) => { console.log('FAIL  suite aborted -- ' + (e && e.stack)); process.exitCode = 1; });
