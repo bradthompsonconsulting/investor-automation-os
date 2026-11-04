@@ -29,8 +29,14 @@ export function nextReminderDelay(expiresAt: number, now: number): number | null
   return next === undefined ? null : Math.min(REMINDER_MAX_TIMER_MS, next - now);
 }
 
-export function reminderMessage(days: ReminderCheckpoint): string {
-  return `Your IAOS session expires in ${days === 1 ? "1 day" : "5 days"}. Log in again now to keep your workflow uninterrupted.`;
+/**
+ * r4 (Bones): the wording never overstates the time left on a late visit. T1 -> "within 24 hours". T5 -> "within N
+ * days" with N = the whole days left, rounded UP (2..5): an upper bound that stays true while the dialog is open.
+ * Without remainingMs the checkpoint's own bound is used ("within 5 days" / "within 24 hours").
+ */
+export function reminderMessage(days: ReminderCheckpoint, remainingMs?: number): string {
+  const n = remainingMs === undefined || !Number.isFinite(remainingMs) ? 5 : Math.min(5, Math.max(2, Math.ceil(remainingMs / DAY_MS)));
+  return `Your IAOS session expires ${days === 1 ? "within 24 hours" : `within ${n} days`}. Log in again now to keep your workflow uninterrupted.`;
 }
 
 export function reminderKey(expiresAt: number, days: ReminderCheckpoint): string {

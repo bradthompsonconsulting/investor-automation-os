@@ -295,7 +295,7 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
       const due = dueReminder(status.expiresAt, Date.now());
       if (due !== null && !reminderDismissed(status.expiresAt, due)) {
         const at = status.expiresAt;
-        layer = <ReminderDialog key={`reminder-${due}`} text={reminderMessage(due)}
+        layer = <ReminderDialog key={`reminder-${due}`} text={reminderMessage(due, status.expiresAt - Date.now())}
           onLater={() => { dismissReminder(at, due); setTick((n) => n + 1); }}
           onLogIn={() => { dismissReminder(at, due); setRelogin(true); }} />;
       }

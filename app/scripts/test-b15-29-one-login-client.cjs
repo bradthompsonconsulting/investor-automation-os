@@ -553,8 +553,18 @@ const resetAll = async ({ signIn = true } = {}) => {
     const at = (t) => RM.dueReminder(exp, t);
     assert.deepEqual([at(exp - 30 * DAY), at(T5 - 1), at(T5), at(T5 + 1), at(T1 - 1), at(T1), at(exp - 1), at(exp), at(exp + 1000)],
       [null, null, 5, 5, 5, 1, 1, null, null]);
-    assert.equal(RM.reminderMessage(5), 'Your IAOS session expires in 5 days. Log in again now to keep your workflow uninterrupted.');
-    assert.equal(RM.reminderMessage(1), 'Your IAOS session expires in 1 day. Log in again now to keep your workflow uninterrupted.');
+    assert.equal(RM.reminderMessage(5), 'Your IAOS session expires within 5 days. Log in again now to keep your workflow uninterrupted.');
+    assert.equal(RM.reminderMessage(1), 'Your IAOS session expires within 24 hours. Log in again now to keep your workflow uninterrupted.');
+  });
+  await check('R2b r4 the wording never overstates the time left: across every instant from T5 to the expiry the stated bound ("within N days" / "within 24 hours") is >= the real time left and N is the tightest whole-day bound', async () => {
+    const exp = await serverExpiry();
+    for (let t = exp - 5 * DAY; t < exp; t += 47 * 60_000) {
+      const due = RM.dueReminder(exp, t); const msg = RM.reminderMessage(due, exp - t); const left = exp - t;
+      if (due === 1) { assert.match(msg, /expires within 24 hours\./); assert.ok(left <= DAY); continue; }
+      const n = Number(/expires within (\d) days\./.exec(msg)[1]);
+      assert.ok(left <= n * DAY && left > (n - 1) * DAY, `${msg} with ${left / DAY} days left`);
+    }
+    assert.equal(RM.reminderMessage(5, exp - (exp - DAY - 5000)), 'Your IAOS session expires within 2 days. Log in again now to keep your workflow uninterrupted.', 'a late visit just before T1');
   });
   await check('R3 the next-checkpoint timer lands exactly on T5 / T1 / the expiry and is capped at one day (never a setTimeout overflow)', async () => {
     const exp = await serverExpiry(); const T5 = exp - 5 * DAY, T1 = exp - DAY;
@@ -591,7 +601,7 @@ const resetAll = async ({ signIn = true } = {}) => {
   });
 
   Date.now = realNow; setFlag(false);
-  const FLOOR = 40;
+  const FLOOR = 41;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (client): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;

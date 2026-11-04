@@ -357,8 +357,8 @@ async function main() {
     const ctx3 = await newCtx();
     const X = await newTab(ctx3, 'X');
     await until(() => shown(X, 'session-reminder'));
-    check('L12 at T1 (expiry < 1 day away) the 1-day reminder is shown: "Your IAOS session expires in 1 day. …"',
-      ((await txt(X, 'session-reminder-text')) || '') === 'Your IAOS session expires in 1 day. Log in again now to keep your workflow uninterrupted.');
+    check('L12 at T1 (expiry < 1 day away) the 1-day reminder is shown: "Your IAOS session expires within 24 hours. …"',
+      ((await txt(X, 'session-reminder-text')) || '') === 'Your IAOS session expires within 24 hours. Log in again now to keep your workflow uninterrupted.');
     await X.getByTestId('session-reminder-later').click({ timeout: 8000 }).catch(() => {});
     await until(async () => !(await shown(X, 'session-reminder')));
     await X.getByTestId('draft').click({ timeout: 8000 }).catch(() => {});
@@ -407,8 +407,8 @@ async function main() {
     await sleep(300);
     check('L12 no reminder before T5 (expiry 5 days + 4 s away)', Date.now() < T5 && !(await shown(R, 'session-reminder')), { msToT5: T5 - Date.now() });
     await until(() => shown(R, 'session-reminder'), 10000);
-    check('L12 at T5 the 5-day reminder appears with no reload (timer to the checkpoint): "Your IAOS session expires in 5 days. …"; Remind Me Later + Log In Again',
-      Date.now() >= T5 && ((await txt(R, 'session-reminder-text')) || '') === 'Your IAOS session expires in 5 days. Log in again now to keep your workflow uninterrupted.' &&
+    check('L12 at T5 the 5-day reminder appears with no reload (timer to the checkpoint): "Your IAOS session expires within 5 days. …"; Remind Me Later + Log In Again',
+      Date.now() >= T5 && ((await txt(R, 'session-reminder-text')) || '') === 'Your IAOS session expires within 5 days. Log in again now to keep your workflow uninterrupted.' &&
       await shown(R, 'session-reminder-later') && await shown(R, 'session-reminder-log-in') && (await R.getByTestId('session-reminder').getAttribute('aria-modal', { timeout: 3000 }).catch(() => null)) === 'true' && await rootInert(R));
     await shot(R, 'reminder-5-day-1440x900.png');
     const before = log.length; const cookiesBefore = setCookies.length; const statusBeforeLater = await serverStatus();
@@ -443,7 +443,7 @@ async function main() {
     await ctx5.addInitScript(() => { Storage.prototype.setItem = function () { throw new DOMException('fixture', 'QuotaExceededError'); }; Storage.prototype.getItem = function () { throw new DOMException('fixture', 'SecurityError'); }; });
     const L = await newTab(ctx5, 'L');
     await until(() => shown(L, 'session-reminder'));
-    check('L12 only the latest due checkpoint: between T5 and T1 the reminder says 5 days', Date.now() < T1 && ((await txt(L, 'session-reminder-text')) || '').includes('expires in 5 days.'));
+    check('L12 only the latest due checkpoint, and a late visit never overstates: between T5 and T1, 1 day + 5 s left, the 5-day reminder says "within 2 days"', Date.now() < T1 && ((await txt(L, 'session-reminder-text')) || '').includes('expires within 2 days.'));
     await L.getByTestId('session-reminder-later').click({ timeout: 8000 }).catch(() => {});
     await L.getByTestId('nav-pipeline').click({ timeout: 8000 }).catch(() => {});
     await sleep(300);
@@ -452,7 +452,7 @@ async function main() {
     await L.getByTestId('draft').fill('typed before the 1-day reminder', { timeout: 8000 }).catch(() => {});
     await until(() => shown(L, 'session-reminder'), 10000);
     check('L12 at T1 the 1-day reminder appears (a different checkpoint is not covered by the 5-day dismissal)',
-      Date.now() >= T1 && ((await txt(L, 'session-reminder-text')) || '') === 'Your IAOS session expires in 1 day. Log in again now to keep your workflow uninterrupted.');
+      Date.now() >= T1 && ((await txt(L, 'session-reminder-text')) || '') === 'Your IAOS session expires within 24 hours. Log in again now to keep your workflow uninterrupted.');
     check('L15 the reminder is modal: the app behind it is inert and keeps its draft', await rootInert(L) && (await draftValue(L)) === 'typed before the 1-day reminder');
     await L.getByTestId('session-reminder-log-in').click({ timeout: 8000 }).catch(() => {});
     await until(() => shown(L, 'one-login-relogin'));
