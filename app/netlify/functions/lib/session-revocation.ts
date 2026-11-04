@@ -6,15 +6,26 @@
  * null before any I/O, so callers behave exactly as before.
  *
  * TRANSPORT. The platform's own per-invocation Lambda context: `connectLambda(event)` then
- * `getStore({ name: "iaos-write-receipts", fetch: <recorder> })` -- the same path as the claimWrite receipts, the
- * call-log / Current Offer barriers and the supplemental-read budget. No API token and no site-id / token
- * environment variables exist for this module (r5 removed IAOS_SESSION_REVOCATION_SITE_ID / _TOKEN).
+ * `getStore({ name: <store>, fetch: <recorder> })` -- the same path as the claimWrite receipts, the call-log /
+ * Current Offer barriers and the supplemental-read budget. No API token and no site-id / token environment variables
+ * exist for this module (r5 removed IAOS_SESSION_REVOCATION_SITE_ID / _TOKEN).
+ *
+ * TWO STORES (r5 of this module, Bones HOLD on 3311102 -- restore containment by STRUCTURAL EXCLUSION):
+ *   session records  REVOCATION_STORE        "iaos-write-receipts" (restorable, like every receipt in it)
+ *   authority anchor SESSION_AUTHORITY_STORE, key `authority` (declared below). NEVER restored (runbook section 6):
+ *                    a restore of the session store cannot write, revert or reopen the anchor. Anchor bytes left at
+ *                    the r4 key in the session store are IGNORED -- no code path names that key any more. Loss or
+ *                    suspected compromise of the authority store = provision a NEW anchor with a new never-reused
+ *                    epoch; until then the anchor is absent -> every sign-in unavailable, every check refused.
+ *   Every anchor request goes through `onceAuthority`; every session request through `once`. Neither can address the
+ *   other's store.
  *
  * AUTHORITY COMES ONLY FROM CONDITIONAL WRITES EVALUATED AT THE STORE'S ORIGIN. A read is never used to authorize.
  * Records (canonical JSON, keys sorted, no timestamps, so identical content is byte-identical):
  *   session record   session/<sha256(env:sid)>
  *                    {"env","epoch","kind":"iaos-session","sidDigest","state":"active"|"revoked","v":1}
- *   authority anchor the one anchor key declared below (the only such literal in the code base)
+ *   authority anchor the one anchor key declared below, in the separate authority store (the only such literals in
+ *                    the code base)
  *                    {"env","epoch","kind":"iaos-session-revocation-authority","siteID","state":"open"|"closed","v":1}
  *                    r4 (H2 restore containment): "state" is REQUIRED -- an anchor without it is invalid (sign-in
  *                    unavailable). "closed" refuses every sign-in (503) and, because its bytes differ from the open
@@ -68,6 +79,11 @@ import { authorize } from "./authorization";
  * import graph (test-supplemental-read-budget's inventory).
  */
 export const REVOCATION_STORE = "iaos-write-receipts";
+/**
+ * The DEDICATED authority store: holds ONLY the anchor, is never in any restore scope, and is never named by any other
+ * module. Same Lambda platform context as REVOCATION_STORE (no new credential).
+ */
+export const SESSION_AUTHORITY_STORE = "iaos-session-authority";
 /** Deterministic JSON, object keys sorted at every level (the same rule as blob-authority's canonicalJson). */
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -101,8 +117,11 @@ export const PINNED_REVOCATION_SITES: Readonly<Record<Deployment, string>> = Obj
 });
 /** The platform's runtime site id header (the one @netlify/blobs connectLambda reads). */
 export const RUNTIME_SITE_HEADER = "x-nf-site-id";
-/** The operator-provisioned authority anchor. Never created, changed or deleted by code (see the header). */
-const AUTHORITY_KEY = "session-revocation/_authority";
+/**
+ * The operator-provisioned authority anchor's key in SESSION_AUTHORITY_STORE. Never created, changed or deleted by
+ * code (see the header). Only ever addressed through `onceAuthority`.
+ */
+const AUTHORITY_KEY = "authority";
 const AUTHORITY_KIND = "iaos-session-revocation-authority";
 
 export type RevocationSetup = { kind: "ready"; deployment: Deployment; siteID: string } | { kind: "not_configured"; reason: string };
@@ -163,7 +182,7 @@ type Store = ReturnType<typeof getStore>;
  * 200 / 404 / 412 reach the SDK unchanged; any other status or a throw is answered with a synthetic 400 so the SDK
  * neither sleeps nor retries. The caller decides ONLY from the returned record.
  */
-async function once(ctx: Ctx, op: (store: Store) => Promise<unknown>): Promise<Recorded> {
+async function attempt(ctx: Ctx, storeName: typeof REVOCATION_STORE | typeof SESSION_AUTHORITY_STORE, op: (store: Store) => Promise<unknown>): Promise<Recorded> {
   const attempts: { status: number | null; etag: string | null; threw: boolean }[] = [];
   let extra = false;
   let notStarted = false;
@@ -191,7 +210,7 @@ async function once(ctx: Ctx, op: (store: Store) => Promise<unknown>): Promise<R
   let cutoffTimer: ReturnType<typeof setTimeout> | undefined;
   const cutoff = new Promise<typeof late>((resolve) => { cutoffTimer = setTimeout(() => { ac.abort(); resolve(late); }, Math.max(0, ctx.deadline - ctx.now())); });
   const work = (async () => {
-    try { data = await op(getStore({ name: REVOCATION_STORE, fetch: recorder as typeof fetch })); } catch { sdkThrew = true; }
+    try { data = await op(getStore({ name: storeName, fetch: recorder as typeof fetch })); } catch { sdkThrew = true; }
     return null;
   })();
   let out: unknown;
@@ -205,11 +224,15 @@ async function once(ctx: Ctx, op: (store: Store) => Promise<unknown>): Promise<R
   if (ctx.now() > ctx.deadline) return none("deadline");
   return { status: attempts[0].status, etag: attempts[0].etag, data: sdkThrew ? undefined : data, why: null };
 }
+/** ONE request to the (restorable) SESSION store. Never used for the anchor. */
+function once(ctx: Ctx, op: (store: Store) => Promise<unknown>): Promise<Recorded> { return attempt(ctx, REVOCATION_STORE, op); }
+/** ONE request to the dedicated, never-restored AUTHORITY store: the only path to the anchor. */
+function onceAuthority(ctx: Ctx, op: (store: Store) => Promise<unknown>): Promise<Recorded> { return attempt(ctx, SESSION_AUTHORITY_STORE, op); }
 
 /** An If-Match re-write of the IDENTICAL canonical anchor bytes: the only anchor write in this module. */
 function confirmAnchor(ctx: Ctx, epoch: string, etag: string): Promise<Recorded> {
   if (!isCanonicalEtag(etag)) return Promise.resolve({ status: null, etag: null, data: undefined, why: "etag" });
-  return once(ctx, (s) => s.set(AUTHORITY_KEY, anchorBytes(ctx.deployment, epoch), { onlyIfMatch: etag }));
+  return onceAuthority(ctx, (s) => s.set(AUTHORITY_KEY, anchorBytes(ctx.deployment, epoch), { onlyIfMatch: etag }));
 }
 
 type OpOpts = { env?: NodeJS.ProcessEnv; fetch?: typeof fetch; now?: Clock; budgetMs?: number; event?: any };
@@ -240,8 +263,9 @@ export async function beginSession(sid: string, deployment: string, opts: OpOpts
   if (!isCanonicalSid(sid) || (deployment !== "test" && deployment !== "production")) return { kind: "unavailable", reason: "refused_input" };
   const ctx = context(opts.env ?? process.env, deployment, opts.budgetMs ?? SIGNIN_BUDGET_MS, opts);
   if ("refused" in ctx) return { kind: "unavailable", reason: ctx.refused };
-  // 1. Read the anchor (any consistency). The read only FINDS the candidate; it authorizes nothing.
-  const read = await once(ctx, (s) => s.getWithMetadata(AUTHORITY_KEY, { type: "text" }));
+  // 1. Read the anchor (any consistency) from the AUTHORITY store. The read only FINDS the candidate; it authorizes
+  // nothing. An absent anchor (authority store lost / never provisioned) is fail closed: no session.
+  const read = await onceAuthority(ctx, (s) => s.getWithMetadata(AUTHORITY_KEY, { type: "text" }));
   if (read.why) return { kind: "unavailable", reason: read.why };
   if (read.status === 404) return { kind: "unavailable", reason: "authority_absent" };
   const text = (read.data as { data?: unknown } | null)?.data;
@@ -279,7 +303,8 @@ export async function checkSession(binding: SessionBinding, deployment: string, 
     confirmAnchor(ctx, epoch, aetag),
   ]);
   if (ctx.now() > ctx.deadline) return { kind: "unavailable", reason: "deadline" };
-  // A precondition failure at origin is definitive: the bytes this session was bound to are no longer current there.
+  // A precondition failure at origin is definitive: the bytes this session was bound to are no longer current there
+  // (signed out, anchor closed / rotated, or the authority store's anchor absent).
   if (session.status === 412 || anchor.status === 412) return { kind: "revoked" };
   if (session.status === 200 && anchor.status === 200) return { kind: "active" };
   return { kind: "unavailable", reason: session.why ?? anchor.why ?? `status_${session.status}_${anchor.status}` };

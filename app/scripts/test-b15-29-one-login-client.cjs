@@ -99,9 +99,11 @@ const writeAuth = require(path.join(FUNCTIONS, 'lib/app-write-auth.ts'));
 const rev = require(path.join(FUNCTIONS, 'lib/session-revocation.ts'));
 cfg.getConfig('test').supplementalReadBudget = { enabled: cfg.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'offline-disabled', ceiling: 0 };
 const blobs = createFakeBlobs({ siteID: SITE, clock: () => T });
-const ANCHOR_KEY = 'session-revocation/_authority';
+// Bones HOLD on 3311102: the anchor lives in its own never-restored store (session-revocation.ts SESSION_AUTHORITY_STORE).
+const ANCHOR_STORE = 'iaos-session-authority';
+const ANCHOR_KEY = 'authority';
 const anchorText = (epoch = EPOCH) => JSON.stringify({ env: 'test', epoch, kind: 'iaos-session-revocation-authority', siteID: SITE, state: 'open', v: 1 });
-const seedAnchor = (epoch) => blobs.put('iaos-write-receipts', ANCHOR_KEY, anchorText(epoch));
+const seedAnchor = (epoch) => blobs.put(ANCHOR_STORE, ANCHOR_KEY, anchorText(epoch));
 seedAnchor();
 const basePayload = () => ({ ...cfg.projectRuntimeConfig(cfg.getConfig('test'), 'test'), repairApproval: { active: false } });
 const setFlag = (on) => {

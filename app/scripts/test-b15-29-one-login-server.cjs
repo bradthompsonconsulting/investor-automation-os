@@ -77,15 +77,26 @@ setEnv('test');
 // ---- outbound: the fake Blob edge API; Google tokeninfo fixture; everything else is recorded and refused ----
 const blobs = createFakeBlobs({ siteID: SITE });
 let other = [];
-const ANCHOR_KEY = 'session-revocation/_authority';
-// Every request for the anchor key across the WHOLE run (method + preconditions), for the runtime no-mutation proof.
+// Bones HOLD on 3311102: the anchor lives in its OWN never-restored store; the session records stay in the receipts
+// store. OLD_ANCHOR_KEY is the r4 location (receipts store) -- code must never name it again.
+const ASTORE = 'iaos-session-authority';
+const SSTORE = 'iaos-write-receipts';
+const ANCHOR_KEY = 'authority';
+const OLD_ANCHOR_KEY = 'session-revocation/_authority';
+// Every request for the anchor across the WHOLE run (method + preconditions), for the runtime no-mutation proof; and
+// every Blob request with its store name, for the runtime store-separation proof.
 const anchorRequests = [];
+const storeOps = [];
 global.fetch = async (url, init = {}) => {
   const u = String(url);
   if (blobs.handles(u)) {
-    if (decodeURIComponent(u).endsWith('/' + ANCHOR_KEY)) {
+    const [, storeName = '', ...rest] = new URL(u).pathname.slice(1).split('/').map(decodeURIComponent);
+    const key = rest.join('/');
+    const method = String(init.method || 'GET').toUpperCase();
+    storeOps.push({ store: storeName.replace(/^site:/, ''), key, method });
+    if (storeName === 'site:' + ASTORE && key === ANCHOR_KEY) {
       const h = {}; new Headers(init.headers || {}).forEach((v, k) => { h[k.toLowerCase()] = v; });
-      anchorRequests.push({ method: String(init.method || 'GET').toUpperCase(), ifMatch: h['if-match'] || null, ifNoneMatch: h['if-none-match'] || null, body: init.body });
+      anchorRequests.push({ method, ifMatch: h['if-match'] || null, ifNoneMatch: h['if-none-match'] || null, body: init.body });
     }
     return blobs.fetch(url, init);
   }
@@ -126,8 +137,14 @@ const EPOCH2 = 'fixture-epoch-0002-rotated';
 // r4: the anchor carries the REQUIRED state ("open" | "closed"); state: null omits it (the r3 shape, now invalid).
 const anchorText = ({ env = 'test', siteID = SITE, epoch = EPOCH, v = 1, kind = 'iaos-session-revocation-authority', state = 'open', extra = {} } = {}) =>
   JSON.stringify(Object.fromEntries(Object.entries({ env, epoch, kind, siteID, ...(state === null ? {} : { state }), v, ...extra }).sort()));
-const seedAnchor = (o) => blobs.put('iaos-write-receipts', ANCHOR_KEY, typeof o === 'string' ? o : anchorText(o));
-const dropAnchor = () => blobs.remove('iaos-write-receipts', ANCHOR_KEY);
+const seedAnchor = (o) => blobs.put(ASTORE, ANCHOR_KEY, typeof o === 'string' ? o : anchorText(o));
+const dropAnchor = () => blobs.remove(ASTORE, ANCHOR_KEY);
+/** The anchor requests of blobs.log (authority store + key only). */
+const areqs = () => blobs.log.filter((e) => e.storeName === 'site:' + ASTORE && e.key === ANCHOR_KEY).map((e) => `${e.method}${e.ifMatch ? ' if-match' : ''}${e.ifNoneMatch ? ' if-none-match' : ''}`);
+/** Simulated backup / restore of the SESSION store only (the authority store is never in scope). */
+const SPFX = `${SITE}|site:${SSTORE}|`;
+const snapshotSessionStore = () => new Map([...blobs.store.entries()].filter(([k]) => k.startsWith(SPFX)).map(([k, v]) => [k, { ...v }]));
+const restoreSessionStore = (snap) => { for (const k of [...blobs.store.keys()]) if (k.startsWith(SPFX)) blobs.store.delete(k); for (const [k, v] of snap) blobs.store.set(k, { ...v }); };
 const NF = { headers: { 'x-nf-site-id': SITE }, blobs: blobs.lambdaBlobs };   // a minimal Lambda event
 const cookieHeader = (token) => `${readAuth.READ_COOKIE}=${token}`;
 function ev({ method = 'POST', cookie = null, headers = {}, body = '', bearer = null, multi, query, noBlobs = false } = {}) {
@@ -298,6 +315,8 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
   reset(); flag(true);
   await check('A1 the store name equals blob-authority AUTHORITY_STORE (existing store; no new store); records are canonical, timestamp-free, byte-identical for identical inputs', async () => {
     assert.equal(rev.REVOCATION_STORE, blobAuthority.AUTHORITY_STORE);
+    // Bones HOLD on 3311102: the anchor is in a DIFFERENT, dedicated store (never restored with the session store).
+    assert.equal(rev.SESSION_AUTHORITY_STORE, ASTORE); assert.notEqual(rev.SESSION_AUTHORITY_STORE, rev.REVOCATION_STORE);
     const a = rev.sessionRecordText('test', EPOCH, sid(2), 'active');
     assert.equal(a, rev.sessionRecordText('test', EPOCH, sid(2), 'active'));
     const o = JSON.parse(a);
@@ -309,22 +328,22 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal(rev.sessionRecordText('test', EPOCH, sid(2), 'revoked'), a.replace('"state":"active"', '"state":"revoked"'));
   });
   await check('A2 sign-in binding: GET anchor, PUT anchor If-Match <read etag> with the IDENTICAL bytes, PUT session If-None-Match; etags from the recorded responses; the anchor bytes are unchanged', async () => {
-    reset(); const before = blobs.get('iaos-write-receipts', ANCHOR_KEY);
+    reset(); const before = blobs.get(ASTORE, ANCHOR_KEY);
     const g = await rev.beginSession(sid(2), 'test', { event: NF });
     assert.equal(g.kind, 'issued'); assert.equal(g.epoch, EPOCH);
-    assert.deepEqual(reqs(ANCHOR_KEY), ['GET', 'PUT if-match']);
+    assert.deepEqual(areqs(), ['GET', 'PUT if-match']);
     assert.deepEqual(reqs(sKey(sid(2))), ['PUT if-none-match']);
     const anchorPut = blobs.log.find((e) => e.key === ANCHOR_KEY && e.method === 'PUT');
     assert.equal(anchorPut.body, before.text, 'identical bytes'); assert.equal(anchorPut.ifMatch, before.etag);
     assert.equal(g.aetag, before.etag); assert.equal(g.setag, blobs.get('iaos-write-receipts', sKey(sid(2))).etag);
-    assert.deepEqual(blobs.get('iaos-write-receipts', ANCHOR_KEY), before);
+    assert.deepEqual(blobs.get(ASTORE, ANCHOR_KEY), before);
     assert.equal(blobs.get('iaos-write-receipts', sKey(sid(2))).text, rev.sessionRecordText('test', EPOCH, sid(2), 'active'));
   });
   let B;
   await check('A3 check: exactly two PUTs (session + anchor), both If-Match, identical bytes, ZERO reads; both 200 -> active', async () => {
     reset(); B = await bind(3); blobs.log.length = 0;
     assert.deepEqual(await rev.checkSession(B, 'test', { event: NF }), { kind: 'active' });
-    assert.deepEqual(reqs(sKey(B.sid)), ['PUT if-match']); assert.deepEqual(reqs(ANCHOR_KEY), ['PUT if-match']);
+    assert.deepEqual(reqs(sKey(B.sid)), ['PUT if-match']); assert.deepEqual(areqs(), ['PUT if-match']);
     assert.equal(blobs.log.filter((e) => e.method === 'GET').length, 0, 'a read never authorizes');
     assert.equal(blobs.log.length, 2); assert.equal(blobs.mutations.length, 1, 'only the sign-in create mutated anything');
   });
@@ -415,11 +434,11 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     ['anchor read stalled body', () => blobs.rule({ method: 'GET', key: ANCHOR_KEY, stallBody: true }), null],
   ]) {
     await check(`A14 sign-in binding with ${label} -> unavailable, no session; the anchor is never created or changed`, async () => {
-      reset(); prep(); const before = blobs.get('iaos-write-receipts', ANCHOR_KEY);
+      reset(); prep(); const before = blobs.get(ASTORE, ANCHOR_KEY);
       const g = await rev.beginSession(sid(6), 'test', { event: NF, budgetMs: 1500 });
       assert.equal(g.kind, 'unavailable', JSON.stringify(g)); if (reason) assert.equal(g.reason, reason);
       assert.deepEqual(blobs.mutations.filter((m) => m.key === ANCHOR_KEY), []);
-      if (before) assert.ok(blobs.get('iaos-write-receipts', ANCHOR_KEY), 'anchor kept');
+      if (before) assert.ok(blobs.get(ASTORE, ANCHOR_KEY), 'anchor kept');
     });
   }
   // sign-out (module level)
@@ -429,7 +448,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.deepEqual(reqs(sKey(b.sid)), ['PUT', 'PUT if-match']);
     const [w1, w2] = blobs.log.filter((e) => e.key === sKey(b.sid));
     assert.equal(w1.body, rev.sessionRecordText('test', b.epoch, b.sid, 'revoked')); assert.equal(w2.body, w1.body);
-    assert.equal(reqs(ANCHOR_KEY).length, 0, 'sign-out never touches the anchor');
+    assert.equal(areqs().length, 0, 'sign-out never touches the anchor');
     assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'revoked' });
   });
   await check('A16 sign-out is idempotent: a repeat rewrites the revoked bytes -> verified, record unchanged', async () => {
@@ -605,7 +624,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal(ca.exp - ca.iat, 30 * DAY);
     assert.ok(readAuth.isCanonicalSid(ca.sid) && readAuth.isCanonicalSid(cb.sid) && ca.sid !== cb.sid);
     assert.equal(ca.epoch, EPOCH);
-    assert.equal(ca.aetag, blobs.get('iaos-write-receipts', ANCHOR_KEY).etag); assert.equal(ca.setag, blobs.get('iaos-write-receipts', sKey(ca.sid)).etag);
+    assert.equal(ca.aetag, blobs.get(ASTORE, ANCHOR_KEY).etag); assert.equal(ca.setag, blobs.get('iaos-write-receipts', sKey(ca.sid)).etag);
     assert.deepEqual(Object.keys(ca).sort(), ['aetag', 'aud', 'env', 'epoch', 'exp', 'iat', 'iss', 'setag', 'sid', 'sub']);
     assert.equal(Date.parse(parse(a).expiresAt), ca.exp * 1000);
   });
@@ -751,7 +770,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal(parse(await status(b.cookie)).state, 'revoked');
   });
   await check('X2 the same T1 through a REAL writer (ghl-write): 401 revoked, zero GHL requests', async () => {
-    const t1 = tokenFor({ sid: sid(24), epoch: EPOCH, aetag: blobs.get('iaos-write-receipts', ANCHOR_KEY).etag, setag: '"c-unused"', exp: Math.floor(Date.now() / 1000) + 3600 });
+    const t1 = tokenFor({ sid: sid(24), epoch: EPOCH, aetag: blobs.get(ASTORE, ANCHOR_KEY).etag, setag: '"c-unused"', exp: Math.floor(Date.now() / 1000) + 3600 });
     other = [];
     const r = await load('ghl-write')(ev({ bearer: t1, body: JSON.stringify({ operation: 'note.create', targetId: 'c1', requestId: 'r1', args: { body: 'x' } }) }));
     assert.equal(r.statusCode, 401); assert.equal(parse(r).reason, 'revoked'); assert.equal(other.length, 0);
@@ -934,8 +953,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     const hits = files.filter((f) => /process\.env\.IAOS_SESSION_REVOCATION|env\.IAOS_SESSION_REVOCATION/.test(fs.readFileSync(f, 'utf8')));
     assert.deepEqual(hits, []);
     const s = fs.readFileSync(path.join(FUNCTIONS, 'lib/session-revocation.ts'), 'utf8');
-    assert.match(s, /getStore\(\{ name: REVOCATION_STORE, fetch: recorder as typeof fetch \}\)/);
-    assert.ok(!/siteID:\s*ctx|token:\s*ctx/.test(s));
+    assert.match(s, /getStore\(\{ name: storeName, fetch: recorder as typeof fetch \}\)/);    assert.ok(!/siteID:\s*ctx|token:\s*ctx/.test(s));
     assert.deepEqual(rev.revocationSetup({ IAOS_ENV: 'test' }), { kind: 'ready', deployment: 'test', siteID: SITE });
     setEnv('test', { IAOS_SESSION_REVOCATION_SITE_ID: PROD_SITE, IAOS_SESSION_REVOCATION_TOKEN: 'x' });
     const b = await bind(50); assert.equal((await rev.checkSession(b, 'test', { event: NF })).kind, 'active');
@@ -1021,7 +1039,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     const wr = await rev.sessionWriteRefusal(ev({ bearer: t })); assert.equal(wr.statusCode, 401); assert.equal(parse(wr).reason, 'revoked');
     const mt = await mint(tokenEv(b.cookie)); assert.equal(mt.statusCode, 401); assert.equal(parse(mt).reason, 'revoked'); noCredentialLeak(mt);
     assert.equal(parse(await status(b.cookie)).state, 'revoked');
-    assert.equal(blobs.get('iaos-write-receipts', ANCHOR_KEY).text, anchorText({ epoch: EPOCH2 }), 'the old-epoch If-Match write did NOT overwrite the rotated anchor');
+    assert.equal(blobs.get(ASTORE, ANCHOR_KEY).text, anchorText({ epoch: EPOCH2 }), 'the old-epoch If-Match write did NOT overwrite the rotated anchor');
   });
   await check('H8 RESTORED ACTIVE RECORD: a restore brings back the session record as "active" (even its old ETag) and the operator rotated the anchor -> still revoked; a lost revocation cannot revive', async () => {
     reset(); const b = await bind(56);
@@ -1065,21 +1083,29 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.deepEqual(r, { kind: 'active' }, `parallel within one budget (${Date.now() - t0} ms)`);
     assert.equal(blobs.log.length, 2);
   });
-  await check('H13 static scan: the anchor key literal appears ONLY in session-revocation.ts (once); AUTHORITY_KEY is used by exactly one read (sign-in) and one write (confirmAnchor: onlyIfMatch, canonical bytes); no onlyIfNew / unconditional / delete on it', async () => {
+  await check('H13 static scan: the authority store literal appears ONLY in session-revocation.ts (once) and the r4 anchor key (session-revocation/_authority) appears NOWHERE in app code; AUTHORITY_KEY is used by exactly one read (sign-in) and one write (confirmAnchor: onlyIfMatch, canonical bytes), both through onceAuthority; no onlyIfNew / unconditional / delete on it', async () => {
     const roots = ['netlify', 'src', 'shared'].map((d) => path.join(APP, d));
     const files = [];
     const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.name === 'node_modules') continue; const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/\.(ts|tsx|js|cjs|mjs)$/.test(e.name)) files.push(p); } };
     roots.forEach(walk);
-    const ANCHOR_REF = /session-revocation\/_authority|[\/"'`]_authority\b/;
-    const hits = files.filter((f) => ANCHOR_REF.test(fs.readFileSync(f, 'utf8')));
+    const OLD_REF = /session-revocation\/_authority|[\/"'`]_authority\b/;
+    assert.deepEqual(files.filter((f) => OLD_REF.test(fs.readFileSync(f, 'utf8'))).map((f) => path.relative(APP, f)), [], 'the r4 anchor key is never named by code');
+    const hits = files.filter((f) => fs.readFileSync(f, 'utf8').includes(ASTORE));
     assert.deepEqual(hits.map((f) => path.relative(APP, f).split(path.sep).join('/')), ['netlify/functions/lib/session-revocation.ts']);
     const s = fs.readFileSync(path.join(FUNCTIONS, 'lib/session-revocation.ts'), 'utf8');
-    assert.equal((s.match(/_authority/g) || []).length, 1, 'the literal once');
-    assert.match(s, /^const AUTHORITY_KEY = "session-revocation\/_authority";\r?$/m);
+    assert.equal(s.split('"' + ASTORE + '"').length - 1, 1, 'the store literal once');
+    assert.match(s, /^export const SESSION_AUTHORITY_STORE = "iaos-session-authority";\r?$/m);
+    assert.match(s, /^const AUTHORITY_KEY = "authority";\r?$/m);
+    assert.equal((s.match(/"authority"/g) || []).length, 1, 'the key literal once');
     const uses = s.match(/AUTHORITY_KEY\b/g) || [];
     assert.equal(uses.length, 3, 'declaration + one read + one write');
-    assert.match(s, /s\.getWithMetadata\(AUTHORITY_KEY, \{ type: "text" \}\)/);
-    assert.match(s, /s\.set\(AUTHORITY_KEY, anchorBytes\(ctx\.deployment, epoch\), \{ onlyIfMatch: etag \}\)/);
+    assert.match(s, /onceAuthority\(ctx, \(s\) => s\.getWithMetadata\(AUTHORITY_KEY, \{ type: "text" \}\)\)/);
+    assert.match(s, /onceAuthority\(ctx, \(s\) => s\.set\(AUTHORITY_KEY, anchorBytes\(ctx\.deployment, epoch\), \{ onlyIfMatch: etag \}\)\)/);
+    assert.equal((s.match(/[^A-Za-z]once\([^\n]*AUTHORITY_KEY/g) || []).length, 0, 'the session-store transport never names the anchor');
+    assert.equal((s.match(/onceAuthority\(/g) || []).length, 3, 'onceAuthority: its definition + the read + the confirm write');
+    assert.match(s, /function once\(ctx: Ctx, op: \(store: Store\) => Promise<unknown>\): Promise<Recorded> \{ return attempt\(ctx, REVOCATION_STORE, op\); \}/);
+    assert.match(s, /function onceAuthority\(ctx: Ctx, op: \(store: Store\) => Promise<unknown>\): Promise<Recorded> \{ return attempt\(ctx, SESSION_AUTHORITY_STORE, op\); \}/);
+    assert.equal((s.match(/attempt\(ctx, /g) || []).length, 2, 'attempt is reached only through once / onceAuthority');
     assert.ok(!/AUTHORITY_KEY[^\n]*onlyIfNew/.test(s) && !/\.(setJSON|delete)\(/.test(s), 'no create / setJSON / delete');
     assert.match(s, /if \(!isCanonicalEtag\(etag\)\) return Promise\.resolve/, 'an empty etag can never turn the anchor write unconditional');
   });
@@ -1088,7 +1114,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
   await check('H14 CLOSED anchor: sign-in 503 (no session, no Set-Cookie); an existing session is refused everywhere -- check revoked, reader 401, writer 401, mint 401, status revoked -- and the closed anchor bytes are never changed', async () => {
     reset(); const b = await bind(80); const t = tokenFor(b);
     assert.equal(await rev.sessionWriteRefusal(ev({ bearer: t })), null, 'before closing: allowed');
-    seedAnchor({ state: 'closed' }); const closed = blobs.get('iaos-write-receipts', ANCHOR_KEY).text;
+    seedAnchor({ state: 'closed' }); const closed = blobs.get(ASTORE, ANCHOR_KEY).text;
     const si = await signIn2(); assert.equal(si.statusCode, 503); assert.equal(si.headers['Set-Cookie'], undefined);
     assert.deepEqual(await rev.beginSession(sid(81), 'test', { event: NF }), { kind: 'unavailable', reason: 'authority_closed' });
     assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'revoked' });
@@ -1096,7 +1122,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal((await rev.sessionWriteRefusal(ev({ bearer: t }))).statusCode, 401);
     const mt = await mint(tokenEv(b.cookie)); assert.equal(mt.statusCode, 401); noCredentialLeak(mt);
     assert.equal(parse(await status(b.cookie)).state, 'revoked');
-    assert.equal(blobs.get('iaos-write-receipts', ANCHOR_KEY).text, closed, 'no check re-opened the anchor');
+    assert.equal(blobs.get(ASTORE, ANCHOR_KEY).text, closed, 'no check re-opened the anchor');
     assert.equal(rev.authorityEpoch(closed, 'test'), null); assert.deepEqual(rev.parseAuthority(closed, 'test'), { epoch: EPOCH, state: 'closed' });
   });
   await check('H15 REOPEN with a NEW epoch (open): every session from before the closure stays refused; a fresh sign-in binds to the new epoch, mints and saves', async () => {
@@ -1109,10 +1135,10 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
   });
   await check('H16 RESTORE procedure (runbook section 6): close -> restore EXCLUDING the anchor (old active records come back) -> still closed: old sessions refused, sign-in 503 -> new epoch open: old sessions refused, new sign-in works', async () => {
     reset(); const b = await bind(83); const t = tokenFor(b);
-    const snapshot = new Map([...blobs.store.entries()].filter(([k]) => !k.endsWith('|' + ANCHOR_KEY)));   // a backup that excludes the anchor
+    const snapshot = snapshotSessionStore();                                                             // a backup of the SESSION store
     assert.equal((await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF })).kind, 'verified');
     seedAnchor({ state: 'closed' });                                                                     // (a) close BEFORE restore
-    for (const [k, v] of snapshot) blobs.store.set(k, { ...v });                                         // (b) restore without the anchor
+    restoreSessionStore(snapshot);                                                                       // (b) restore the session store only
     assert.equal(blobs.get('iaos-write-receipts', sKey(b.sid)).text, rev.sessionRecordText('test', EPOCH, b.sid, 'active'), 'the old active record is back');
     assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'revoked' }, 'closed: refused');
     assert.equal((await rev.sessionWriteRefusal(ev({ bearer: t }))).statusCode, 401);
@@ -1122,18 +1148,79 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: b.cookie }))).statusCode, 401);
     assert.equal((await signIn2()).statusCode, 200);
   });
-  await check('H17 RESTORE that could NOT exclude the anchor: the old OPEN anchor bytes come back with the old records; the procedure immediately re-writes the CLOSED anchor -> the old session is refused, and stays refused after the new epoch opens', async () => {
-    reset(); const b = await bind(84); const t = tokenFor(b);
-    const snapshot = new Map([...blobs.store.entries()]);                                                // a backup INCLUDING the old open anchor
-    seedAnchor({ state: 'closed' });
-    for (const [k, v] of snapshot) blobs.store.set(k, { ...v });                                         // restore brought the old open anchor back
-    seedAnchor({ state: 'closed' });                                                                     // (b) immediately re-write the closed anchor
+  // ---- Bones HOLD on 3311102: restore containment by STRUCTURAL EXCLUSION (the anchor is in its own store).
+  await check('H17 RESTORE of the session store INCLUDING old active records AND an old OPEN anchor at the r4 key (receipts store), while the authority-store anchor is CLOSED -> every check, reader, writer, mint, status and sign-in refused after EVERY restored record (throughout); the authority anchor is untouched by the restore; reopen with a NEW epoch -> pre-restore sessions refused, a new sign-in works', async () => {
+    // The receipts store still carries the r4 layout: an OPEN anchor (current epoch) at the r4 key, present from before
+    // sign-in, so the backup ALSO carries it.
+    reset(); blobs.put(SSTORE, OLD_ANCHOR_KEY, anchorText({ epoch: EPOCH }));
+    const b = await bind(84); const b2 = await bind(85); const t = tokenFor(b); const t2 = tokenFor(b2);
+    const snapshot = snapshotSessionStore();
+    assert.ok([...snapshot.keys()].some((k) => k.endsWith('|' + OLD_ANCHOR_KEY)), 'the backup contains the old open anchor');
+    assert.equal((await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF })).kind, 'verified');
+    assert.equal((await rev.revokeSession(b2.sid, b2.epoch, 'test', { event: NF })).kind, 'verified');
+    seedAnchor({ state: 'closed' }); const closed = blobs.get(ASTORE, ANCHOR_KEY);                     // (a) close BEFORE restore
+    const refusedEverywhere = async (label) => {
+      for (const x of [b, b2]) assert.deepEqual(await rev.checkSession(x, 'test', { event: NF }), { kind: 'revoked' }, label);
+      assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: b.cookie }))).statusCode, 401, label);
+      for (const tk of [t, t2]) assert.equal((await rev.sessionWriteRefusal(ev({ bearer: tk }))).statusCode, 401, label);
+      assert.equal((await mint(tokenEv(b2.cookie))).statusCode, 401, label);
+      assert.equal(parse(await status(b.cookie)).state, 'revoked', label);
+      assert.equal((await signIn2()).statusCode, 503, label);
+      assert.deepEqual(blobs.get(ASTORE, ANCHOR_KEY), closed, label + ': the authority anchor is unchanged');
+    };
+    // (b) restore the SESSION store one record at a time (a multi-pass restore): refused after every single pass.
+    const entries = [...snapshot.entries()].sort(([a], [z]) => (a.endsWith(OLD_ANCHOR_KEY) ? -1 : z.endsWith(OLD_ANCHOR_KEY) ? 1 : 0));
+    for (const [k, v] of entries) { blobs.store.set(k, { ...v }); await refusedEverywhere('after restoring ' + k.slice(SPFX.length)); }
+    assert.equal(blobs.get(SSTORE, sKey(b.sid)).text, rev.sessionRecordText('test', EPOCH, b.sid, 'active'), 'the old active record is back');
+    assert.equal(blobs.get(SSTORE, OLD_ANCHOR_KEY).text, anchorText({ epoch: EPOCH }), 'the old OPEN anchor is back at the r4 key');
+    blobs.log.length = 0;
+    await refusedEverywhere('restore complete');
+    assert.equal(blobs.log.filter((e) => e.key === OLD_ANCHOR_KEY).length, 0, 'no request named the r4 key');
+    seedAnchor({ epoch: EPOCH2, state: 'open' });                                                        // (d) new epoch, open
+    for (const x of [b, b2]) assert.deepEqual(await rev.checkSession(x, 'test', { event: NF }), { kind: 'revoked' }, 'reopened: pre-restore sessions refused');
+    for (const tk of [t, t2]) assert.equal((await rev.sessionWriteRefusal(ev({ bearer: tk }))).statusCode, 401);
+    assert.equal((await mint(tokenEv(b.cookie))).statusCode, 401);
+    const r = await signIn2(); assert.equal(r.statusCode, 200, r.body); const c = cookieOf(r); assert.equal(decode(c).epoch, EPOCH2);
+    const t3 = parse(await mint(tokenEv(c))).token; assert.equal(await rev.sessionWriteRefusal(ev({ bearer: t3 })), null);
+  });
+  await check('H18 store separation at runtime: sign-in reads + confirms the anchor ONLY in iaos-session-authority and creates the session ONLY in iaos-write-receipts; a check writes the anchor ONLY in the authority store and the session ONLY in the receipts store; sign-out never touches the authority store', async () => {
+    reset(); blobs.log.length = 0;
+    const g = await rev.beginSession(sid(86), 'test', { event: NF }); assert.equal(g.kind, 'issued');
+    assert.deepEqual(blobs.log.map((e) => `${e.method} ${e.storeName}/${e.key === ANCHOR_KEY ? 'ANCHOR' : e.key === sKey(sid(86)) ? 'SESSION' : e.key}`),
+      ['GET site:' + ASTORE + '/ANCHOR', 'PUT site:' + ASTORE + '/ANCHOR', 'PUT site:' + SSTORE + '/SESSION']);
+    const b = { sid: sid(86), epoch: g.epoch, aetag: g.aetag, setag: g.setag };
+    blobs.log.length = 0; assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'active' });
+    assert.deepEqual(blobs.log.map((e) => `${e.storeName}/${e.key === ANCHOR_KEY ? 'ANCHOR' : 'SESSION'}`).sort(), ['site:' + ASTORE + '/ANCHOR', 'site:' + SSTORE + '/SESSION'].sort());
+    assert.equal(blobs.log.find((e) => e.storeName === 'site:' + SSTORE).key, sKey(sid(86)));
+    blobs.log.length = 0; assert.equal((await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF })).kind, 'verified');
+    assert.ok(blobs.log.every((e) => e.storeName === 'site:' + SSTORE && e.key === sKey(sid(86))), 'sign-out: session store only');
+  });
+  await check('H19 authority store ABSENT (never provisioned / lost) -- even with a valid OPEN anchor at the r4 key and at the new key name in the receipts store: sign-in 503 (authority_absent, no session), every existing session refused (revoked), reader 401, writer 401, mint 401; nothing creates the anchor', async () => {
+    reset(); const b = await bind(87); const t = tokenFor(b);
+    dropAnchor();
+    blobs.put(SSTORE, OLD_ANCHOR_KEY, anchorText({ epoch: EPOCH })); blobs.put(SSTORE, ANCHOR_KEY, anchorText({ epoch: EPOCH }));
+    assert.deepEqual(await rev.beginSession(sid(88), 'test', { event: NF }), { kind: 'unavailable', reason: 'authority_absent' });
+    const si = await signIn2(); assert.equal(si.statusCode, 503); assert.equal(si.headers['Set-Cookie'], undefined);
     assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'revoked' });
+    assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: b.cookie }))).statusCode, 401);
     assert.equal((await rev.sessionWriteRefusal(ev({ bearer: t }))).statusCode, 401);
     assert.equal((await mint(tokenEv(b.cookie))).statusCode, 401);
-    seedAnchor({ epoch: EPOCH2, state: 'open' });
+    assert.equal(blobs.get(ASTORE, ANCHOR_KEY), null, 'the anchor was never created by code');
+    assert.equal(blobs.get(SSTORE, sKey(sid(88))), null, 'no session record created');
+    // Provisioning a NEW anchor (new epoch) in the authority store: old sessions stay refused; a new sign-in works.
+    seedAnchor({ epoch: EPOCH2 });
     assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'revoked' });
-    assert.equal((await rev.sessionWriteRefusal(ev({ bearer: t }))).statusCode, 401);
+    assert.equal((await signIn2()).statusCode, 200);
+  });
+  await check('H20 a check / sign-in / sign-out never writes or reads the receipts store\'s r4 anchor key, and an old CLOSED anchor there cannot close (or an old OPEN one reopen) anything: the decision follows the authority store only', async () => {
+    reset(); const b = await bind(89);
+    blobs.put(SSTORE, OLD_ANCHOR_KEY, anchorText({ epoch: EPOCH, state: 'closed' })); const oldBytes = blobs.get(SSTORE, OLD_ANCHOR_KEY);
+    blobs.log.length = 0;
+    assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'active' }, 'an old-key anchor is ignored');
+    assert.equal((await rev.beginSession(sid(90), 'test', { event: NF })).kind, 'issued');
+    assert.equal((await rev.revokeSession(sid(90), EPOCH, 'test', { event: NF })).kind, 'verified');
+    assert.equal(blobs.log.filter((e) => e.key === OLD_ANCHOR_KEY || (e.storeName === 'site:' + SSTORE && e.key === ANCHOR_KEY)).length, 0);
+    assert.deepEqual(blobs.get(SSTORE, OLD_ANCHOR_KEY), oldBytes, 'the r4-key bytes were never written');
   });
 
   flag(false);
@@ -1144,7 +1231,14 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.ok(writes.every((w) => w.method === 'PUT' && w.ifMatch && !w.ifNoneMatch), JSON.stringify(writes.filter((w) => !(w.method === 'PUT' && w.ifMatch && !w.ifNoneMatch)).slice(0, 3)));
     assert.ok(writes.every((w) => rev.authorityEpoch(w.body, 'test')), 'every anchor write body is a canonical valid anchor');
   });
-  const FLOOR = 224;
+  await check('Z0b the WHOLE run: no Blob request named the r4 anchor key; no request named the anchor key in the receipts store; the authority store was asked for nothing but the anchor', async () => {
+    assert.ok(storeOps.length > 100, 'store requests observed: ' + storeOps.length);
+    assert.deepEqual(storeOps.filter((o) => o.key === OLD_ANCHOR_KEY), []);
+    assert.deepEqual(storeOps.filter((o) => o.store === SSTORE && o.key === ANCHOR_KEY), []);
+    assert.deepEqual(storeOps.filter((o) => o.store === ASTORE && o.key !== ANCHOR_KEY), []);
+    assert.ok(storeOps.some((o) => o.store === ASTORE) && storeOps.some((o) => o.store === SSTORE));
+  });
+  const FLOOR = 228;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (server): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;
