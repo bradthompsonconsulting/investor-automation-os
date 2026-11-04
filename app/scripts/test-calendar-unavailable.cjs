@@ -31,9 +31,11 @@ try {
   process.exit(10);
 }
 
-// Stub the read-session gate only.
-fs.writeFileSync(path.join(TMP, 'netlify/functions/lib/app-read-auth.js'),
-  'exports.readAuthRefusal = () => null;\n');
+// Stub the read-session gate only: keep EVERY real export of the compiled module (B15-29 r4 added
+// cookieHasOneLoginBinding, which session-revocation imports) and override readAuthRefusal alone. Callers read the
+// export at call time (`app_read_auth_1.readAuthRefusal`), so the appended assignment wins.
+fs.appendFileSync(path.join(TMP, 'netlify/functions/lib/app-read-auth.js'),
+  '\n// test-calendar-unavailable: pass-through read gate (offline stub)\nexports.readAuthRefusal = () => null;\n');
 
 let checks = 0;
 let failures = 0;
