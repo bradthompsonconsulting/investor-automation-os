@@ -93,7 +93,8 @@ check('UI uses B7-04 importer', ui.includes('importPropStreamCompCsv(csv'), true
 check('workspace model uses B7-05 engine', fs.readFileSync(MODEL, 'utf8').includes('evaluateCompSearch({'), true);
 check('workspace model uses B7-06 engine', fs.readFileSync(MODEL, 'utf8').includes('reconcileAcceptedCompArv({'), true);
 check('normal underwriting flow supplies selected opportunity',
-  page.includes('<ArvCompsWorkspace contact={contact} opportunityId={screen.opportunity.id} />'), true);
+  /* B15-22: plus the ARV the page already resolved, for the approved-ARV-on-record line. */
+  page.includes('<ArvCompsWorkspace contact={contact} opportunityId={screen.opportunity.id} currentArv={screen.state === "configuration_error" ? null : screen.known.arv} />'), true);
 check('approval uses explicit persistence boundary',
   ui.includes('persist({ kind: "approved", amount: preliminaryArv, recommendedArv: preliminaryArv, revision })'), true);
 check('override preserves preliminary recommendation',

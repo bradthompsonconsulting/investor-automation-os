@@ -41,6 +41,7 @@ import {
 } from "../lib/propstream";
 import { ADDITIONAL_INFO_SUBGROUPS, type AdditionalInfoSubgroup } from "../config/additionalInfoSubgroups";
 import { getRuntimeConfig } from "../../shared/ghl-config";
+import { CONTACT_ARV_SEED_NOTE } from "../lib/authoritative-figures";
 
 /**
  * Contact Workspace — docs/CONTACT_WORKSPACE_SPEC_v2.md §8 steps 1-3.
@@ -310,10 +311,12 @@ const CURRENCY_RE = /^-?\$?(\d{1,3}(,\d{3})*|\d+)(\.\d+)?$/;
 // The readback reads `f.id` rather than a module constant. Behaviourally identical
 // — FieldRow dispatches this component only for the field whose row it is — and
 // it removes the second place a field identity would have to be kept in step.
-function MonetaryRow({ f, contactId, save }: {
+function MonetaryRow({ f, contactId, save, note }: {
   f: RecordField;
   contactId: string;
   save: (contactId: string, value: number | "") => Promise<unknown>;
+  /** B15-22: a display-only line saying which carrier governs (as ContactRepairsRow does). */
+  note?: string;
 }) {
   const wire: number | "" =
     typeof f.value === "number" ? f.value
@@ -466,6 +469,9 @@ function MonetaryRow({ f, contactId, save }: {
         {status === "unconfirmed" && <span style={{ color: "#94A3B8" }}>Save accepted — not yet confirmed</span>}
         {status === "failed" && <span style={{ color: "#F87171" }}>Save failed{errMsg ? `: ${errMsg}` : ""}</span>}
         {status === "unverified" && <span style={{ color: "#F87171" }}>Couldn't verify save</span>}
+        {note ? (
+          <span data-testid={`field-note-${f.id}`} style={{ fontSize: "10px", fontStyle: "italic", color: "#64748B" }}>{note}</span>
+        ) : null}
       </div>
     </div>
   );
@@ -1052,7 +1058,11 @@ function FieldRow({ f, contactId, askAuthority }: {
   // Contact ARV is a deliberate PB-D55 seed input, unaffected by this
   // correction. The dispatch is where each field's write decision is
   // spent, one line per field so an unlock cannot happen by accident.
-  if (f.id === ARV_ID) return <MonetaryRow f={f} contactId={contactId} save={ghl.contacts.setARV} />;
+  /* B15-22 / INV-131: which ARV governs, labelled as Repairs is. Verified in
+     code: resolveDealFacts (lib/underwriting/resolver.ts) takes the
+     Opportunity ARV and uses this Contact ARV only when the Opportunity has
+     none. The row, its editor and its save are unchanged. */
+  if (f.id === ARV_ID) return <MonetaryRow f={f} contactId={contactId} save={ghl.contacts.setARV} note={CONTACT_ARV_SEED_NOTE} />;
   /* INV-70 / B9-07A Phase 2 correction round 3 -- REMOVED the
      MonetaryRow/setEstimatedRepairs unlock. contact.estimated_repairs is
      read-only everywhere in application code now (Family 3's approved

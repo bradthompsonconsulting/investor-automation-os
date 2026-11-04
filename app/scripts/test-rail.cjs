@@ -263,7 +263,8 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
      left sitting beside the affordance it contradicts. */
   check('4B opportunity branch no longer carries an authority note',
     oppAsk.authorityNote, null);
-  check('4A mao provenance also names the deal', cellOf(oppSourced, 'seller-mao').provenance, 'Opportunity · Alpha Deal');
+  /* B15-22 / INV-131: the MAO is the recorded APPROVED underwriting value, and says so. */
+  check('4A mao provenance also names the deal', cellOf(oppSourced, 'seller-mao').provenance, 'Approved underwriting · Alpha Deal');
   check('4A mao offers no route either', cellOf(oppSourced, 'seller-mao').route, null);
 
   const contactSourced = derive({}, { 'c-ask': 175000 });
@@ -440,7 +441,7 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
   const cell = cellOf(deal, 'seller-mao');
   check('case5 mao is the opportunity value', deal.mao, 165000);
   check('case5 renders the figure', cell.primary, '$165,000');
-  check('case5 provenance says Opportunity', cell.provenance, 'Opportunity · Alpha Deal');
+  check('case5 provenance says approved underwriting (B15-22)', cell.provenance, 'Approved underwriting · Alpha Deal');
   check('case5 tone is a value', cell.tone, 'value');
 }
 
@@ -459,7 +460,7 @@ check('rail.js DOES require its real runtime deps', requiredPaths.filter((p) => 
   // Absence and a stored zero are different facts. 0 is a value.
   const zero = derive({ 'o-mao': 0 }, {});
   check('case6 a stored 0 is a VALUE, not absence', cellOf(zero, 'seller-mao').primary, '$0');
-  check('case6 a stored 0 carries Opportunity provenance', cellOf(zero, 'seller-mao').provenance, 'Opportunity · Alpha Deal');
+  check('case6 a stored 0 carries approved-underwriting provenance', cellOf(zero, 'seller-mao').provenance, 'Approved underwriting · Alpha Deal');
 }
 
 /* ================= CASE 7 -- the two carrier-less cells ================= */

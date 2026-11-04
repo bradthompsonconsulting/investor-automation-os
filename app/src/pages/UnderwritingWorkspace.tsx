@@ -57,6 +57,12 @@ import type { PersistResult, RepairApproval } from "../lib/repair-estimation/per
 import { REPAIR_APPROVAL_APPROVE_LABEL, REPAIR_APPROVAL_SAVING_TEXT, fetchRepairApprovalStatus, repairApprovalAvailable, recordedRepairTotalText, repairApprovalDraftNotice, repairApprovalReasonText, saveRepairApproval, type RepairApprovalSaveResult, type RepairApprovalStatus } from "../lib/repair-approval-client";
 import { PROVISIONAL_HEADLINE } from "../lib/provisional-repairs";
 import ArvCompsWorkspace from "../components/ArvCompsWorkspace";
+/* B15-22 / INV-131: which Seller MAO counts. Wording only; the recorded value
+   is read with the rail's own readOpportunityNumber, the live one is
+   computeUnderwriting's, and Approve is untouched. */
+import { readOpportunityNumber } from "../lib/underwriting/selectOpportunity";
+import { compareSellerMao, type SellerMaoComparison } from "../lib/authoritative-figures";
+import { LiveSellerMaoFigure, RecordedSellerMaoCell } from "../components/AuthoritativeFigures";
 
 /**
  * Underwriting Workspace — UNDERWRITING_WORKSPACE_SPEC.md.
@@ -170,10 +176,13 @@ function Notice({ tone, title, body }: { tone: "error" | "warn" | "info"; title:
   );
 }
 
-/** The persistent rail. Four numbers, per SELLER_ACQUISITION_WORKFLOW.md. */
-function Rail({ ask, arv, repairs, mao, waiting }: {
+/** The persistent rail. Four numbers, per SELLER_ACQUISITION_WORKFLOW.md.
+ *  B15-22: the Seller MAO cell is the RECORDED approved underwriting value
+ *  (the Opportunity field Approve writes); the figure calculated now is the
+ *  decision panel's, under its own label, so the two never share a name. */
+function Rail({ ask, arv, repairs, maoComparison, waiting }: {
   ask: number | null; arv: number | null; repairs: number | null;
-  mao: number | null; waiting: string | null;
+  maoComparison: SellerMaoComparison; waiting: string | null;
 }) {
   const cell = (label: string, value: string, accent?: string) => (
     <div style={{ display: "flex", flexDirection: "column", gap: "3px", minWidth: "128px" }}>
@@ -193,14 +202,7 @@ function Rail({ ask, arv, repairs, mao, waiting }: {
       {cell("Seller Ask", money(ask))}
       {cell("ARV", money(arv))}
       {cell("Repairs", money(repairs))}
-      {waiting
-        ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
-            <span style={{ fontSize: "9px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em" }}>Seller MAO</span>
-            <span style={{ fontSize: "13px", color: "#F59E0B", fontWeight: 600, paddingTop: "3px" }}>{waiting}</span>
-          </div>
-        )
-        : cell("Seller MAO", money(mao), "#1EC8FF")}
+      <RecordedSellerMaoCell comparison={maoComparison} waiting={waiting} />
     </div>
   );
 }
@@ -1051,6 +1053,15 @@ export default function UnderwritingWorkspace() {
     />
   ) : null);
 
+  /* B15-22: the Seller MAO Approve last saved -- the selected Opportunity's
+     own field, from the pipeline read this page already holds (no new
+     request), parsed exactly as the Contact rail parses it. */
+  const recordedSellerMAO: number | null = useMemo(() => {
+    if (!opps || !selected) return null;
+    const opp = opps.find((o) => o.id === selected.id);
+    return opp ? readOpportunityNumber(opp.customFields, CONFIG.opportunityFields.sellerMAO) : null;
+  }, [opps, selected]);
+
   const screen: ScreenState = toViewModel({
     loading,
     fetchError,
@@ -1189,6 +1200,28 @@ export default function UnderwritingWorkspace() {
     }
   }
 
+  /* B15-22: recorded approved vs calculated now. Wording only -- no number is
+     changed and Approve's handler and gating above are untouched.
+     Approve does not re-read the Opportunity, so the figure it just saved and
+     confirmed on read-back is remembered here -- for that deal and that
+     pipeline read only; the next read (a mode change, a refresh) is the
+     record again. Observed, never sent: this effect only watches the state. */
+  const [approvedThisVisit, setApprovedThisVisit] = useState<{ oppId: string; opps: OpportunityRow[] | null; value: number } | null>(null);
+  const approvedFigure = screen.state === "resolved" && screen.approve.status === "succeeded"
+    ? { oppId: screen.opportunity.id, value: screen.figures.sellerMAO } : null;
+  useEffect(() => {
+    if (approvedFigure) setApprovedThisVisit({ oppId: approvedFigure.oppId, opps, value: approvedFigure.value });
+    // Captured once, when Approve's confirmed outcome first appears.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [approve.status]);
+  const recordedForScreen = approvedThisVisit !== null && selected !== null
+    && approvedThisVisit.oppId === selected.id && approvedThisVisit.opps === opps
+    ? approvedThisVisit.value : recordedSellerMAO;
+  const maoComparison = compareSellerMao({
+    recorded: recordedForScreen,
+    live: screen.state === "resolved" ? screen.figures.sellerMAO : null,
+  });
+
   return (
     <Shell contactId={contactId}>
       <RefreshReadError message={refreshReadError} />
@@ -1212,7 +1245,7 @@ export default function UnderwritingWorkspace() {
           Comp detail stays session-only; explicit approval writes the selected
           Opportunity ARV, then appends its Contact-note ledger. */}
       {contact && (screen.state === "resolved" || screen.state === "unresolved" || screen.state === "configuration_error") ? (
-        <ArvCompsWorkspace contact={contact} opportunityId={screen.opportunity.id} />
+        <ArvCompsWorkspace contact={contact} opportunityId={screen.opportunity.id} currentArv={screen.state === "configuration_error" ? null : screen.known.arv} />
       ) : null}
 
       {screen.state === "loading" ? (
@@ -1279,7 +1312,7 @@ export default function UnderwritingWorkspace() {
             ask={screen.known.askingPrice}
             arv={screen.known.arv}
             repairs={screen.known.repairs}
-            mao={screen.state === "resolved" ? screen.figures.sellerMAO : null}
+            maoComparison={maoComparison}
             waiting={screen.state === "unresolved" ? "Waiting for " + screen.missingLabels.join(", ") : null}
           />
 
@@ -1341,12 +1374,7 @@ export default function UnderwritingWorkspace() {
                 {money(screen.figures.endBuyerMaxPrice)}
               </div>
             </div>
-            <div>
-              <div style={{ fontSize: "9px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em" }}>Seller MAO</div>
-              <div style={{ fontSize: "24px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#1EC8FF" }}>
-                {money(screen.figures.sellerMAO)}
-              </div>
-            </div>
+            <LiveSellerMaoFigure text={money(screen.figures.sellerMAO)} comparison={maoComparison} />
             <div>
               <div style={{ fontSize: "9px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em" }}>Acquisition Position</div>
               <div style={{ fontSize: "14px", fontWeight: 600, color: "#94A3B8", paddingTop: "6px" }}>

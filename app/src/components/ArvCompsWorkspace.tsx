@@ -14,12 +14,22 @@ import {
   browserHandoffEnvironment,
   copyAddressAgain,
   handoffToPropStream,
+  NO_SUBJECT_ADDRESS_REASON,
   PROPSTREAM_LOGIN_URL,
   subjectAddress,
   type HandoffResult,
 } from "../lib/propstream";
+/* B15-22 / INV-131 (F44, W2 "historical versus current-session evidence"):
+   the approved ARV on record, read through the EXISTING ledger readers --
+   the same two Seller Call's ARV provenance uses -- and worded once. */
+import { latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
+import {
+  ARV_ADDRESS_FIRST, ARV_SHOW_FACTS_ANYWAY, arvOnRecordState, type ArvOnRecord,
+} from "../lib/authoritative-figures";
+import { ArvOnRecordLine } from "./AuthoritativeFigures";
 
-type Props = { contact: ContactDetail; opportunityId: string };
+/** `currentArv`: the ARV the page already resolved for this deal (`screen.known.arv`), compared with the ledger exactly as Seller Call compares it. */
+type Props = { contact: ContactDetail; opportunityId: string; currentArv: number | null };
 
 const card = { background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px" } as const;
 const inputStyle = { background: "#0A0E1A", color: "#E2E8F0", border: "1px solid #334155", borderRadius: "6px", padding: "7px 9px", fontSize: "12px" } as const;
@@ -45,7 +55,7 @@ function defaultAssessment(evidenceId: string): CompAssessment {
   };
 }
 
-export default function ArvCompsWorkspace({ contact, opportunityId }: Props) {
+export default function ArvCompsWorkspace({ contact, opportunityId, currentArv }: Props) {
   const [seedStatus, setSeedStatus] = useState<"loading" | "ready" | "unavailable">("loading");
   const [subject, setSubject] = useState({
     propertyType: "", squareFeet: "", subdivision: "", beds: "", baths: "", yearBuilt: "",
@@ -66,6 +76,41 @@ export default function ArvCompsWorkspace({ contact, opportunityId }: Props) {
   const [overrideError, setOverrideError] = useState<string | null>(null);
   const [handoff, setHandoff] = useState<HandoffResult | null>(null);
   const [handoffBusy, setHandoffBusy] = useState(false);
+  /* B15-22: the ARV approval ledger for this contact (one GET, the existing
+     ghl.notes.list read), keyed so another deal's record is never shown. */
+  const recordKey = `${contact.id}|${opportunityId}`;
+  const [arvLedger, setArvLedger] = useState<{ key: string; notes: { body: string }[] | null } | null>(null);
+  /* An approval this workspace saved and confirmed on this visit: the page
+     does not re-read the Opportunity, so the confirmed figure is the record. */
+  const [savedThisVisit, setSavedThisVisit] = useState<{ key: string; amount: number } | null>(null);
+  const [showFactsAnyway, setShowFactsAnyway] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const key = recordKey;
+    ghl.notes.list(contact.id)
+      .then((body) => { if (!cancelled) setArvLedger({ key, notes: Array.isArray(body?.notes) ? body.notes : [] }); })
+      .catch(() => { if (!cancelled) setArvLedger({ key, notes: null }); });
+    return () => { cancelled = true; };
+    // Keyed by the deal, not the contact object: a re-read of the same contact does not re-fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recordKey]);
+  /* Observed from the existing outcome state, never set inside the save path:
+     a confirmed save (persistApprovedArv's own ok) is the record from then on. */
+  useEffect(() => {
+    if ("ok" in persistState && persistState.ok) setSavedThisVisit({ key: recordKey, amount: persistState.value });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persistState]);
+  const arvOnRecord: ArvOnRecord = savedThisVisit !== null && savedThisVisit.key === recordKey
+    ? { kind: "approved", amount: savedThisVisit.amount }
+    : arvLedger === null || arvLedger.key !== recordKey
+      ? { kind: "loading" }
+      : arvLedger.notes === null
+        ? { kind: "unavailable" }
+        : arvOnRecordState({
+          latestLedgerArv: latestArvApprovalForOpportunity(arvLedger.notes, opportunityId)?.approvedArv ?? null,
+          matchedArv: matchingArvApprovalForOpportunity(arvLedger.notes, opportunityId, currentArv)?.approvedArv ?? null,
+          currentArv,
+        });
 
   /* Board 15 cleanup: seeded once per contact. A re-read of the SAME contact
      (sign-in recovery, a refresh) hands over a new object; re-seeding then
@@ -253,11 +298,23 @@ export default function ArvCompsWorkspace({ contact, opportunityId }: Props) {
         </div>
       ) : null}
 
+      <ArvOnRecordLine state={arvOnRecord} />
+
       <div data-testid="arv-persistence-boundary" style={{ marginTop: "12px", color: "#94A3B8", fontSize: "11px" }}>
         Approved ARV saves to the selected Opportunity. Each confirmed approval appends one valuation-history note; detailed comps remain session-only.
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))", gap: "9px", marginTop: "14px" }}>
+      {/* B15-22 / F44: without a property address the subject-fact grid is
+          collapsed -- seven empty fields say nothing -- and the operator is told
+          what to do first. Still reachable on request; nothing is gated. */}
+      {!address && !showFactsAnyway ? (
+        <div data-testid="arv-subject-facts-collapsed" style={{ marginTop: "14px", padding: "10px 12px", borderRadius: "8px", border: "1px dashed #334155", color: "#94A3B8", fontSize: "12px", display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+          <span data-testid="arv-address-first" style={{ color: "#E2E8F0" }}>{ARV_ADDRESS_FIRST}</span>
+          <span style={{ color: "#64748B" }}>{NO_SUBJECT_ADDRESS_REASON}.</span>
+          <button data-testid="arv-show-subject-facts" onClick={() => setShowFactsAnyway(true)} style={{ ...inputStyle, color: "#1EC8FF", cursor: "pointer" }}>{ARV_SHOW_FACTS_ANYWAY}</button>
+        </div>
+      ) : (<>
+      <div data-testid="arv-subject-facts" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))", gap: "9px", marginTop: "14px" }}>
         {([
           ["Property type", "propertyType"], ["Living sqft", "squareFeet"], ["Subdivision", "subdivision"],
           ["Beds", "beds"], ["Baths", "baths"], ["Year built", "yearBuilt"],
@@ -279,6 +336,7 @@ export default function ArvCompsWorkspace({ contact, opportunityId }: Props) {
       <div style={{ marginTop: "6px", fontSize: "10px", color: seedStatus === "unavailable" ? "#F59E0B" : "#475569" }}>
         {seedStatus === "loading" ? "Reading existing subject-property carriers…" : seedStatus === "ready" ? "Subject facts loaded from existing GHL carriers where present; edits stay in this session." : "Existing subject facts could not be read; enter them for this session."}
       </div>
+      </>)}
 
       {fileError ? <div style={{ color: "#F87171", fontSize: "12px", marginTop: "10px" }}>{fileError}</div> : null}
       {imported?.issues.filter((issue) => issue.severity === "error").map((issue, index) => (

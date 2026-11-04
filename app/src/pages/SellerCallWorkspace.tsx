@@ -1771,8 +1771,12 @@ export default function SellerCallWorkspace() {
       currentOfferStatus: offerSaves.statusFor(dealBarOppId, currentOffer),
       board8,
       expectedSpread,
+      /* B15-22 / INV-131: the approval state this page already holds -- the
+         same reads the Repairs and ARV & Comps provenance cards use. */
+      arvApproval: matchedArvApproval ? "approved" : latestArvLedgerEntry ? "ledger_mismatch" : "unverified",
+      repairsApproval: pipeline.repairsSourceIsApprovalGated ? "approved" : "unverified",
     }),
-    [screen, sellerPosition, currentOffer, offerSaves, offerSaveVersion, dealBarOppId, board8, expectedSpread],
+    [screen, sellerPosition, currentOffer, offerSaves, offerSaveVersion, dealBarOppId, board8, expectedSpread, matchedArvApproval, latestArvLedgerEntry, pipeline.repairsSourceIsApprovalGated],
   );
 
   const hasKnownFacts = (screen.state === "resolved" || screen.state === "unresolved")
