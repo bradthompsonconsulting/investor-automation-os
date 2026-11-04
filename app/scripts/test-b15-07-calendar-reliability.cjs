@@ -260,8 +260,8 @@ async function main() {
     const ctxBody = () => cp.evaluate(() => document.querySelector('[data-testid="ctx-page"]').innerText).catch(() => '');
     const setCtx = (epoch, hidden) => cp.evaluate(([e, h]) => window.__setCalendarContext({ epoch: e, hidden: h }), [epoch, hidden]);
     // Context 0 (session A) loads its appointment. (The first read was queued before load: answer it now.)
+    await text(cp, '[data-testid="calendar-empty"]', /No upcoming appointments/);   // the page's own first read has finished
     ctxAnswers.push(OK([EV('a', A_TITLE, 1)]));
-    await cp.evaluate(() => window.__setCalendarContext({ epoch: 0, hidden: false }));
     await cp.getByTestId('calendar-refresh').click().catch(() => {});
     const a0 = await text(cp, '[data-testid="ctx-page"]', new RegExp(A_TITLE));
     // Lapse (hidden), then context 1 (session B) shown while its first read is HELD.
@@ -331,6 +331,9 @@ async function main() {
         const visible = [...document.querySelectorAll('#root *')].some((el) => el.childElementCount === 0 && el.textContent && el.textContent.includes(title) && el.getClientRects().length > 0 && !el.closest('[hidden]'));
         if (visible) window.__leak += 1; window.__leakRaf = requestAnimationFrame(tick); };
       window.__leakRaf = requestAnimationFrame(tick);
+      const shown = () => [...document.querySelectorAll('#root *')].some((el) => el.childElementCount === 0 && el.textContent && el.textContent.includes(title) && !el.closest('[hidden]'));
+      window.__leakObserver = new MutationObserver(() => { if (shown()) window.__leak += 1; });
+      window.__leakObserver.observe(document.getElementById('root'), { subtree: true, childList: true, attributes: true, characterData: true });
     }, A_TITLE);
     // Session B signs in through the REAL popup message the gate trusts; B's first calendar read is HELD.
     session = { signedIn: true, expiresAt: new Date(Date.now() + 3600_000).toISOString() };
@@ -344,7 +347,7 @@ async function main() {
     await rp.waitForTimeout(500);
     const leakDuringPending = await rp.evaluate(() => window.__leak).catch(() => -1);
     const pendingBody = await bodyText(rp);
-    check('RS1 real App: after session A expires and session B signs in (real popup message), NO painted frame shows A\'s appointment while B\'s read is pending',
+    check('RS1 real App: after session A expires and session B signs in (real popup message), NO commit or painted frame shows A\'s appointment while B\'s read is pending',
       !!ra && !!card && !!popup && leakDuringPending === 0 && !new RegExp(A_TITLE).test(pendingBody), { popup: !!popup, leakDuringPending, body: pendingBody.slice(0, 160) });
     releaseB();
     await text(rp, '[data-testid="calendar-unavailable"]', /couldn.t be loaded/);
@@ -356,7 +359,7 @@ async function main() {
     rsAnswers.push(OK([EV('b', B_TITLE, 2)]));
     await rp.getByTestId('calendar-retry').click().catch(() => {});
     const bb = await text(rp, 'body', new RegExp(B_TITLE));
-    const leakEnd = await rp.evaluate(() => { cancelAnimationFrame(window.__leakRaf); return window.__leak; }).catch(() => -1);
+    const leakEnd = await rp.evaluate(() => { cancelAnimationFrame(window.__leakRaf); window.__leakObserver.disconnect(); return window.__leak; }).catch(() => -1);
     check('RS3 real App: B\'s own successful read replaces it (B shown, A never painted in the new session)', !!bb && new RegExp(B_TITLE).test(bb) && !new RegExp(A_TITLE).test(bb) && leakEnd === 0, { leakEnd });
     if (popup) await popup.close().catch(() => {});
     await rsCtx.close();
