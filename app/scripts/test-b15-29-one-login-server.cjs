@@ -398,11 +398,12 @@ const marker = (res) => (parse(res) || {}).by;
     assert.equal(res.statusCode, 401); assert.equal(parse(res).reason, 'revoked'); noCredentialLeak(res);
   });
   for (const [label, setup] of [
-    ['store unreadable (blob 500)', () => blobs.rule({ stage: 'blob', method: 'GET', status: 500 })],
-    ['store sign refused (401)', () => blobs.rule({ stage: 'sign', status: 401 })],
+    // Faults are pinned to the sid record's key so they exercise the sid read, not the anchor read (H tests cover that).
+    ['store unreadable (blob 500)', () => blobs.rule({ stage: 'blob', method: 'GET', status: 500, key: rev.revocationKey('test', sid(5)) })],
+    ['store sign refused (401)', () => blobs.rule({ stage: 'sign', status: 401, key: rev.revocationKey('test', sid(5)) })],
     ['store not configured', () => setEnv('test', { IAOS_SESSION_REVOCATION_TOKEN: undefined })],
     ['malformed record', () => blobs.put('iaos-write-receipts', rev.revocationKey('test', sid(5)), 'garbage')],
-    ['store hangs past the deadline', () => blobs.rule({ stage: 'blob', method: 'GET', hang: true, ignoreAbort: true })],
+    ['store hangs past the deadline', () => blobs.rule({ stage: 'blob', method: 'GET', hang: true, ignoreAbort: true, key: rev.revocationKey('test', sid(5)) })],
   ]) {
     await check(`T20 ${label} -> 503 iaos-session-unavailable (fail closed; NOT 401, NOT a token)`, async () => {
       reset(); setup(); const res = await mint(tokenEv(readCookie({ s: sid(5) })));
