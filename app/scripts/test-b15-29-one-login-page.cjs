@@ -13,7 +13,7 @@
  *   P2 a second tab is signed in by the same session without any sign-in step
  *   P3 Sign out in tab A is confirmed only after the server's verified revocation: "Signed out of IAOS."
  *   P4 tab B -- with NO BroadcastChannel and a localStorage that throws -- cannot save after A's Sign out: its
- *      earlier token is refused by the server (Variant S), nothing is applied, the recovery screen appears and
+ *      earlier token is refused by the server (Variant S), nothing is applied, the recovery overlay appears and
  *      B's unsaved draft is still on the (hidden, mounted) page
  *   P5 revocation store unavailable: "IAOS can't confirm your sign-in right now" + Try again, NO sign-in prompt,
  *      draft kept; recovery on Try again with the page not remounted
@@ -224,7 +224,7 @@ async function main() {
     const bWrites = log.filter((e) => e.tab === 'B' && e.fn === 'ghl-write');
     check('P4 tab B (no BroadcastChannel, throwing storage): its earlier token is refused by the server (401) and NOTHING is applied', bWrites.length - writesBefore === 1 && applied.length === appliedBefore &&
       bWrites.slice(writesBefore).every((e) => e.status === 401), bWrites);
-    check('P4 tab B shows the recovery screen ("Signed out of IAOS. Sign in to continue.")', await has(B, 'Signed out of IAOS. Sign in to continue.'));
+    check('P4 tab B shows the recovery overlay ("You have signed out of IAOS.")', await shown(B, 'read-access-recovery') && await has(B, "You've signed out of IAOS."));
     check('P4 tab B\'s unsaved draft is still on the mounted (hidden) page', (await B.getByTestId('draft').inputValue()) === 'unsaved seller notes in tab B');
     check('P4 tab B made no further write and no token was issued to it after the Sign out', log.filter((e) => e.tab === 'B' && e.fn === 'app-write-token' && e.status === 200).length === bTokenBefore);
 
@@ -240,7 +240,7 @@ async function main() {
     await C.evaluate(() => window.dispatchEvent(new Event('focus')));
     await until(() => has(C, "IAOS can't confirm your sign-in right now"));
     check('P5 store unavailable: "IAOS can\'t confirm your sign-in right now" with Try again', await has(C, "IAOS can't confirm your sign-in right now") && await shown(C, 'one-login-try-again'));
-    check('P5 NO sign-in prompt and NOT "signed out" during the outage', (await C.getByRole('button', { name: /Sign in/ }).count()) === 0 && !(await has(C, 'Signed out')));
+    check('P5 NO sign-in prompt and NOT "signed out" during the outage', (await C.getByRole('button', { name: /sign in/i }).count()) === 0 && !(await has(C, 'Signed out')));
     check('P5 the draft is kept on the mounted page', (await C.getByTestId('draft').inputValue()) === 'draft kept through an outage');
     blobs.clearRules();
     await C.getByTestId('one-login-try-again').click();
@@ -275,9 +275,9 @@ async function main() {
     await D.getByTestId('save').click();
     await until(() => shown(D, 'read-access-recovery'));
     check('P7 the IAOS session ended: the save is NOT sent and the page says saving is paused', log.filter((e) => e.tab === 'D' && e.fn === 'ghl-write').length === dWrites &&
-      (await D.getByTestId('save-result').innerText().catch(() => '')).startsWith('Saving paused: your IAOS sign-in has ended.'));
-    check('P7 the recovery screen offers "Sign in again"; the draft is kept', await D.getByRole('button', { name: 'Sign in again' }).isVisible() && (await D.getByTestId('draft').inputValue()) === 'seller said yes to 142k -- not saved yet');
-    await D.getByRole('button', { name: 'Sign in again' }).click();
+      ((await D.getByTestId('save-result').textContent().catch(() => '')) || '').startsWith('Saving paused: your IAOS sign-in has ended.'));
+    check('P7 the recovery overlay offers "Sign In to IAOS"; the draft is kept', await D.getByRole('button', { name: 'Sign In to IAOS' }).isVisible() && (await D.getByTestId('draft').inputValue()) === 'seller said yes to 142k -- not saved yet');
+    await D.getByRole('button', { name: 'Sign In to IAOS' }).click();
     await until(() => shown(D, 'read-access-signed-in'));
     check('P7 after signing in again nothing was re-sent automatically', log.filter((e) => e.tab === 'D' && e.fn === 'ghl-write').length === dWrites);
     await D.getByTestId('save').click();

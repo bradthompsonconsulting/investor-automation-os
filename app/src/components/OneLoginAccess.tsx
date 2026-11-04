@@ -1,4 +1,6 @@
 import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import OneLoginScreen, { ReminderDialog, type ScreenAction, type ScreenMessage } from "./OneLoginScreen";
+import { dismissReminder, dueReminder, nextReminderDelay, reminderDismissed, reminderMessage } from "../lib/session-reminder";
 import { READ_SESSION_ENDPOINT, READ_SESSION_LOST_EVENT } from "../lib/read-session";
 import { SESSION_UNAVAILABLE_EVENT, SESSION_UNAVAILABLE_MARKER } from "../lib/one-login";
 import { clearAppWriteToken, pauseAppWriteForSignOut, primeAppWriteSession, resumeAppWriteAccess } from "../lib/app-write-session";
@@ -16,16 +18,23 @@ export function OneLoginStatusLine({ read }: { read: ReadView }) {
 export const SIGN_OUT_ENDPOINT = "/.netlify/functions/app-signout";
 /** Client bound on one Sign out attempt (wall clock on this computer; not a server guarantee). */
 export const SIGN_OUT_CLIENT_TIMEOUT_MS = 10_000;
-export const SIGNED_OUT_TEXT = "Signed out of IAOS.";
+export const SIGNED_OUT_TEXT = "You've signed out of IAOS.";
 export const SIGN_OUT_NOT_CONFIRMED_TEXT = "Sign-out not confirmed. IAOS could not verify this Sign out. Saving is paused on this page.";
 /** Longest single expiry wait (one day): well under setTimeout's 2^31-1 ms limit. */
 export const MAX_TIMER_MS = 24 * 60 * 60 * 1000;
-export const UNAVAILABLE_TEXT = "IAOS can't confirm your sign-in right now. Your page and unsaved edits are kept.";
+export const UNAVAILABLE_TEXT = "IAOS sign-in is temporarily unavailable. Try again.";
+/** B15-29 login experience copy (spec §1). */
+export const SIGN_IN_LABEL = "Sign In to IAOS";
+export const WORKING_TEXT = "Opening secure sign-in…";
+export const POPUP_BLOCKED_TEXT = "Allow pop-ups for IAOS to sign in.";
+export const EXPIRED_TEXT = "Your 30-day session has ended. Sign in to continue — your unsaved work is still here.";
 
+/** Why there is no session: none known (first visit / expired cookie), ended while open, revoked by a Sign out elsewhere, or Sign out here. */
+type SignedOutReason = "none" | "ended" | "revoked" | "signed_out_here";
 type Status =
   | { kind: "checking" }
   | { kind: "unconfigured" }
-  | { kind: "signed_out"; message: string }
+  | { kind: "signed_out"; reason: SignedOutReason }
   | { kind: "signed_in"; expiresAt: number }
   | { kind: "unavailable"; message: string }
   | { kind: "signing_out" }
@@ -52,6 +61,13 @@ type Status =
  * re-checked on load, focus and visibility, after any refused or unavailable
  * answer -- never while a Sign out is pending or unconfirmed. Other tabs are
  * stopped by the server, not by this component.
+ *
+ * B15-29 login experience (spec SPEC_LOGIN_EXPERIENCE): with no session yet the full-page entrance screen is shown
+ * and the routed app is not rendered (the URL is never touched, so the deep link is where the app opens). Once the
+ * page has been signed in, every later state is an opaque full-viewport OVERLAY above the still-mounted, inert page
+ * (never unmounted, so drafts survive; focus returns after). The 5-day / 1-day reminder is computed only from the
+ * server's absolute `expiresAt`; Remind Me Later records a dismissal and sends nothing; Log In Again opens the
+ * overlay, and its sign-in is a NEW 30-day session (the old one is left to expire).
  */
 export default function OneLoginAccess({ children }: { children: ReactNode }) {
   const popup = useRef<Window | null>(null);
@@ -60,6 +76,9 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
   useEffect(() => { if (status.kind === "signed_in") setWasSignedIn(true); }, [status.kind]);
   const [epoch, setEpoch] = useState(0);
   const lapsed = useRef(false);
+  const [popupState, setPopupState] = useState<"idle" | "working" | "blocked">("idle");
+  const [relogin, setRelogin] = useState(false);
+  const [tick, setTick] = useState(0);
   const generation = useRef(0);
   const attempt = useRef(0);
   const handle = useRef<string | null>(null);
@@ -82,7 +101,7 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
       : { kind: status.kind === "signing_out" ? "signout_unconfirmed" : status.kind });
   }, [status, report]);
 
-  const check = useCallback(async (signedOutMessage = "Sign in to read IAOS data.") => {
+  const check = useCallback(async (signedOutReason: SignedOutReason = "none") => {
     if (signOutBusy.current || frozen.current) return;   // never while a Sign out is pending or unconfirmed
     const g = generation.current;
     let res: Response;
@@ -99,7 +118,7 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
       setStatus({ kind: "signed_in", expiresAt });
     } else {
       handle.current = null;
-      setStatus({ kind: "signed_out", message: body?.state === "revoked" ? "Signed out of IAOS. Sign in to continue." : signedOutMessage });
+      setStatus({ kind: "signed_out", reason: body?.state === "revoked" ? "revoked" : signedOutReason });
     }
   }, []);
 
@@ -112,9 +131,10 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
       // A deliberate sign-in: a new session; any old frozen handle is dropped and saving may resume here.
       generation.current += 1; frozen.current = null; handle.current = null;
       resumeAppWriteAccess();
-      void check();
+      setPopupState("idle");
+      void check().then(() => setRelogin(false));
     };
-    const lost = () => { void check("Read session ended. Sign in to continue."); };
+    const lost = () => { void check("ended"); };
     const recheck = () => { if (document.visibilityState === "visible") void check(); };
     window.addEventListener("message", receive);
     window.addEventListener(READ_SESSION_LOST_EVENT, lost);
@@ -136,13 +156,30 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
     if (!expiresAt) return;
     // B15-29 r6: a 30-day expiry is beyond setTimeout's 2^31-1 ms limit (an overflow would fire at once and loop), so the
     // wait is capped at one day; at that point the status is simply re-checked and the timer re-armed.
-    const timer = setTimeout(() => { setRearm((n) => n + 1); void check("Read session expired. Sign in to continue."); }, Math.min(MAX_TIMER_MS, Math.max(0, expiresAt - Date.now())));
+    const timer = setTimeout(() => { setRearm((n) => n + 1); void check("ended"); }, Math.min(MAX_TIMER_MS, Math.max(0, expiresAt - Date.now())));
     return () => clearTimeout(timer);
   }, [expiresAt, check, rearm]);
 
+  // Reminder checkpoints (T5, T1) from the server's absolute expiry: re-evaluated at each status answer and by a
+  // local timer at the next checkpoint (capped at one day). No request is made here.
+  useEffect(() => {
+    if (!expiresAt) return;
+    const delay = nextReminderDelay(expiresAt, Date.now());
+    if (delay === null) return;
+    const timer = setTimeout(() => setTick((n) => n + 1), delay);
+    return () => clearTimeout(timer);
+  }, [expiresAt, tick]);
+
+  // While the sign-in popup is open: "working"; closed without signing in -> back to idle (no request).
+  useEffect(() => {
+    if (popupState !== "working") return;
+    const timer = setInterval(() => { if (!popup.current || popup.current.closed) { popup.current = null; setPopupState("idle"); } }, 500);
+    return () => clearInterval(timer);
+  }, [popupState]);
+
   function signIn() {
     popup.current = window.open("/app-read-login.html", "iaos-app-read-signin", "popup,width=480,height=620");
-    if (!popup.current) setStatus({ kind: "signed_out", message: "Allow the sign-in popup to read IAOS data." });
+    setPopupState(popup.current ? "working" : "blocked");
   }
 
   async function signOut() {
@@ -176,50 +213,79 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
     if (confirmed && Date.now() <= deadline) {
       frozen.current = null; handle.current = null; generation.current += 1;
       setWasSignedIn(false); // an explicit, confirmed sign-out hides the page, unlike an expiry
-      setStatus({ kind: "signed_out", message: SIGNED_OUT_TEXT });
+      setStatus({ kind: "signed_out", reason: "signed_out_here" });
     } else {
       setStatus({ kind: "signout_unconfirmed", message: SIGN_OUT_NOT_CONFIRMED_TEXT });
     }
   }
 
-  const page = <div key="page" hidden={status.kind !== "signed_in"} aria-hidden={status.kind !== "signed_in"}>
+  const signedIn = status.kind === "signed_in";
+  // Not signed in: the page stays MOUNTED (drafts, saves in flight) but is not painted (visibility keeps its layout and
+  // scroll position) under the opaque overlay, and the overlay layer makes it inert.
+  const page = <div key="page" data-testid="one-login-app" style={signedIn ? undefined : { visibility: "hidden" }} aria-hidden={!signedIn || undefined}>
     <ReadRecovered.Provider value={epoch}>{children}</ReadRecovered.Provider>
   </div>;
-  if (status.kind === "signed_in") return <>{null}{page}</>;
-  const text = status.kind === "checking" ? "Checking sign-in…" :
-    status.kind === "signing_out" ? "Signing out…" :
-    status.kind === "unconfigured" ? "Read sign-in is not configured for this site. No IAOS data can be shown." :
-    status.message;
-  const action = status.kind === "signed_out"
-    ? <button onClick={signIn} className="px-4 py-2 rounded font-semibold" style={{ background: "#1EC8FF", color: "#07142E" }}>{wasSignedIn ? "Sign in again" : "Sign in"}</button>
-    : status.kind === "unavailable"
-      ? <button data-testid="one-login-try-again" onClick={() => { void check(); }} className="px-4 py-2 rounded font-semibold" style={{ background: "#1EC8FF", color: "#07142E" }}>Try again</button>
-      : status.kind === "signout_unconfirmed"
-        ? <button data-testid="one-login-retry-sign-out" onClick={() => { void signOut(); }} className="px-4 py-2 rounded font-semibold" style={{ background: "#1EC8FF", color: "#07142E" }}>Try Sign out again</button>
-        : null;
-  if (!wasSignedIn) {
-    // No session yet: one sign-in landing, nothing else -- no page (and so no GHL read) mounts before the server confirms.
-    return <div role="status" data-testid={`read-access-${status.kind}`} className="max-w-md mx-auto mt-16 p-6 rounded-lg text-white" style={{ background: "#14213d" }}>
-      <h1 className="text-xl font-semibold mb-2">Sign in to IAOS</h1>
-      <p className="text-sm mb-4" style={{ color: "rgba(255,255,255,0.7)" }}>{text}</p>
-      {action}
-    </div>;
+
+  const signInAction: ScreenAction = { label: SIGN_IN_LABEL, onClick: signIn, testId: "one-login-sign-in", busy: popupState === "working" };
+  const popupMessage: ScreenMessage | null = popupState === "working" ? { text: WORKING_TEXT, tone: "status" }
+    : popupState === "blocked" ? { text: POPUP_BLOCKED_TEXT, tone: "alert" } : null;
+  const msg = (text: string, tone: "status" | "alert" = "status"): ScreenMessage => ({ text, tone, testId: `read-access-${status.kind}` });
+  const tryAgain: ScreenAction = { label: "Try again", onClick: () => { void check(); }, testId: "one-login-try-again" };
+
+  let layer: ReactNode = null;
+  if (signedIn) {
+    if (relogin) {
+      layer = <OneLoginScreen key="overlay" mode="overlay" testId="one-login-relogin" heading="Log in again"
+        line="Start a new 30-day session. Your work on this page stays where it is."
+        primary={signInAction} message={popupMessage}
+        secondary={{ label: "Cancel", onClick: () => { setRelogin(false); setPopupState("idle"); }, testId: "one-login-cancel" }} />;
+    } else {
+      const due = dueReminder(status.expiresAt, Date.now());
+      if (due !== null && !reminderDismissed(status.expiresAt, due)) {
+        const at = status.expiresAt;
+        layer = <ReminderDialog key={`reminder-${due}`} text={reminderMessage(due)}
+          onLater={() => { dismissReminder(at, due); setTick((n) => n + 1); }}
+          onLogIn={() => { dismissReminder(at, due); setRelogin(true); }} />;
+      }
+    }
+  } else if (!wasSignedIn) {
+    // No session yet: the full-page entrance, nothing else -- no page (and so no GHL read) mounts before the server confirms.
+    const heading = "Welcome to IAOS";
+    const line = "Sign in to open your investor workspace.";
+    layer = status.kind === "checking"
+      ? <OneLoginScreen key="entrance" mode="entrance" testId="one-login-entrance" message={msg("Checking your session…")} footer={false} />
+      : status.kind === "unconfigured"
+        ? <OneLoginScreen key="entrance" mode="entrance" testId="one-login-entrance" heading={heading} line={line}
+            message={msg("Read sign-in is not configured for this site. No IAOS data can be shown.", "alert")} />
+        : status.kind === "unavailable"
+          // An outage is never a sign-in prompt: Try again re-checks; there is no sign-in button.
+          ? <OneLoginScreen key="entrance" mode="entrance" testId="one-login-entrance" heading={heading} line={line} primary={tryAgain} message={msg(status.message, "alert")} />
+          : status.kind === "signed_out"
+            ? <OneLoginScreen key="entrance" mode="entrance" testId="one-login-entrance" heading={heading} line={line} primary={signInAction}
+                message={popupMessage ?? (status.reason === "revoked" || status.reason === "signed_out_here" ? msg(SIGNED_OUT_TEXT) : null)} />
+            : <OneLoginScreen key="entrance" mode="entrance" testId="one-login-entrance" heading={heading} line={line}
+                message={msg(status.kind === "signing_out" ? "Signing out…" : status.message, status.kind === "signing_out" ? "status" : "alert")} />;
+  } else {
+    // The page was signed in: every state is the overlay above the mounted, inert page.
+    const keep = "Nothing you saved is lost. Anything you haven't saved stays on this page.";
+    layer = status.kind === "signed_out"
+      ? <OneLoginScreen key="overlay" mode="overlay" testId="read-access-recovery"
+          heading={status.reason === "revoked" ? "You've signed out" : "Your session has ended"}
+          line="Sign in again to continue where you left off." primary={signInAction}
+          message={popupMessage ?? msg(status.reason === "revoked" ? SIGNED_OUT_TEXT : EXPIRED_TEXT)} />
+      : status.kind === "unavailable"
+        ? <OneLoginScreen key="overlay" mode="overlay" testId="read-access-recovery" heading="IAOS can't confirm your sign-in right now"
+            line={`${keep} A new sign-in would not fix this; try again in a moment.`} primary={tryAgain} message={msg(status.message, "alert")} />
+        : status.kind === "signout_unconfirmed"
+          ? <OneLoginScreen key="overlay" mode="overlay" testId="read-access-recovery" heading="Sign-out not confirmed yet"
+              line={`${keep} Nothing is saved from this page until you sign in again.`}
+              primary={{ label: "Try Sign out again", onClick: () => { void signOut(); }, testId: "one-login-retry-sign-out" }} message={msg(status.message, "alert")} />
+          : status.kind === "signing_out"
+            ? <OneLoginScreen key="overlay" mode="overlay" testId="read-access-recovery" heading="Signing out" line={keep} message={msg("Signing out…")} />
+            : status.kind === "unconfigured"
+              ? <OneLoginScreen key="overlay" mode="overlay" testId="read-access-recovery" heading="Sign-in is not configured" line={keep}
+                  message={msg("Read sign-in is not configured for this site. No IAOS data can be shown.", "alert")} />
+              : null;
   }
-  const title = status.kind === "unavailable" ? "IAOS can't confirm your sign-in right now"
-    : status.kind === "signout_unconfirmed" || status.kind === "signing_out" ? "Sign-out not confirmed yet"
-    : "Your sign-in has ended";
-  const detail = status.kind === "unavailable"
-    ? "Nothing you saved is lost. Anything you haven't saved stays on this page. A new sign-in would not fix this; try again in a moment."
-    : status.kind === "signout_unconfirmed" || status.kind === "signing_out"
-      ? "Nothing you saved is lost. Anything you haven't saved stays on this page. Nothing is saved from this page until you sign in again."
-      : "Nothing you saved is lost. Anything you haven't saved stays on this page. Sign in again to continue — the page then refreshes its data.";
-  return <>
-    <div key="recovery" role="status" data-testid="read-access-recovery" className="max-w-md mx-auto mt-16 p-6 rounded-lg text-white" style={{ background: "#14213d" }}>
-      <h1 className="text-xl font-semibold mb-2">{title}</h1>
-      <p className="text-sm mb-2" style={{ color: "rgba(255,255,255,0.7)" }} data-testid={`read-access-${status.kind}`}>{text}</p>
-      <p className="text-sm mb-4" style={{ color: "rgba(255,255,255,0.7)" }}>{detail}</p>
-      {action}
-    </div>
-    {page}
-  </>;
+  return <>{layer}{signedIn || wasSignedIn ? page : null}</>;
 }
