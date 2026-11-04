@@ -21,7 +21,7 @@ like a valid absence. This runbook defines that authority, how it is provisioned
 | Test | `test` | `07ca1f1a-60fd-4229-a076-528970957912` | iaos-app-test |
 | Production | `production` | `19fcbf6a-7c3c-40e3-af20-bd077f0f8ec8` | iaos-app |
 
-The ids are a frozen constant (`PINNED_REVOCATION_SITES`) in the module. Changing one is a reviewed code change,
+The ids are a frozen constant (`SESSION_REVOCATION_SITE_IDS` in `app/shared/ghl-config.ts`, the identifier boundary; viewed per deployment as `PINNED_REVOCATION_SITES` in the module). Changing one is a reviewed code change,
 never configuration. Every operation is **unavailable** (503 / Sign out not confirmed) unless all of these hold:
 
 1. `IAOS_ENV` is exactly `test` or `production`.

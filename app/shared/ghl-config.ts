@@ -459,6 +459,16 @@ export const PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED = "PRODUCTION_SELLER_CA
 export const ONE_LOGIN_ENABLED = "ONE_LOGIN_ENABLED" as const;
 /** B15-29 (INV-137) — the value BOTH environments carry until a reviewed enable commit: behaviour exactly as before. */
 export const ONE_LOGIN_DISABLED = "ONE_LOGIN_DISABLED" as const;
+/**
+ * B15-29 (INV-137, Bones H2) -- the intended Session-revocation authority per environment: the public Netlify site id
+ * of each deployment (iaos-app-test / iaos-app). Pinned here (the one home for identifiers) and enforced by
+ * lib/session-revocation.ts against the configured store site id, the authority anchor and the runtime x-nf-site-id.
+ * Public identifiers, not credentials.
+ */
+export const SESSION_REVOCATION_SITE_IDS: Readonly<{ test: string; production: string }> = Object.freeze({
+  test: "07ca1f1a-60fd-4229-a076-528970957912",
+  production: "19fcbf6a-7c3c-40e3-af20-bd077f0f8ec8",
+});
 
 /**
  * INV-67 / B9-12 -- the literal placeholder value for a not-yet-provisioned

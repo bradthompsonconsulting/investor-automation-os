@@ -77,7 +77,7 @@
  */
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { getStore } from "@netlify/blobs";
-import { oneLoginActiveFor } from "../../../shared/ghl-config";
+import { oneLoginActiveFor, SESSION_REVOCATION_SITE_IDS } from "../../../shared/ghl-config";
 import {
   READ_AUTH_REFUSED, READ_AUTH_UNCONFIGURED, ReadAuthUnconfigured, appReadConfig, isCanonicalEpoch, isCanonicalSid, readSessionToken,
   verifyReadSession, type ReadAuthConfig,
@@ -120,9 +120,10 @@ const respond = (statusCode: number, body: unknown) => ({ statusCode, headers: {
  * The intended revocation authority per environment: the Netlify site whose receipts store holds the records.
  * Public site ids (iaos-app-test / iaos-app). Changing one is a reviewed code change, never configuration.
  */
+/* The ids themselves live in shared/ghl-config.ts (identifier boundary); this is the frozen per-deployment view. */
 export const PINNED_REVOCATION_SITES: Readonly<Record<Deployment, string>> = Object.freeze({
-  test: "07ca1f1a-60fd-4229-a076-528970957912",
-  production: "19fcbf6a-7c3c-40e3-af20-bd077f0f8ec8",
+  test: SESSION_REVOCATION_SITE_IDS.test,
+  production: SESSION_REVOCATION_SITE_IDS.production,
 });
 /** The platform's runtime site id header (the one @netlify/blobs connectLambda reads). */
 export const RUNTIME_SITE_HEADER = "x-nf-site-id";
