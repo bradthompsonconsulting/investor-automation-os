@@ -27,7 +27,10 @@ import { computeOfferReadiness, CATEGORY_LABEL, type ReadinessResult, type Mater
 import { computeNextBestQuestion, computeQuestionQueue, computeOperatorChecklist, CATEGORY_PRIORITY, type NextBestQuestion } from "../lib/underwriting/next-best-question";
 import { FullScriptDrawer } from "../components/FullScriptDrawer";
 import { SellerCallNotesPanel } from "../components/SellerCallNotesPanel";
-import { SellerConversation } from "../components/SellerConversation";
+import { SellerConversation, type ConversationSave } from "../components/SellerConversation";
+import { buildSavePlan, sellerConversationSaveAvailable, SellerConversationSaveCoordinator, type SaveItemId, type SentRecord } from "../lib/seller-conversation-save";
+import { createSellerConversationSaveClient } from "../lib/seller-conversation-save-client";
+import type { ConversationDraft } from "../lib/seller-conversation";
 import { onRecordFor, recommendedQuestion, type OnRecordInput } from "../lib/seller-conversation";
 import { OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS } from "../lib/ghl";
 import { useRailClearance } from "../lib/rail-clearance";
@@ -354,7 +357,7 @@ function Shell({ contactId, children, side }: { contactId: string; children: Rea
  * after a confirmed save this visit; a failure keeps the text and says how to
  * retry; a value that cannot be saved as typed says why.
  */
-function SaveStatusLine({ testid, status, dirty, problem, kept = "Your text is kept." }: { testid: string; status: AutosaveStatus; dirty: boolean; problem: string | null; kept?: string }) {
+function SaveStatusLine({ testid, status, dirty, problem, kept = "Your text is kept.", unsaved = "Not saved yet." }: { testid: string; status: AutosaveStatus; dirty: boolean; problem: string | null; kept?: string; unsaved?: string }) {
   const base: React.CSSProperties = { fontSize: "10px", lineHeight: 1.35 };
   if (status.kind === "saving") return <span data-testid={testid} data-state="saving" style={{ ...base, color: "#94A3B8" }}>Saving…</span>;
   if (problem) return <span data-testid={testid} data-state="invalid" style={{ ...base, color: "#F59E0B" }}>Not saved: {problem}</span>;
@@ -365,10 +368,13 @@ function SaveStatusLine({ testid, status, dirty, problem, kept = "Your text is k
       </span>
     );
   }
-  if (dirty) return <span data-testid={testid} data-state="unsaved" style={{ ...base, color: "#F59E0B" }}>Not saved yet.</span>;
+  if (dirty) return <span data-testid={testid} data-state="unsaved" style={{ ...base, color: "#F59E0B" }}>{unsaved}</span>;
   if (status.kind === "saved") return <span data-testid={testid} data-state="saved" style={{ ...base, color: "#22C55E" }}>Saved</span>;
   return <span data-testid={testid} data-state="idle" style={{ ...base, display: "none" }} />;
 }
+
+/** Slice C: with Save enabled, the Board 14-13 sections are saved with the call, never on their own. */
+const SAVED_AT_SUMMARY = "Not saved yet: saved with the call by Save at Summary & next step.";
 
 function Notice({ tone, title, body }: { tone: "error" | "warn" | "info"; title: string; body?: string }) {
   const color = tone === "error" ? "#EF4444" : tone === "warn" ? "#F59E0B" : "#64748B";
@@ -387,21 +393,23 @@ function Notice({ tone, title, body }: { tone: "error" | "warn" | "info"; title:
 }
 
 /** Renders exactly what `buildDealBarCells` returns -- no formatting decision is made here. */
-function DealBar({ cells }: { cells: DealBarCell[] }) {
+function DealBar({ cells, compact = false }: { cells: DealBarCell[]; compact?: boolean }) {
+  /* B15-03 slice A (Captain 2026-11-03): `compact` is the thin deal strip -- same cells, labels and values
+     from buildDealBarCells, smaller spacing and type. Nothing is computed or reformatted here. */
   return (
-    <div style={{
-      display: "flex", gap: "24px", flexWrap: "wrap", alignItems: "flex-start",
-      padding: "16px 20px", background: "#0F172A", border: "1px solid #1E293B",
-      borderRadius: "10px", marginBottom: "16px",
+    <div data-testid="seller-call-deal-strip" data-compact={compact ? "true" : undefined} style={{
+      display: "flex", gap: compact ? "6px 16px" : "24px", flexWrap: "wrap", alignItems: "flex-start",
+      padding: compact ? "6px 12px" : "16px 20px", background: "#0F172A", border: "1px solid #1E293B",
+      borderRadius: "10px", marginBottom: compact ? "6px" : "16px",
     }}>
       {cells.map((cell) => (
-        <div key={cell.key} style={{ display: "flex", flexDirection: "column", gap: "3px", minWidth: "128px" }}>
+        <div key={cell.key} style={{ display: "flex", flexDirection: "column", gap: compact ? "1px" : "3px", minWidth: compact ? "96px" : "128px" }}>
           <span style={{ fontSize: "9px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em" }}>
             {cell.label}
           </span>
           {cell.value.kind === "value" ? (
             <span style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-              <span style={{ fontSize: "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#E2E8F0" }}>
+              <span style={{ fontSize: compact ? "13px" : "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#E2E8F0" }}>
                 {cell.value.text}
               </span>
               {/* Board 15 / Pass 1 F31: a recorded Current Offer says whether it is supported. */}
@@ -433,17 +441,18 @@ const READINESS_STYLE: Record<ReadinessResult["effectiveStatus"], { color: strin
  * is explicit that this is not another dollar tile. Renders exactly what
  * B8-04 (`computeOfferReadiness`) returned; no local readiness logic.
  */
-function ReadinessBadge({ readiness }: { readiness: ReadinessResult }) {
+function ReadinessBadge({ readiness, compact = false }: { readiness: ReadinessResult; compact?: boolean }) {
+  /* B15-03 slice A: `compact` is a small chip (Captain: no duplicate NOT READY prominence). Same engine output. */
   const style = READINESS_STYLE[readiness.effectiveStatus];
   const Icon = style.Icon;
   return (
-    <div style={{ marginBottom: "20px" }}>
+    <div data-testid="seller-call-readiness-chip" style={{ marginBottom: compact ? "4px" : "20px", display: compact ? "flex" : undefined, alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
       <div style={{
-        display: "inline-flex", alignItems: "center", gap: "8px", padding: "8px 14px",
-        borderRadius: "8px", background: `${style.color}1A`, border: `1px solid ${style.color}44`,
+        display: "inline-flex", alignItems: "center", gap: compact ? "5px" : "8px", padding: compact ? "2px 8px" : "8px 14px",
+        borderRadius: compact ? "999px" : "8px", background: `${style.color}1A`, border: `1px solid ${style.color}44`,
       }}>
-        <Icon size={16} style={{ color: style.color }} />
-        <span style={{ fontSize: "13px", fontWeight: 700, color: style.color, letterSpacing: "0.02em" }}>
+        <Icon size={compact ? 12 : 16} style={{ color: style.color }} />
+        <span style={{ fontSize: compact ? "11px" : "13px", fontWeight: 700, color: style.color, letterSpacing: "0.02em" }}>
           {style.label}
         </span>
         {readiness.status !== readiness.effectiveStatus ? (
@@ -456,7 +465,7 @@ function ReadinessBadge({ readiness }: { readiness: ReadinessResult }) {
           screen. The badge now gives the count; the items themselves are one
           click away here and listed in full under "What We Still Need". */}
       {readiness.reasons.length > 0 ? (
-        <details data-testid="readiness-reasons" style={{ marginTop: "8px" }}>
+        <details data-testid="readiness-reasons" style={{ marginTop: compact ? 0 : "8px" }}>
           <summary style={{ fontSize: "12px", color: "#94A3B8", cursor: "pointer" }}>
             {readiness.reasons.length} open {readiness.reasons.length === 1 ? "item" : "items"} — details below under What We Still Need
           </summary>
@@ -731,6 +740,14 @@ export default function SellerCallWorkspace() {
      A correction is still simply another append-only entry. */
   const [, setAutosaveTick] = useState(0);
   const autosave = useMemo(() => new AutosaveCoordinator(() => setAutosaveTick((n) => n + 1)), []);
+  /* B15-03 / INV-103 slice C -- Save at Summary. `saveEnabled` is the server-projected capability
+     (runtime config `sellerConversationSave.enabled`; false in both environments in this slice). While it is
+     false the Board 14-13 sections below autosave exactly as before and Save only shows its plan. While it is
+     true those sections stop writing on blur/Enter (their changes join the one Save plan), and Save writes. */
+  const saveEnabled = useMemo(() => sellerConversationSaveAvailable(getRuntimeConfig()), []);
+  const [, setConversationSaveTick] = useState(0);
+  const conversationSaves = useMemo(() => new SellerConversationSaveCoordinator(() => setConversationSaveTick((n) => n + 1)), []);
+  const conversationSaveClient = useMemo(() => createSellerConversationSaveClient(), []);
   /** The contact this page is showing now; a confirmed save for another contact never touches this page's notes. */
   const contactIdRef = useRef(contactId);
   contactIdRef.current = contactId;
@@ -1166,7 +1183,7 @@ export default function SellerCallWorkspace() {
 
   function saveTransactionAssumptions(over: Partial<TransactionDraftInputs> = {}) {
     const t = writeTarget;
-    if (!t) return;
+    if (!t || saveEnabled) return; // slice C: with Save enabled this section joins the Save plan and never writes on its own
     const draft = transactionDraft(over);
     if (draft.problem) return;
     void autosave.request({ ...t, section: "transaction-assumptions" }, draft.signature, async () => {
@@ -1192,7 +1209,7 @@ export default function SellerCallWorkspace() {
 
   function saveSellerPricePosition() {
     const t = writeTarget;
-    if (!t) return;
+    if (!t || saveEnabled) return; // slice C: joins the Save plan
     const draft = sellerPriceDraft();
     if (draft.signature === "refused") { requestSellerPriceRefused(t); return; }
     if (draft.signature === null || draft.price === null) return;
@@ -1214,6 +1231,7 @@ export default function SellerCallWorkspace() {
   }
 
   function requestSellerPriceRefused(t: { contactId: string; opportunityId: string }) {
+    if (saveEnabled) return; // slice C: the refusal joins the Save plan (the field shows it as pending)
     void autosave.request({ ...t, section: "seller-price-position" }, "refused", async () => {
       const at = new Date().toISOString();
       const note = formatSellerPricePositionNote({ opportunityId: t.opportunityId, at, operator: null, kind: "refused" });
@@ -1234,7 +1252,7 @@ export default function SellerCallWorkspace() {
 
   function saveSellerPosition() {
     const t = writeTarget;
-    if (!t) return;
+    if (!t || saveEnabled) return; // slice C: joins the Save plan
     const signature = sellerPositionSignature();
     if (signature === null) return;
     void autosave.request({ ...t, section: "seller-position" }, signature, async () => {
@@ -2052,6 +2070,16 @@ export default function SellerCallWorkspace() {
   type DealDrafts = { ta: TransactionDraftInputs | null; price: string | null; priceRefused: boolean; sellerPosition: string | null };
   const dealDrafts = useRef(new Map<string, DealDrafts>());
   const shownDeal = useRef<{ key: string; target: { contactId: string; opportunityId: string } } | null>(null);
+  /* Bones C3 (2026-11-03): the section inputs as of the LATEST render. A Save confirmation can arrive after the
+     operator typed again; it compares these with the inputs its own Save submitted (its render's closure) and
+     never replaces anything typed since. */
+  const sectionInputsNow = useRef({ ts: "", tsNone: false, cp: "", cpNone: false, tc: "", tcNone: false, price: "", priceRefused: false });
+  sectionInputsNow.current = {
+    ts: transactionStructureInput, tsNone: transactionStructureNone,
+    cp: closingPossessionInput, cpNone: closingPossessionNone,
+    tc: titleComplicationsInput, tcNone: titleComplicationsNone,
+    price: sellerPricePositionInput, priceRefused: sellerPriceRefusalPending,
+  };
   useEffect(() => {
     const dealKey = writeTarget ? JSON.stringify([writeTarget.contactId, writeTarget.opportunityId]) : null;
     if (dealKey === (shownDeal.current?.key ?? null)) return;
@@ -2116,6 +2144,92 @@ export default function SellerCallWorkspace() {
     if (priceDirty) saveSellerPricePosition();
     if (spDirty) saveSellerPosition();
   }
+
+  /* B15-03 / INV-103 slice C -- Save at Summary for the deal on screen. The plan is built from the
+     conversation draft plus what this page has already read (the latest Transaction assumptions, Seller price
+     position, Seller Position and contact occupancy for THIS deal) and, only while Save is enabled, the three
+     sections as typed. Each write it holds is already bound to this deal's opportunity, and the coordinator sends
+     to the contact bound here, so a save can only reach the record it was planned for. */
+  const recordOccupancy: string | null = useMemo(() => {
+    if (!contact || contact.id !== contactId) return null;
+    const raw = contact.customFields.find((f) => f.id === OCCUPANCY_STATUS_ID)?.value;
+    const v = Array.isArray(raw) ? raw[0] : raw;
+    return v === undefined || v === null || v === "" ? null : String(v);
+  }, [contact, contactId]);
+  const conversationSave: ConversationSave | null = writeTarget && !sellerLoading ? (() => {
+    const t = writeTarget;
+    const key = `${t.contactId}|${t.opportunityId}`;
+    const priceSection = (): "blank" | "invalid" | "price" | "refused" => {
+      if (priceDraftNow.signature === "refused") return "refused";
+      if (priceDraftNow.problem) return "invalid";
+      return priceDraftNow.price === null ? "blank" : "price";
+    };
+    return {
+      enabled: saveEnabled,
+      contactId: t.contactId,
+      coordinator: conversationSaves,
+      client: conversationSaveClient,
+      plan: (draft: ConversationDraft, callId: string) => {
+        const ps = priceSection();
+        return buildSavePlan({
+          opportunityId: t.opportunityId, callId, draft, previewAt: new Date().toISOString(),
+          record: {
+            transaction: transactionAssumptionsLatest ? {
+              transactionStructure: transactionAssumptionsLatest.transactionStructure,
+              closingPossession: transactionAssumptionsLatest.closingPossession,
+              titleComplications: transactionAssumptionsLatest.titleComplications,
+            } : null,
+            sellerPrice: sellerPricePositionRecord ? (sellerPricePositionRecord.kind === "price" ? { kind: "price", price: sellerPricePositionRecord.price } : { kind: "refused" }) : null,
+            sellerPosition: durableSellerPosition,
+            occupancy: recordOccupancy,
+          },
+          sections: saveEnabled ? {
+            ta: { fields: taDraftNow.fields, problem: taDraftNow.problem },
+            price: ps === "price" ? { kind: "price", price: priceDraftNow.price as number }
+              : ps === "invalid" ? { kind: "invalid", reason: priceDraftNow.problem ?? "not a valid price." }
+              : ps === "refused" ? { kind: "refused" } : { kind: "blank" },
+            sellerPosition: sellerPositionParsed.kind === "value" ? { kind: "value", value: sellerPositionParsed.value }
+              : sellerPositionParsed.kind === "invalid" ? { kind: "invalid", reason: sellerPositionParsed.reason } : { kind: "empty" },
+          } : null,
+          results: conversationSaves.results(key),
+        });
+      },
+      /* The coordinator calls the onConfirmed of the Save that started the operation (also for a later Check again
+         or a late answer), so this closure holds the inputs exactly as that Save submitted them. */
+      onConfirmed: (dealKey: string, item: { id: SaveItemId; signature: string }, sent: SentRecord) => {
+        // Only what was confirmed changes on screen; nothing typed is erased.
+        if (sent.kind === "note") appendSavedNote(sent.contactId, sent.body, sent.at);
+        else if (contactIdRef.current === sent.contactId) {
+          setContact((c) => (c && c.id === sent.contactId
+            ? { ...c, customFields: [...c.customFields.filter((f) => f.id !== OCCUPANCY_STATUS_ID), { id: OCCUPANCY_STATUS_ID, value: [sent.value] }] }
+            : c));
+        }
+        // The integrated sections now show the confirmed value as saved, on the same deal only.
+        if (!saveEnabled || shownDeal.current?.key !== JSON.stringify(dealKey.split("|"))) return;
+        const target = shownDeal.current.target;
+        const now = sectionInputsNow.current;
+        // The saved baseline always moves to what is confirmed on record (autosave.seed); the inputs show it ONLY
+        // where the operator has not typed since this Save was submitted (each item's text + None together), so a
+        // newer edit stays exactly as typed and reads as unsaved against the new baseline (Bones C3).
+        if (item.id === "timing") {
+          const f = JSON.parse(item.signature) as { transactionStructure: TransactionAssumptionDraftField; closingPossession: TransactionAssumptionDraftField; titleComplications: TransactionAssumptionDraftField };
+          const text = (x: TransactionAssumptionDraftField) => (x.kind === "value" ? x.value : "");
+          if (now.ts === transactionStructureInput && now.tsNone === transactionStructureNone) { setTransactionStructureInput(text(f.transactionStructure)); setTransactionStructureNone(f.transactionStructure.kind === "none"); }
+          if (now.cp === closingPossessionInput && now.cpNone === closingPossessionNone) { setClosingPossessionInput(text(f.closingPossession)); setClosingPossessionNone(f.closingPossession.kind === "none"); }
+          if (now.tc === titleComplicationsInput && now.tcNone === titleComplicationsNone) { setTitleComplicationsInput(text(f.titleComplications)); setTitleComplicationsNone(f.titleComplications.kind === "none"); }
+          autosave.seed({ ...target, section: "transaction-assumptions" }, item.signature);
+        } else if (item.id === "price") {
+          if (now.price === sellerPricePositionInput && now.priceRefused === sellerPriceRefusalPending) {
+            if (item.signature === "refused") { setSellerPricePositionInput(""); setSellerPriceRefusalPending(true); }
+            else { setSellerPricePositionInput(item.signature.slice("price:".length)); setSellerPriceRefusalPending(false); }
+          }
+          autosave.seed({ ...target, section: "seller-price-position" }, item.signature);
+        } else if (item.id === "sellerPosition") {
+          autosave.seed({ ...target, section: "seller-position" }, item.signature);
+        }
+      },
+    };
+  })() : null;
 
 
   /* The facts a recorded outcome captures, taken verbatim from what this
@@ -2512,8 +2626,11 @@ export default function SellerCallWorkspace() {
       ) : null}
     >
       <RefreshReadError message={refreshReadError} />
-      <div style={{ marginBottom: "6px" }}>
-        <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>
+      {/* B15-03 slice A (Captain 2026-11-03): the title block and the calling controls share one row; the
+          controls are compact boxes at the top right (SellerCallVoiceControls, unchanged logic and gates). */}
+      <div className="seller-call-header-row" data-testid="seller-call-header-row">
+      <div style={{ marginBottom: "6px", flex: "1 1 auto", minWidth: 0 }}>
+        <h1 style={{ fontSize: "20px", fontWeight: 700, color: "#E2E8F0", margin: 0 }}>
           Seller Call
         </h1>
         <div style={{ fontSize: "13px", color: "#64748B", marginTop: "4px" }}>
@@ -2528,13 +2645,16 @@ export default function SellerCallWorkspace() {
       </div>
 
       {!loading && fetchError === null && contact ? (
-        <SellerCallVoiceControls
-          contactId={contactId}
-          sellerName={contactName(contact)}
-          sellerPhone={contact.phone}
-          compactCallSlot={compactCallSlot}
-        />
+        <div className="seller-call-calltop" data-testid="seller-call-calltop">
+          <SellerCallVoiceControls
+            contactId={contactId}
+            sellerName={contactName(contact)}
+            sellerPhone={contact.phone}
+            compactCallSlot={compactCallSlot}
+          />
+        </div>
       ) : null}
+      </div>
 
       {/* Call context. No call-session carrier exists (see module header):
           this is a one-line framing derived from what is already known,
@@ -2560,24 +2680,8 @@ export default function SellerCallWorkspace() {
         </div>
       ) : null}
 
-      {!loading && fetchError === null ? (
-        <div style={{ fontSize: "12px", color: "#94A3B8", margin: "0 0 18px" }} data-testid="seller-call-next-objective">
-          <strong>Next objective:</strong>{" "}
-          {latestOutcome?.kind === "accept"
-            ? "Move this deal to Contract Ready — see the checklist below."
-            : latestOutcome?.kind === "follow_up" && latestOutcome.followUpAt
-              ? `Follow up by ${new Date(latestOutcome.followUpAt).toLocaleString()}.`
-              : latestOutcome?.kind === "pass"
-                ? "Reconsider on new information, or close out."
-                : nextBestQuestion === null
-                  ? "Underwriting must resolve before an objective can be set."
-                  : nextBestQuestion.kind === "offer_ready"
-                    ? "Offer Ready — move to presenting the offer."
-                    : nextBestQuestion.kind === "operator_only"
-                      ? "Finish your underwriting checklist below — nothing left to ask the seller."
-                      : nextBestQuestion.question}
-        </div>
-      ) : null}
+      {/* B15-03 slice A (Captain 2026-11-03): the separate "Next objective" line is removed as redundant --
+          the conversation's starred question and readiness row carry the same guidance. */}
 
       {loading ? (
         <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#64748B", fontSize: "13px" }}>
@@ -2662,7 +2766,7 @@ export default function SellerCallWorkspace() {
                 without covering anything the bar does not already cover. */}
             <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
               <div style={{ flex: "1 1 auto", minWidth: 0 }}>
-                <DealBar cells={dealBarCells} />
+                <DealBar cells={dealBarCells} compact />
                 {sellerLoading ? (
                   <div role="status" data-testid="seller-call-loading-seller"
                     style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#F59E0B", margin: "-8px 0 10px" }}>
@@ -2670,7 +2774,7 @@ export default function SellerCallWorkspace() {
                     Loading the selected seller. Answers are locked until their details arrive.
                   </div>
                 ) : null}
-                {readiness ? <ReadinessBadge readiness={readiness} /> : null}
+                {readiness ? <ReadinessBadge readiness={readiness} compact /> : null}
               </div>
               <div style={{ flex: "0 0 auto", paddingTop: "10px", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" }}>
                 <div ref={setCompactCallSlot} data-testid="seller-call-compact-call-slot" />
@@ -2682,7 +2786,7 @@ export default function SellerCallWorkspace() {
                 </button>
                 {/* Board 14-13 autosave: the one manual fallback for the whole page. Shown only while something is unsaved
                     or a save failed; it saves (or retries) every such section of the deal on screen. */}
-                {pageHasUnsaved || pageSaving ? (
+                {!saveEnabled && (pageHasUnsaved || pageSaving) ? (
                   <button type="button" data-testid="seller-call-save-changes" onClick={saveAllChanges} disabled={pageSaving}
                     style={{ ...COMPACT_BUTTON_STYLE, opacity: pageSaving ? 0.6 : 1, cursor: pageSaving ? "not-allowed" : "pointer" }}>
                     {pageSaving ? "Saving…" : "Save changes"}
@@ -2693,9 +2797,10 @@ export default function SellerCallWorkspace() {
           </div>
 
           {/* B15-03 / INV-103 (Rev 6 slices 1-2) -- the guided seller conversation.
-              Draft-only: it never saves, and its controls are not part of the
-              autosaved sections below. Keyed to the loaded deal (writeTarget is
-              null while a seller is loading, and then no control shows). */}
+              Its controls never write; the one write path is Save at Summary
+              (slice C, `conversationSave` above), disabled in this slice. Keyed
+              to the loaded deal (writeTarget is null while a seller is loading,
+              and then no control shows and nothing can be saved). */}
           <SellerConversation
             dealKey={writeTarget && !sellerLoading ? `${writeTarget.contactId}|${writeTarget.opportunityId}` : null}
             firstName={contact?.id === contactId ? contact.firstName : null}
@@ -2705,7 +2810,14 @@ export default function SellerCallWorkspace() {
             recommended={recommendedQuestion(nextBestQuestion)}
             staleRead={refreshReadError !== null}
             repairsHref={`/contacts/${contactId}/underwriting`}
+            save={conversationSave}
           />
+
+          {/* B15-03 slice A (Captain 2026-11-03): every existing Seller Call tool, unchanged, in one collapsible
+              section below the conversation. Open by default so no control or gate is hidden; collapse it to
+              keep the conversation alone on screen. */}
+          <details open className="seller-call-deal-tools" data-testid="seller-call-deal-tools">
+            <summary data-testid="seller-call-deal-tools-summary">Deal tools — readiness decision, negotiation, outcome, contract, underwriting</summary>
 
           {/* B8-13 / INV-68 — Offer Ready's OWN human approval/override,
               distinct from the negotiation above-Max override further
@@ -2993,7 +3105,7 @@ export default function SellerCallWorkspace() {
                   </span>
                 ) : null}
                 {/* Board 14-13 autosave: Seller Position saves on its own when the field is left or on Enter. */}
-                <SaveStatusLine testid="negotiation-seller-position-save-status" status={spStatus} dirty={spDirty} problem={null} />
+                <SaveStatusLine testid="negotiation-seller-position-save-status" unsaved={saveEnabled ? SAVED_AT_SUMMARY : undefined} status={spStatus} dirty={spDirty} problem={null} />
               </label>
               <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "11px", color: "#64748B" }}>
                 Current Offer
@@ -3619,7 +3731,7 @@ export default function SellerCallWorkspace() {
                         onChange={(e) => { setTitleComplicationsNone(e.target.checked); saveTransactionAssumptions({ titleNone: e.target.checked }); }} /> None known
                     </label>
                   </div>
-                <SaveStatusLine testid="transaction-assumptions-save-status" status={taStatus} dirty={taDirty} problem={taDraftNow.problem} />
+                <SaveStatusLine testid="transaction-assumptions-save-status" unsaved={saveEnabled ? SAVED_AT_SUMMARY : undefined} status={taStatus} dirty={taDirty} problem={taDraftNow.problem} />
               </div>
             </div>
 
@@ -3663,7 +3775,7 @@ export default function SellerCallWorkspace() {
                     Seller declined to give a price
                   </button>
                 </div>
-                <SaveStatusLine testid="seller-price-position-save-status" status={priceStatus} dirty={priceDirty} problem={priceDraftNow.problem}
+                <SaveStatusLine testid="seller-price-position-save-status" unsaved={saveEnabled ? SAVED_AT_SUMMARY : undefined} status={priceStatus} dirty={priceDirty} problem={priceDraftNow.problem}
                   kept={priceDraftNow.signature === "refused" ? "The refusal is kept." : undefined} />
               </div>
             </div>
@@ -3765,6 +3877,7 @@ export default function SellerCallWorkspace() {
               )}
             </div>
           </div>
+          </details>
         </>
       ) : null}
     </Shell>

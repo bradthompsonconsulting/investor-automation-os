@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { createBrowserRouter, createRoutesFromElements, RouterProvider, Route, Navigate } from "react-router-dom";
 import Layout from "./components/Layout";
 import Dashboard        from "./pages/Dashboard";
 import Contacts         from "./pages/Contacts";
@@ -15,10 +15,12 @@ import Segmentation  from "./pages/Segmentation";
 import Import        from "./pages/Import";
 import EvaluationClose from "./pages/EvaluationClose";
 
-export default function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
+/* B15-03 slice C (Bones C2): a DATA router, so the Seller Call leave guard can use React Router's supported
+   useBlocker for every in-app departure -- links, programmatic navigate(), and browser Back/Forward (POP) --
+   not only link clicks. The route tree is unchanged; only the router that holds it changed. Created once at
+   module scope (App is imported only after the runtime configuration is set, see main.tsx), so StrictMode's
+   double render never creates a second router listening to history. */
+const router = createBrowserRouter(createRoutesFromElements(
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard"     element={<Dashboard />} />
@@ -42,7 +44,11 @@ export default function App() {
           {/* B15-04 close (design r3): reached by URL only, no sidebar link. Test-only on the server. */}
           <Route path="evaluation-close" element={<EvaluationClose />} />
         </Route>
-      </Routes>
-    </BrowserRouter>
-  );
+));
+
+/** Exported ONLY so the offline app-routes harness can drive a programmatic navigate() in tests; nothing in the app imports it. */
+export { router };
+
+export default function App() {
+  return <RouterProvider router={router} />;
 }

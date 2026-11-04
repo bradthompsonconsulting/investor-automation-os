@@ -8,7 +8,13 @@
  *   sharedkey     -- drafts in one shared store/key      -> "I: B's price draft field is empty" fails (Bones P2-3)
  *   stalesource   -- the page applies a late old read    -> "I: after A's late reads land" fails (Bones P2-3)
  *   sametab       -- the repair estimate replaces the page -> "P2-1: it opens in a new tab" fails
- *   recapsaved    -- recap labels drafts as saved        -> "P2-2: Price lists the saved" fails
+ *   (recapsaved retired with the superseded P2-2 recap; Captain C8 2026-11-03)
+ *   summarymissing    -- Summary drops General notes        -> "SUM: Summary shows the call note" fails
+ *   summaryunanswered -- Summary prints Unanswered for blanks -> "SUM: a blank answer stays blank" fails
+ *   summarystale      -- Summary reads another copy          -> "SUM: every Summary answer equals the editable Call notes value" fails
+ *   notesdiverge  -- Call notes edit a separate copy      -> "SA notes: typing in the notes shows in the card" fails (slice A)
+ *   unsavedlabel  -- GHL controls stop saying NOT SAVED   -> "SA GHL: the Occupancy control ... NOT SAVED" fails (slice A)
+ *   headingnav    -- a note heading stops navigating      -> "SA notes: selecting a note heading opens that question" fails (slice A)
  *
  * Not a CI step (same as the B15-06 focus mutation runner): each mutation
  * re-runs the whole rendered suite. Run it for review evidence.
@@ -25,7 +31,12 @@ const EXPECT = {
   sharedkey: /^FAIL {2}I: B's price draft field is empty/m,
   stalesource: /^FAIL {2}I: after A's late reads land/m,
   sametab: /^FAIL {2}P2-1: it opens in a new tab/m,
-  recapsaved: /^FAIL {2}P2-2: Price lists the saved/m,
+  summarymissing: /^FAIL {2}SUM: Summary shows the call note/m,
+  summaryunanswered: /^FAIL {2}SUM: a blank answer stays blank/m,
+  summarystale: /^FAIL {2}SUM: every Summary answer equals the editable Call notes value/m,
+  notesdiverge: /^FAIL {2}SA notes: typing in the notes shows in the card/m,
+  unsavedlabel: /^FAIL {2}SA GHL: the Occupancy control names its GHL field and says NOT SAVED/m,
+  headingnav: /^FAIL {2}SA notes: selecting a note heading opens that question/m,
 };
 let failures = 0;
 for (const [name, mustFail] of Object.entries(EXPECT)) {

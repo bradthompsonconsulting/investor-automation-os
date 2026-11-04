@@ -1031,6 +1031,77 @@ function event(operation, targetId, args, requestId = `request-${++sequence}`) {
       e => setBody(e, envelope('opportunity.underContractStage', opportunity.id, {agreementAt: ucVersion.agreementAt, version})));
   }
 
+  // ============================================================
+  // B15-03 / INV-103 slice C -- the structured seller conversation note through the REAL ghl-write handler.
+  // Committed: DISABLED (refused before any Blob or GHL access). Enabled only inside this block (the shared
+  // Test config object, restored after): exact v1 parse and size limit, then the ledger guard.
+  // ============================================================
+  {
+    const conv = require('../src/lib/seller-conversation-note.ts');
+    const sc = require('../src/lib/seller-conversation.ts');
+    const cfgMod = require('../shared/ghl-config.ts');
+    const convBody = (over = {}) => conv.formatSellerConversationNote({ opportunityId: opportunity.id, callId: 'slice-c-call-1', at: '2026-11-03T15:00:00.000Z', operator: null, opening: 'cold',
+      rows: sc.noteFor(sc.withField(sc.EMPTY_CONVERSATION, 'opening', 'response', 'Open to talking')), ...over });
+    await check('slice C: committed config is DISABLED -- a conversation note is refused 403 not_sent before any Blob, lock or GHL call', async () => {
+      assert.equal(config.sellerConversationSave, cfgMod.SELLER_CONVERSATION_SAVE_DISABLED);
+      const before = [calls.length, writes, blobCalls, blobConnections, notes.length];
+      const res = await handler(event('note.create', contact.id, { body: convBody() }));
+      assert.equal(res.statusCode, 403);
+      assert.deepEqual(JSON.parse(res.body), { outcome: 'not_sent', error: 'Seller conversation note not enabled' });
+      assert.deepEqual([calls.length, writes, blobCalls, blobConnections, notes.length], before);
+    });
+    await check('slice C: disabled also refuses a malformed body that merely claims the carrier prefix', async () => {
+      const before = [calls.length, writes, blobCalls];
+      const res = await handler(event('note.create', contact.id, { body: 'IAOS SELLER CONVERSATION — anything' }));
+      assert.equal(res.statusCode, 403);
+      assert.deepEqual([calls.length, writes, blobCalls], before);
+    });
+    const saved = config.sellerConversationSave;
+    config.sellerConversationSave = cfgMod.SELLER_CONVERSATION_SAVE_ENABLED;
+    try {
+      await check('slice C (enabled in-test): a malformed or oversize conversation note is refused 400 not_sent before any Blob or GHL call', async () => {
+        for (const bad of [convBody().replace('Street: ""', 'Street: x'), convBody().replace('iaos-seller-conversation-v1', 'iaos-seller-conversation-v9'), convBody() + 'x'.repeat(conv.SELLER_CONVERSATION_NOTE_MAX_LENGTH)]) {
+          const before = [calls.length, writes, blobCalls];
+          const res = await handler(event('note.create', contact.id, { body: bad }));
+          assert.equal(res.statusCode, 400);
+          assert.deepEqual(JSON.parse(res.body), { outcome: 'not_sent', error: 'Malformed seller conversation note' });
+          assert.deepEqual([calls.length, writes, blobCalls], before);
+        }
+      });
+      await check('slice C (enabled in-test): a well-formed note on the contact\'s own opportunity is validated and written once, verbatim', async () => {
+        const before = writes;
+        const b = convBody();
+        const res = await handler(event('note.create', contact.id, { body: b }));
+        assert.equal(res.statusCode, 200, res.body);
+        assert.equal(writes, before + 1);
+        assert.equal(notes[notes.length - 1].body, b);
+      });
+      await check('slice C (enabled in-test): a note naming an opportunity this contact does not own is refused by the ledger guard (no write)', async () => {
+        const before = writes;
+        const owner = opportunity.contactId;
+        opportunity.contactId = 'someone-else'; // the opportunity, read fresh by the guard, now belongs to another contact
+        let res;
+        try { res = await handler(event('note.create', contact.id, { body: convBody({ callId: 'slice-c-call-2' }) })); } finally { opportunity.contactId = owner; }
+        assert.equal(res.statusCode, 409);
+        assert.equal(writes, before);
+      });
+      await check('slice C (enabled in-test): Production refuses the carrier through the real handler (proof write scope, 403 not_sent)', async () => {
+        const prior = process.env.IAOS_ENV;
+        const prod = cfgMod.getConfig('production');
+        const prodSaved = prod.sellerConversationSave;
+        prod.sellerConversationSave = cfgMod.SELLER_CONVERSATION_SAVE_ENABLED;
+        process.env.IAOS_ENV = 'production';
+        try {
+          const before = [calls.length, writes, blobCalls];
+          const res = await handler(event('note.create', prod.productionProofScope.contactId, { body: convBody({ opportunityId: prod.productionProofScope.opportunityId }) }));
+          assert.equal(res.statusCode, 403);
+          assert.equal(JSON.parse(res.body).outcome, 'not_sent');
+          assert.deepEqual([calls.length, writes, blobCalls], before);
+        } finally { process.env.IAOS_ENV = prior; prod.sellerConversationSave = prodSaved; }
+      });
+    } finally { config.sellerConversationSave = saved; }
+  }
+
   console.log(`B15-13: ${b1513} new checks (reported separately from the existing floor)`);
 
   console.log(`${count} offline boundary checks passed`);

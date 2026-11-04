@@ -57,6 +57,7 @@ import { parseOutcomeNote } from "../../../src/lib/seller-call-outcome";
 import { parsePropertyIdentityConfirmationNote, parseTransactionAssumptionsNote, parseSellerPricePositionNote, parseReadinessHumanActionNote, parseReadinessDecisionInvalidationNote, parseContractReadyChecklistNote } from "../../../src/lib/seller-call-readiness-carriers";
 import { parseNegotiationOverrideNote } from "../../../src/lib/seller-call-negotiation-override-note";
 import { parseSellerPositionNote } from "../../../src/lib/seller-call-seller-position-note";
+import { parseSellerConversationNote } from "../../../src/lib/seller-conversation-note";
 import { parseBuyerEntityOverrideNote, parsePartySignerFactsNote, parsePropertyLegalDescriptionFactsNote, parseLeaseDisclosureFactsNote, parseEarnestMoneyOptionFactsNote, parseTitleSurveyFactsNote, parsePropertyConditionFactsNote, parseClosingPossessionFactsNote, parseSettlementExpenseFactsNote, parseRepresentationFactsNote, parseAddendaApplicabilityFactsNote, parseSellerEquitableInterestDisclosureNote, parseAttorneyManualFieldDispositionNote, parseSellerNoticeConfirmationFactsNote, parseBuyerBusinessConfigFactsNote, parseSellerSigningModelNote } from "../../../src/lib/seller-contract-facts-carriers";
 import { parseBradContractAuthorizationNote } from "../../../src/lib/contract-authorization-carriers";
 import { parseDispositionHandoffNote } from "../../../src/lib/contract-disposition-handoff-carriers";
@@ -170,6 +171,9 @@ export const PRODUCTION_NOTE_SCOPE: ReadonlyArray<{ parse: (body: string) => unk
   { parse: parseSellerPricePositionNote, allow: null },
   // B14-13 autosave: Seller Position (value or cleared) is a Board #8-style evidence note -- refused in Production.
   { parse: parseSellerPositionNote, allow: null },
+  // B15-03 slice C: the structured seller conversation note -- refused in Production unconditionally in this slice
+  // (no class permits it; a separate Production-scope GO is required).
+  { parse: parseSellerConversationNote, allow: null },
   { parse: parseReadinessDecisionInvalidationNote, allow: null },
   { parse: parseContractReadyChecklistNote, allow: null },
   { parse: parseNegotiationOverrideNote, allow: null },

@@ -27,7 +27,7 @@ require('./harness/ts-loader.cjs');
 const APP = path.resolve(__dirname, '..');
 const C = require(path.join(APP, 'src/lib/seller-conversation.ts'));
 
-const FLOOR = 61;
+const FLOOR = 69;
 let checks = 0;
 let failures = 0;
 function check(name, ok, detail) {
@@ -56,18 +56,41 @@ const say = (id) => C.QUESTIONS.find((q) => q.id === id).say;
 const src = (id) => C.QUESTIONS.find((q) => q.id === id).source;
 const SETTLED = {
   address: 'Just to make sure I’m looking at the right property, can I confirm the address?',
-  ownership: 'Just so I understand the situation, is the property owned in your name, or is anyone else involved in making the decision to sell?',
   occupancy: 'Is anyone living in the property right now, or is it vacant?',
   condition: 'Tell me a little about the house. How would you describe its overall condition?',
-  price: 'What price were you hoping to get for the property?',
   timing: 'If everything worked out the way you’d want, when would you like to have the property sold?',
 };
 for (const [id, text] of Object.entries(SETTLED)) {
   check(`wording: ${id} is the settled Rev 6 line verbatim and is tagged settled`, say(id) === text && src(id) === 'rev6-settled', say(id));
 }
+/* Captain, hosted Test 2026-11-03 (INV-103): exact wording. */
+const CAPTAIN = {
+  ownership: 'Is the property owned in your name, or is anyone else involved in making the decision to sell?',
+  price: 'What price were you hoping to get for the property?',
+  asis: "What if you could sell it exactly as it sits, with no repairs or cleanup, leave behind anything you don't want, and close on a timeline that works for you? Would that take some weight off your shoulders?",
+};
+for (const [id, text] of Object.entries(CAPTAIN)) {
+  check(`wording: ${id} is the Captain's 2026-11-03 line verbatim and is tagged as his`, say(id) === text && src(id) === 'captain-2026-11-03', say(id));
+}
+check('wording: Price offers the Captain\'s alternate line', JSON.stringify(C.QUESTIONS.find((q) => q.id === 'price').alternates) === JSON.stringify(['What would you need to walk away with from the sale for this to make sense?']));
+check('wording: As-is is followed by "Is that something you\'d consider?"', C.QUESTIONS.find((q) => q.id === 'asis').then === "Is that something you'd consider?");
+check('wording: the Reason answer is labelled "Reason for selling"', C.QUESTIONS.find((q) => q.id === 'reason').fields.map((f) => f.label).join('|') === 'Reason for selling');
+/* Captain 2026-11-03: one answer control per question (a specific field plus notes only where he listed it). */
+const CONTROLS = {
+  opening: ['textarea'], address: ['text', 'text', 'text', 'text', 'text'], ownership: ['textarea'], occupancy: ['choice', 'textarea'],
+  reason: ['textarea'], timing: ['text'], price: ['money', 'textarea'], asis: ['textarea'], condition: ['textarea'], summary: ['textarea', 'date'],
+};
+check('controls: each question has exactly the Captain-approved controls', ORDER.every((id) => JSON.stringify(C.QUESTIONS.find((q) => q.id === id).fields.map((f) => f.kind)) === JSON.stringify(CONTROLS[id])),
+  Object.fromEntries(ORDER.map((id) => [id, C.QUESTIONS.find((q) => q.id === id).fields.map((f) => f.kind)])));
+check('controls: the address is street / unit / city / state / ZIP', C.QUESTIONS.find((q) => q.id === 'address').fields.map((f) => f.label).join('|') === 'Street|Unit|City|State|ZIP');
+check('controls: no duplicated narrative box ("Representation / title questions", desired outcome, objections are gone)', !/Representation|Desired outcome|Objections|Flexibility|Repairs \/ updates/.test(JSON.stringify(C.QUESTIONS.map((q) => q.fields))));
+const GHL = Object.fromEntries(C.QUESTIONS.map((q) => [q.id, q.fields.filter((f) => f.ghl).map((f) => `${f.id}=${f.ghl}`)]));
+check('controls: GHL-backed fields name their GHL record (address, occupancy, reason, timing, price) and nothing else does',
+  GHL.address.length === 5 && GHL.occupancy.join() === 'occupancy=Contact · Occupancy Status' && GHL.reason.join() === 'reason=Deal · Seller Reason (Test)'
+  && GHL.timing.join() === 'timing=Transaction assumptions · Closing / possession' && GHL.price.join() === 'amount=Seller price position'
+  && ['opening', 'ownership', 'asis', 'condition', 'summary'].every((id) => GHL[id].length === 0), GHL);
 const CANDIDATE = {
   reason: 'Can you tell me the reason for wanting to move or sell?',
-  asis: 'If you could sell without making repairs, leave behind what you don’t want, and work toward a closing date that fits your plans, is that something you’d consider?',
   summary: 'Let me make sure I’ve got everything right. Did I understand your situation correctly?',
 };
 for (const [id, text] of Object.entries(CANDIDATE)) {
@@ -158,22 +181,26 @@ check('on record: a v2 "not yet answered" item is not shown as an answer', Objec
 const unrec = C.onRecordFor({ ...empty, occupancy: { kind: 'unrecognised', raw: 'Squatters' } });
 check('on record: an unrecognised occupancy value is shown as unrecognised, never mapped', unrec.occupancy[0].value === 'Unrecognised value "Squatters"');
 
-/* ---------- Summary recap (Bones P2-2) ---------- */
-let r = C.withField(C.EMPTY_CONVERSATION, 'price', 'amount', ' 410000 ');
-r = C.withField(r, 'ownership', 'owners', 'Ready and a sibling');
+/* ---------- The structured call note (Captain C8 / plan A7; replaces the superseded P2-2 recap) ---------- */
+let r = C.withField(C.EMPTY_CONVERSATION, 'price', 'amount', '410000');
+r = C.withField(r, 'opening', 'response', 'Open to talking');
+r = C.withField(r, 'summary', 'next', 'Send numbers Friday');
+r = C.withField(r, 'summary', 'followup', '2026-11-10');
 r = C.withMark(r, 'asis', 'seller_doesnt_know');
-const recap = C.recapFor(r, full);
-const row = (id) => recap.find((x) => x.id === id);
-check('recap: one row per question between the opening and the summary, in order',
-  JSON.stringify(recap.map((x) => x.id)) === JSON.stringify(ORDER.filter((id) => id !== 'opening' && id !== 'summary')));
-check('recap: a recorded answer keeps its source and is not mixed with the draft',
-  row('price').saved.length === 2 && row('price').saved.every((s) => s.source) && row('price').draft.length === 1 && row('price').draft[0].value === '410000');
-check('recap: the seller\'s draft price is shown verbatim, never formatted or merged into the asking price',
-  row('price').draft[0].label === "Seller's stated price ($)" && row('price').saved.find((s) => s.label === 'Asking price').value === '$450,000');
-check('recap: a draft-only question shows its draft and nothing saved', row('ownership').draft[0].value === 'Ready and a sibling' && row('ownership').status === 'draft');
-check('recap: a mark is carried, with no invented answer', row('asis').mark === 'seller_doesnt_know' && row('asis').saved.length === 0 && row('asis').draft.length === 0);
-check('recap: an untouched question with no record is empty (Unanswered), not filled in', row('reason').status === 'unanswered' && row('reason').saved.length === 0 && row('reason').draft.length === 0 && row('reason').mark === null);
-check('recap: whitespace-only drafts are not listed', C.recapFor(C.withField(C.EMPTY_CONVERSATION, 'reason', 'reason', '   '), {}).find((x) => x.id === 'reason').draft.length === 0);
+r = { ...r, notes: 'Dog on site' };
+const note = C.noteFor(r);
+const row = (id) => note.find((x) => x.id === id);
+check('note: every question in order -- Opening through Summary -- then General notes',
+  JSON.stringify(note.map((x) => x.id)) === JSON.stringify([...ORDER, 'general']), note.map((x) => x.id));
+check('note: each question row lists every one of its fields, in order', note.filter((x) => x.kind === 'question').every((x) => JSON.stringify(x.answers.map((a) => a.fieldId)) === JSON.stringify(C.QUESTIONS.find((q) => q.id === x.id).fields.map((f) => f.id))));
+check('note: Opening, Summary + follow-up date and General notes carry their drafts',
+  row('opening').answers[0].value === 'Open to talking' && row('summary').answers.map((a) => a.value).join('|') === 'Send numbers Friday|2026-11-10' && row('general').value === 'Dog on site');
+check('note: a blank answer is the empty string (shown blank), never a word like "Unanswered"',
+  row('reason').answers[0].value === '' && !JSON.stringify(note).includes('Unanswered'));
+check('note: "Seller doesn\'t know" is a flag on that question only', row('asis').dontKnow === true && note.filter((x) => x.kind === 'question' && x.dontKnow).length === 1);
+check('note: values are exactly the draft text (no formatting, no recorded GHL value mixed in)', row('price').answers[0].value === '410000' && !note.some((x) => x.kind === 'question' && x.answers.some((a) => a.value.includes('$'))));
+check('note: headings number the questions as the navigator does', row('opening').heading === 'Opening' && row('price').heading === '6. Price expectations' && row('general').heading === 'General notes');
+check('note: the projection is the draft only (EMPTY gives all blanks and no marks)', C.noteFor(C.EMPTY_CONVERSATION).every((x) => x.kind === 'general' ? x.value === '' : (!x.dontKnow && x.answers.every((a) => a.value === ''))));
 
 if (checks !== FLOOR) { console.error(`FAILED: expected exactly ${FLOOR} checks, ran ${checks}.`); process.exit(2); }
 console.log(`\nchecksRun=${checks} failures=${failures} floor=${FLOOR} ${failures === 0 ? 'OK' : 'FAILED'}`);
