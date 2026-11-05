@@ -13,6 +13,8 @@
  * Fixtures:
  *   twoContacts()   contacts A (Alpha) and B (Bravo), one deal each (the
  *                   B15-27 fixture);
+ * ctx.refuseNext: the server refuses the next matching write BEFORE sending (not_sent).
+ *
  *   readyPlusB()    A = the Offer Ready deal of seller-call-offer-ready-fixture
  *                   (Confirm Accept genuinely enabled) and B (Bravo), a plain
  *                   contact with its own deal. Writes to B are APPLIED and
@@ -212,7 +214,7 @@ async function run({ title, floor, fixture, scenarios }) {
   };
   const entry = prepareEntry();
   const bf = createBarrierFixture({ contactOf: fixture.contactOf });
-  const ctx = { A, B, A_CALLBACK, B_CALLBACK, F, fixture, bf, check, log: [], holds: [], failNext: [], foreign: [], pageErrors: [] };
+  const ctx = { A, B, A_CALLBACK, B_CALLBACK, F, fixture, bf, check, log: [], holds: [], failNext: [], refuseNext: [], foreign: [], pageErrors: [] };
   const { createServer } = await import('vite');
   const react = (await import('@vitejs/plugin-react')).default;
   const { chromium } = require('playwright');
@@ -239,6 +241,7 @@ async function run({ title, floor, fixture, scenarios }) {
       try { post = route.request().postDataJSON(); } catch { post = null; }
       const method = route.request().method();
       const req = classify(url, method, post);
+      if (req.kind === 'current-offer-barrier' || req.kind === 'call-log-barrier') req.post = post;
       ctx.log.push(req);
       const h = ctx.holds.find((x) => !x.used && x.match(req));
       if (h) { h.used = true; h.onHit(req); await h.released; }
@@ -248,8 +251,9 @@ async function run({ title, floor, fixture, scenarios }) {
       const fi = ctx.failNext.findIndex((p) => p(req));
       if (fi >= 0) { ctx.failNext.splice(fi, 1); return fulfill({ status: 500, body: { error: 'fixture: injected failure' } }); }
       if (req.kind === 'write') {
-        const pre = fixture.precheck(req);
-        return fulfill(await bf.write({ operation: req.op, targetId: req.contact, requestId: req.requestId, contactId: req.contact, args: req.args },
+        const ri = ctx.refuseNext.findIndex((p) => p(req));
+        const pre = ri >= 0 ? (ctx.refuseNext.splice(ri, 1), { status: 409, error: 'fixture: refused before sending' }) : fixture.precheck(req);
+        return fulfill(await bf.write({ operation: req.op, targetId: req.contact, requestId: req.requestId, contactId: fixture.contactOf(req.contact) ?? req.contact, args: req.args },
           () => { const a = fixture.applyWrite(req.op, req.contact, req.args); return { confirmed: a.status === 200 }; },
           { outcome: req.op === 'note.create' ? parseOutcomeNote(req.args.body) : null, refuse: pre }));
       }
@@ -288,7 +292,7 @@ async function run({ title, floor, fixture, scenarios }) {
     ctx.clearStorage = () => page.evaluate(() => { try { localStorage.clear(); sessionStorage.clear(); } catch { /* none */ } });
     /** Fresh fixture, request log and browser storage, then a document load on `to`. */
     ctx.fresh = async (opts, to, op) => {
-      fixture.reset(opts); ctx.log.length = 0; ctx.holds.length = 0; ctx.failNext.length = 0; bf.reset();
+      fixture.reset(opts); ctx.log.length = 0; ctx.holds.length = 0; ctx.failNext.length = 0; ctx.refuseNext.length = 0; bf.reset();
       await ctx.load(null, op);
       await ctx.clearStorage();
       await ctx.load(to, op);
