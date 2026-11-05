@@ -24,6 +24,7 @@ import type { LatestInbound } from "../../shared/inbound-message";
    under lib/underwriting imports this module. */
 import { ASSIGNMENT_MODE_OPTIONS } from "./underwriting/resolver-types";
 import { type ContractVersionIdentity } from "./board9-contract-model";
+import { readAuthCode } from "./calendar-read-state";
 import {
   classifyStageTransitionResponse, resolveUncertainStageTransition, STAGE_TRANSITION_UNCERTAIN_MESSAGE,
   type FreshStageReadResolution, type StageTransitionResult,
@@ -1304,6 +1305,8 @@ export const ghl = {
         // explain a GHL permission refusal instead of printing raw JSON.
         let code: string | null = null;
         try { code = typeof JSON.parse(text)?.code === "string" ? JSON.parse(text).code : null; } catch { /* not JSON */ }
+        // B15-07: an IAOS read sign-in refusal is named as such (by the boundary's own marker), never blamed on GHL.
+        if (code === null) { try { code = readAuthCode(res.status, JSON.parse(text)?.by); } catch { /* not JSON */ } }
         throw Object.assign(new Error(`ghl-calendar-events → ${res.status}: ${text}`), { code });
       }
       return res.json() as Promise<CalendarEventsResult>;
