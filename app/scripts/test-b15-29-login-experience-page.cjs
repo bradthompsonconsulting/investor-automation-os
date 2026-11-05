@@ -644,11 +644,26 @@ async function main() {
       await V.evaluate(() => window.dispatchEvent(new Event('focus')));
       await until(() => shown(V, 'read-access-recovery'));
       const overlayFirst = await shown(V, 'read-access-recovery');
+      // Jeff (N40 not caught on 3311102): an end-state check missed a TRANSIENT repaint -- under the mutation the late
+      // "signed in" applied, then a follow-up check re-showed the overlay within the wait. Record EVERY DOM change in the
+      // window: the signed-in line must never appear and the overlay must never leave.
+      await V.evaluate(() => {
+        const w = window; w.__l22 = { sawSignedIn: false, overlayGone: false, mutations: 0 };
+        const probe = () => {
+          w.__l22.mutations += 1;
+          if (document.querySelector('[data-testid="read-access-signed-in"]')) w.__l22.sawSignedIn = true;
+          if (!document.querySelector('[data-testid="read-access-recovery"]')) w.__l22.overlayGone = true;
+        };
+        w.__l22o = new MutationObserver(probe);
+        w.__l22o.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+      });
       late.release();
       await sleep(800);
-      check('L22 delayed status: an OLDER "signed in" answer delivered after a NEWER "revoked" one is discarded -- the overlay stays, no signed-in status line repaints',
+      const l22 = await V.evaluate(() => { const w = window; w.__l22o.disconnect(); return w.__l22; });
+      check('L22 delayed status: an OLDER "signed in" answer delivered after a NEWER "revoked" one is discarded -- the overlay stays, no signed-in status line repaints (not even transiently)',
         lateEntry && lateEntry.state === 'signed_in' && overlayFirst && await shown(V, 'read-access-recovery') && !(await shown(V, 'read-access-signed-in')) &&
-        (await msgText(V)) === "You've signed out of IAOS." && (await draftValue(V)) === 'kept under the revoked overlay');
+        !l22.sawSignedIn && !l22.overlayGone &&
+        (await msgText(V)) === "You've signed out of IAOS." && (await draftValue(V)) === 'kept under the revoked overlay', l22);
       await ctx11.close();
     }
 
