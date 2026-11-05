@@ -9,6 +9,8 @@ import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home, AlertTriangle } from "lucide-react";
 import { ghl, type ContactDetail } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
+import { draftOperator, isUncertainFailure, useRecordDraft } from "../lib/contact-drafts";
+import { DraftNotice } from "../components/DraftNotice";
 import {
   parsePolicy,
   parseOpportunityValues,
@@ -263,6 +265,17 @@ const COMPACT_LINK_STYLE: React.CSSProperties = {
 const COMPACT_BUTTON_STYLE: React.CSSProperties = { ...COMPACT_LINK_STYLE };
 
 /** Page-local, one consumer -- same convention Dashboard.tsx and UnderwritingWorkspace.tsx each already follow for their own copies. */
+/** B15-27b -- the key of one deal on this page: its contact and its opportunity. */
+const dealKeyOf = (contactId: string, opportunityId: string) => JSON.stringify([contactId, opportunityId]);
+/**
+ * B15-27b P4 -- a setter that applies only while `shown()` holds. This page
+ * is reused across contacts and deals; a delayed result for one that is no
+ * longer shown is dropped instead of landing on the one that is.
+ */
+function onlyWhile<T>(shown: () => boolean, set: (v: T) => void): (v: T) => void {
+  return (v) => { if (shown()) set(v); };
+}
+
 function contactName(c: ContactDetail | null): string {
   if (!c) return "—";
   return [c.firstName, c.lastName].filter(Boolean).join(" ") || UNNAMED_CONTACT;
@@ -688,7 +701,16 @@ export default function SellerCallWorkspace() {
   const [outcomeActionError, setOutcomeActionError] = useState<string | null>(null);
   /* INV-98 (Bones REVISE item 2): set only when Confirm Accept recorded the
      acceptance but its final call-timestamp write could not be confirmed. */
-  const [timestampRecovery, setTimestampRecovery] = useState<{ pendingTimestamp: string } | null>(null);
+  /* B15-27b P3 -- Accept's timestamp recovery belongs to ONE deal (its contact
+     and opportunity), kept per deal. The page shows it, and Check & retry can
+     act on it, only while THAT deal is shown (`timestampRecovery` below):
+     another contact's recovery can never start a reservation or a write here.
+     Each handler binds its own setter to the deal it started on. */
+  const [recoveryByDeal, setRecoveryByDeal] = useState<Readonly<Record<string, { pendingTimestamp: string }>>>({});
+  const recoveryFor = (forContact: string, forOpportunity: string) => (v: { pendingTimestamp: string } | null) => {
+    const key = dealKeyOf(forContact, forOpportunity);
+    setRecoveryByDeal((m) => { const next = { ...m }; if (v) next[key] = v; else delete next[key]; return next; });
+  };
   const [timestampRecoveryBusy, setTimestampRecoveryBusy] = useState(false);
   const [followUpAtInput, setFollowUpAtInput] = useState("");
   const [passReasonInput, setPassReasonInput] = useState("");
@@ -697,6 +719,10 @@ export default function SellerCallWorkspace() {
      contact it was written for: this page survives A -> B navigation, and a
      late save for A must never become B's callback. */
   const [sessionCallback, setSessionCallback] = useState<{ contactId: string; iso: string } | null>(null);
+  /* B15-27 / B15-27b P2 -- the outcome form (which form is open, the Pass
+     reason, the Follow-Up time) and the readiness decision reason are the
+     shown DEAL's drafts (outcomeDraft / readinessDraft, below writeTarget):
+     A's typed text is never shown or recorded on B, and comes back on A. */
 
   /* B8-13 / INV-68 -- the four Offer Readiness determination carriers'
      write-in-flight/error state, one pair per carrier, mirroring
@@ -1056,6 +1082,16 @@ export default function SellerCallWorkspace() {
      mirroring `handleRecordOutcome`'s own convention, so
      `latestNegotiationOverrideNote` reflects it without a refetch. */
   async function handleOverrideAndContinue() {
+    /* B15-27b P4 -- bound to the contact (notes) and deal (deal state) this started under:
+       a result that arrives after the page moved on never reaches the one shown. */
+    const forContact = contactId;
+    const forDeal = dealBarOppId;
+    const contactShown = () => contactIdRef.current === forContact;
+    const dealShown = () => contactShown() && dealIdRef.current === forDeal;
+    const setNotes = onlyWhile(contactShown, pageSetters.setNotes);
+    const setNegotiationOverride = onlyWhile(dealShown, pageSetters.setNegotiationOverride);
+    const setWarningDismissed = onlyWhile(dealShown, pageSetters.setWarningDismissed);
+    const setOverrideActionError = onlyWhile(dealShown, pageSetters.setOverrideActionError);
     if (!negotiationPosition) return;
     if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
     const result = attemptOverride({
@@ -1098,6 +1134,14 @@ export default function SellerCallWorkspace() {
      is identical to every other write on this page: the write must succeed
      before the UI can show it as confirmed. */
   async function handleConfirmPropertyIdentity() {
+    /* B15-27b P4 -- bound to the contact (notes) and deal (deal state) this started under:
+       a result that arrives after the page moved on never reaches the one shown. */
+    const forContact = contactId;
+    const forDeal = dealBarOppId;
+    const contactShown = () => contactIdRef.current === forContact;
+    const dealShown = () => contactShown() && dealIdRef.current === forDeal;
+    const setNotes = onlyWhile(contactShown, pageSetters.setNotes);
+    const setPropertyIdentityError = onlyWhile(dealShown, pageSetters.setPropertyIdentityError);
     if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
     const address = formatAddress(contact);
     if (address === "—") return;
@@ -1125,6 +1169,14 @@ export default function SellerCallWorkspace() {
      included) from applying, and stays blocking no matter what a later
      confirmation attempt records, until a FRESH confirmation is made. */
   async function handleWithdrawPropertyIdentity() {
+    /* B15-27b P4 -- bound to the contact (notes) and deal (deal state) this started under:
+       a result that arrives after the page moved on never reaches the one shown. */
+    const forContact = contactId;
+    const forDeal = dealBarOppId;
+    const contactShown = () => contactIdRef.current === forContact;
+    const dealShown = () => contactShown() && dealIdRef.current === forDeal;
+    const setNotes = onlyWhile(contactShown, pageSetters.setNotes);
+    const setPropertyIdentityError = onlyWhile(dealShown, pageSetters.setPropertyIdentityError);
     if (!(screen.state === "resolved" || screen.state === "unresolved") || !propertyIdentityConfirmation) return;
     setPropertyIdentityError(null);
     setPropertyIdentityWithdrawBusy(true);
@@ -1283,6 +1335,16 @@ export default function SellerCallWorkspace() {
      elevates a non-ready status; OVERRIDDEN requires a non-empty reason,
      enforced before any write is attempted. */
   async function handleReadinessDecision(kind: "approved" | "overridden") {
+    /* B15-27b P4 -- bound to the contact (notes) and deal (deal state) this started under:
+       a result that arrives after the page moved on never reaches the one shown. */
+    const forContact = contactId;
+    const forDeal = dealBarOppId;
+    const contactShown = () => contactIdRef.current === forContact;
+    const dealShown = () => contactShown() && dealIdRef.current === forDeal;
+    const setNotes = onlyWhile(contactShown, pageSetters.setNotes);
+    const decisionOperator = draftOperator();   // B15-27b r2: the reason is this operator's draft too
+    const setReadinessDecisionReasonInput = onlyWhile(() => dealShown() && draftOperator() === decisionOperator, pageSetters.setReadinessDecisionReasonInput);
+    const setReadinessDecisionError = onlyWhile(dealShown, pageSetters.setReadinessDecisionError);
     if (!(screen.state === "resolved" || screen.state === "unresolved") || !readiness) return;
     if (kind === "approved" && readiness.status !== "OFFER_READY") return;
     const reason = readinessDecisionReasonInput.trim();
@@ -1292,6 +1354,10 @@ export default function SellerCallWorkspace() {
     }
     setReadinessDecisionError(null);
     setReadinessDecisionBusy(true);
+    // B15-27b P2: this deal's reason draft, bound to the deal now (removed once recorded, kept if it fails).
+    const readinessDraftId = readinessDraft.identityFor({ contactId: forContact, opportunityId: screen.opportunity.id });
+    const sentReason = readinessDecisionReasonInput;
+    readinessDraft.markSending(readinessDraftId, { reason: sentReason });
     const at = new Date().toISOString();
     // Jess Gate correction, 2026-09-08: every decision binds to
     // `liveReadinessEvidenceSnapshot` -- the SAME raw-facts object
@@ -1305,9 +1371,11 @@ export default function SellerCallWorkspace() {
     try {
       await ghl.notes.create(contactId, note);
       setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
+      readinessDraft.clearSent(readinessDraftId, { reason: sentReason });
       setReadinessDecisionReasonInput("");
     } catch (e: any) {
       setReadinessDecisionError(e?.message ?? "Couldn't record this decision -- it is not yet in effect. Try again.");
+      if (!isUncertainFailure(e)) readinessDraft.markFailed(readinessDraftId, e?.message ?? "Couldn't record this decision.");
     } finally {
       setReadinessDecisionBusy(false);
     }
@@ -1321,6 +1389,14 @@ export default function SellerCallWorkspace() {
      by `contractReadyChecklistRecord` above); this handler does not
      itself decide scope, it only records against whatever is current. */
   async function handleToggleContractReadyItem(key: ContractReadyItemKey, checked: boolean) {
+    /* B15-27b P4 -- bound to the contact (notes) and deal (deal state) this started under:
+       a result that arrives after the page moved on never reaches the one shown. */
+    const forContact = contactId;
+    const forDeal = dealBarOppId;
+    const contactShown = () => contactIdRef.current === forContact;
+    const dealShown = () => contactShown() && dealIdRef.current === forDeal;
+    const setNotes = onlyWhile(contactShown, pageSetters.setNotes);
+    const setContractChecklistError = onlyWhile(dealShown, pageSetters.setContractChecklistError);
     if (!(screen.state === "resolved" || screen.state === "unresolved") || latestOutcome?.kind !== "accept") return;
     if (latestOutcome.snapshot.currentOffer === null) return;
     setContractChecklistError(null);
@@ -1685,6 +1761,13 @@ export default function SellerCallWorkspace() {
       opportunityId: screen.opportunity.id, at, operator: null,
       decisionAt: readinessHumanActionRecord.at, reasons,
     });
+    /* B15-27b P4 -- this page stays mounted across contacts: the retry's result
+       is bound to the contact it was written for, not only to the mount. */
+    const forContact = contactId;
+    const forDeal = screen.opportunity.id;   // B15-27b r2: its error belongs to this deal
+    const contactShown = () => contactIdRef.current === forContact;
+    const setNotes = onlyWhile(contactShown, pageSetters.setNotes);
+    const setInvalidationWriteError = onlyWhile(() => contactShown() && dealIdRef.current === forDeal, pageSetters.setInvalidationWriteError);
     ghl.notes.create(contactId, note)
       .then(() => {
         if (!mountedRef.current) return;
@@ -1735,6 +1818,17 @@ export default function SellerCallWorkspace() {
 
   /* PR #126: the deal on screen, for the Current Offer label. */
   const dealBarOppId = screen.state === "resolved" || screen.state === "unresolved" ? screen.opportunity.id : null;
+  /* B15-27b -- the deal shown now (late results check it), and the shown
+     deal's own timestamp recovery: null for every other deal. */
+  const dealIdRef = useRef(dealBarOppId);
+  dealIdRef.current = dealBarOppId;
+  const timestampRecovery = dealBarOppId !== null ? recoveryByDeal[dealKeyOf(contactId, dealBarOppId)] ?? null : null;
+  /* B15-27b P4 -- the page's own setters, for the handlers' contact/deal-bound copies. */
+  const pageSetters = {
+    setNotes, setNegotiationOverride, setWarningDismissed, setOverrideActionError, setPropertyIdentityError,
+    setReadinessDecisionReasonInput, setReadinessDecisionError, setContractChecklistError, setInvalidationWriteError,
+    setOutcomeActionError, setShowOutcomeForm, setFollowUpAtInput, setPassReasonInput,
+  };
 
   /* PR #126 stacked server PR: on every load and deal change, ask the durable
      barrier whether this deal is blocked for every session (another browser,
@@ -1885,6 +1979,27 @@ export default function SellerCallWorkspace() {
     return { contactId, opportunityId };
   }, [screen, contact, contactId, opps]);
   const sectionTarget = (section: string): AutosaveTarget | null => (writeTarget ? { ...writeTarget, section } : null);
+  /* B15-27b P2 -- per-deal drafts (lib/contact-drafts), kept in this browser
+     per deal and operator. They follow `writeTarget`, the deal whose own data
+     is loaded (null while it loads), and are loaded before paint: while B
+     loads nothing is shown, then B's own drafts. Drafts are never sent: only
+     Confirm / Override / Approve send anything, as before. */
+  const outcomeDraft = useRecordDraft({
+    scope: "outcome", env: CONFIG.locationId, record: writeTarget,
+    values: { form: showOutcomeForm ?? "", passReason: passReasonInput, followUpAt: followUpAtInput },
+    apply: (v) => {
+      const form = v && (v.form === "accept" || v.form === "follow_up" || v.form === "pass") ? v.form : null;
+      setShowOutcomeForm(v && (v.passReason !== "" || v.followUpAt !== "") ? form : null);
+      setPassReasonInput(v ? v.passReason : "");
+      setFollowUpAtInput(v ? v.followUpAt : "");
+      setOutcomeActionError(null);
+    },
+  });
+  const readinessDraft = useRecordDraft({
+    scope: "readiness", env: CONFIG.locationId, record: writeTarget,
+    values: { reason: readinessDecisionReasonInput },
+    apply: (v) => setReadinessDecisionReasonInput(v ? v.reason : ""),
+  });
   /* Board 14-13: while a newly selected seller (or deal) loads, the previous
      seller's data is still on screen and there is no record an edit could
      safely reach. The autosaved fields and Current Offer are locked then,
@@ -2299,6 +2414,19 @@ export default function SellerCallWorkspace() {
           not an action this function performs. */
   async function handleRecordOutcome(kind: CallOutcomeKind) {
     if (!(screen.state === "resolved" || screen.state === "unresolved")) return;
+    /* B15-27b r2 (Bones finding 3) -- the outcome form, its inputs and its error
+       belong to the exact DEAL this outcome started on (contact + opportunity).
+       A late result never clears or reports on another deal, even of the same
+       contact; the local note append stays contact-scoped (`shown` below), and
+       the deal's own bookkeeping always completes. */
+    const outcomeContact = contactId;
+    const outcomeDeal = screen.opportunity.id;
+    const outcomeOperator = draftOperator();   // the form is this operator's draft too
+    const outcomeDealShown = () => contactIdRef.current === outcomeContact && dealIdRef.current === outcomeDeal && draftOperator() === outcomeOperator;
+    const setShowOutcomeForm = onlyWhile(outcomeDealShown, pageSetters.setShowOutcomeForm);
+    const setFollowUpAtInput = onlyWhile(outcomeDealShown, pageSetters.setFollowUpAtInput);
+    const setPassReasonInput = onlyWhile(outcomeDealShown, pageSetters.setPassReasonInput);
+    const setOutcomeActionError = onlyWhile(outcomeDealShown, pageSetters.setOutcomeActionError);
     /* B14-12 (Bones): the backstop behind the disabled button. No Pass is
        recorded, and nothing is written, before this contact's callback
        status is known. */
@@ -2323,6 +2451,21 @@ export default function SellerCallWorkspace() {
     }
     setOutcomeActionError(null);
     setRecordingOutcome(kind);
+    /* B15-27 -- this page is reused across contacts. Results below (the local
+       outcome note, form state, timestamp recovery, errors) belong to the
+       contact this outcome started under; once another contact is shown they
+       are dropped. Each guard sits AFTER the deal's own bookkeeping (endAccept,
+       reconcile), so reservations, writes, their order and targets are
+       unchanged. setSessionCallback is already keyed by contact. */
+    const forContact = contactId;
+    const shown = () => contactIdRef.current === forContact;
+    /* B15-27b P3 -- an Accept's timestamp recovery is kept for the deal it was recorded on. */
+    const setTimestampRecovery = recoveryFor(forContact, screen.opportunity.id);
+    /* B15-27b P2 -- this deal's outcome draft: marked once the first write is
+       about to be sent, removed when the outcome is recorded, kept with the
+       message when it fails (wherever the page is by then). */
+    const outcomeDraftId = outcomeDraft.identityFor({ contactId: forContact, opportunityId: screen.opportunity.id });
+    const outcomeDraftValues = { form: kind, passReason: passReasonInput, followUpAt: followUpAtInput };
     try {
       if (kind === "accept") {
         /* attemptRecordOutcome already required snapshot.currentOffer
@@ -2363,6 +2506,7 @@ export default function SellerCallWorkspace() {
         if (offerSaves.unresolvedMessage(acceptOppId) !== null) {
           const message = offerSaves.unresolvedMessage(acceptOppId)!;
           offerSaves.endAccept(acceptOppId, message);
+          if (!shown()) return;   // B15-27: a result for a contact no longer shown
           setOutcomeActionError(`Cannot record acceptance -- ${message}`);
           return;
         }
@@ -2377,14 +2521,17 @@ export default function SellerCallWorkspace() {
         } catch (e) {
           const signIn = e instanceof AppWriteSignInRequired;
           offerSaves.endAccept(acceptOppId, signIn ? null : RESERVATION_FAILED_MESSAGE);
+          if (!shown()) return;   // B15-27: a result for a contact no longer shown
           setOutcomeActionError(signIn ? (e as Error).message : `Cannot record acceptance -- ${RESERVATION_FAILED_MESSAGE}`);
           return;
         }
         if (reserved.state !== "reserved") {
           offerSaves.endAccept(acceptOppId, reserved.message);
+          if (!shown()) return;   // B15-27: a result for a contact no longer shown
           setOutcomeActionError(`Cannot record acceptance -- ${reserved.message}`);
           return;
         }
+        outcomeDraft.markSending(outcomeDraftId, outcomeDraftValues);   // B15-27b P2
         let result: Awaited<ReturnType<typeof runConfirmAcceptWrites>>;
         try {
           result = await runConfirmAcceptWrites(
@@ -2406,6 +2553,14 @@ export default function SellerCallWorkspace() {
           // a block left by an uncertain step in this tab is lifted too.
           if (unresolved === null) offerSaves.clearUnresolved(acceptOppId);
         }
+        // B15-27b P2: a recorded agreement clears this deal's outcome draft. B15-27b r2 (Bones finding 2): a
+        // failure leaves it "sending" -- these stages do not prove nothing was sent.
+        if (!(result.stage === "offer_failed" || result.stage === "offer_unconfirmed" || result.stage === "note_failed")) outcomeDraft.remove(outcomeDraftId);
+        // B15-27b r2 (Bones finding 4): the originating deal's timestamp recovery is recorded (or cleared) for
+        // that deal BEFORE the visibility return, so an Accept that finishes while its contact is hidden keeps it.
+        if (result.stage === "timestamp_failed") setTimestampRecovery({ pendingTimestamp: result.pendingTimestamp });
+        else if (result.stage === "complete") setTimestampRecovery(null);
+        if (!shown()) return;   // B15-27: a result for a contact no longer shown
         if (result.stage === "offer_failed" || result.stage === "offer_unconfirmed") {
           setOutcomeActionError(offerSaves.unresolvedMessage(acceptOppId) ?? result.message);
           return;
@@ -2444,6 +2599,7 @@ export default function SellerCallWorkspace() {
       const blockedBefore = offerSaves.unresolvedMessage(outcomeOppId);
       if (blockedBefore !== null) {
         offerSaves.endAccept(outcomeOppId, blockedBefore);
+        if (!shown()) return;   // B15-27: a result for a contact no longer shown
         setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${blockedBefore}`);
         return;
       }
@@ -2460,14 +2616,17 @@ export default function SellerCallWorkspace() {
       } catch (e) {
         const signIn = e instanceof AppWriteSignInRequired;
         offerSaves.endAccept(outcomeOppId, signIn ? null : RESERVATION_FAILED_MESSAGE);
+        if (!shown()) return;   // B15-27: a result for a contact no longer shown
         setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${signIn ? (e as Error).message : RESERVATION_FAILED_MESSAGE}`);
         return;
       }
       if (outcomeReserved.state !== "reserved") {
         offerSaves.endAccept(outcomeOppId, outcomeReserved.message);
+        if (!shown()) return;   // B15-27: a result for a contact no longer shown
         setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${outcomeReserved.message}`);
         return;
       }
+      outcomeDraft.markSending(outcomeDraftId, outcomeDraftValues);   // B15-27b P2
       try {
         if (kind === "follow_up") {
           const followUpIso = new Date(followUpAtInput).toISOString();
@@ -2479,6 +2638,7 @@ export default function SellerCallWorkspace() {
             notes: { create: (id: string, body: string) => ghl.notes.create(id, body, { requestId: followIds.callback_note }) },
           }, contactId, followUpIso);
           if (cb.ok || cb.callbackPersisted) setSessionCallback({ contactId, iso: followUpIso });
+          if (!cb.ok && !shown()) return;   // B15-27
           if (!cb.ok) {
             setOutcomeActionError(cb.error);
             return;
@@ -2497,11 +2657,15 @@ export default function SellerCallWorkspace() {
         offerSaves.endAccept(outcomeOppId, outcomeUnresolved);
         if (outcomeUnresolved === null) offerSaves.clearUnresolved(outcomeOppId);
       }
+      outcomeDraft.remove(outcomeDraftId);   // B15-27b P2: the outcome is recorded
+      if (!shown()) return;   // B15-27: a result for a contact no longer shown
       setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attempt.note, dateAdded: nowIso }]);
       setShowOutcomeForm(null);
       setFollowUpAtInput("");
       setPassReasonInput("");
     } catch (e: any) {
+      if (!isUncertainFailure(e)) outcomeDraft.markFailed(outcomeDraftId, e?.message ?? "Couldn't record this outcome.");   // B15-27b P2
+      if (!shown()) return;   // B15-27: a result for a contact no longer shown
       setOutcomeActionError(e?.message ?? "Couldn't record this outcome.");
     } finally {
       setRecordingOutcome(null);
@@ -2522,6 +2686,12 @@ export default function SellerCallWorkspace() {
   async function handleRecoverCallTimestamp() {
     if (!timestampRecovery || timestampRecoveryBusy || !dealBarOppId) return;
     const opp = dealBarOppId;
+    /* B15-27b P3 -- `timestampRecovery` is the SHOWN deal's own (null for any
+       other deal), so this can only retry the deal it was recorded on. Its
+       results stay with that deal; its message shows only while it is shown. */
+    const forContact = contactId;
+    const setTimestampRecovery = recoveryFor(forContact, opp);
+    const setOutcomeActionError = onlyWhile(() => contactIdRef.current === forContact && dealIdRef.current === opp, pageSetters.setOutcomeActionError);
     setTimestampRecoveryBusy(true);
     try {
       let first: Awaited<ReturnType<typeof reconcileReservation>>;
@@ -2969,6 +3139,8 @@ export default function SellerCallWorkspace() {
               {readinessDecisionError ? (
                 <div data-testid="readiness-decision-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{readinessDecisionError}</div>
               ) : null}
+              <DraftNotice testid="readiness-reason-draft" kept={readinessDraft.kept && !readinessDecisionBusy}
+                notice={readinessDecisionError || readinessDecisionBusy ? null : readinessDraft.notice} what="reason" owner="deal" />
             </details>
           ) : null}
 
@@ -3458,6 +3630,8 @@ export default function SellerCallWorkspace() {
               </div>
             ) : null}
 
+            <DraftNotice testid="call-outcome-draft" kept={outcomeDraft.kept && recordingOutcome === null}
+              notice={outcomeActionError || recordingOutcome !== null ? null : outcomeDraft.notice} what="outcome" owner="deal" />
             {outcomeActionError ? (
               <div data-testid="call-outcome-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{outcomeActionError}</div>
             ) : null}

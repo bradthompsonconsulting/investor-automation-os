@@ -42,6 +42,8 @@ import {
 import { ADDITIONAL_INFO_SUBGROUPS, type AdditionalInfoSubgroup } from "../config/additionalInfoSubgroups";
 import { getRuntimeConfig } from "../../shared/ghl-config";
 import { CONTACT_ARV_SEED_NOTE } from "../lib/authoritative-figures";
+import { draftOperator, isUncertainFailure, useRecordDraft } from "../lib/contact-drafts";
+import { DraftNotice } from "../components/DraftNotice";
 
 /**
  * Contact Workspace — docs/CONTACT_WORKSPACE_SPEC_v2.md §8 steps 1-3.
@@ -1244,8 +1246,27 @@ export default function ContactWorkspace() {
   const [conversationsError, setConversationsError] = useState<string | null>(null);
 
   const [draft, setDraft]         = useState("");
-  const [saving, setSaving]       = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  /* B15-27b P1 -- the note save and the callback save in flight, PER CONTACT.
+     A save for A keeps A busy (Saving..., controls disabled) for as long as it
+     runs, including when the operator leaves A and comes back, so A can never
+     start a second, overlapping save; B, meanwhile, is not blocked by A's.
+     The ref is the synchronous double-submit guard; the tick re-renders. */
+  const pendingRef = useRef({ note: new Set<string>(), callback: new Set<string>() });
+  const [, setPendingTick] = useState(0);
+  const markPending = (kind: "note" | "callback", cid: string, on: boolean) => {
+    if (on) pendingRef.current[kind].add(cid); else pendingRef.current[kind].delete(cid);
+    setPendingTick((t) => t + 1);
+  };
+  const saving = pendingRef.current.note.has(id);
+  /* B15-27b P2 -- the note box's text is THIS contact's draft
+     (lib/contact-drafts): kept in this browser per contact and operator,
+     restored when the contact is shown again (also after a reload), never
+     shown on another contact. Leaving the box still saves it, as before. */
+  const noteDraft = useRecordDraft({
+    scope: "note", env: RAIL_CONFIG.locationId, record: id ? { contactId: id } : null,
+    values: { text: draft }, apply: (v) => setDraft(v ? v.text : ""),
+  });
   // In-session attempt override — immediate UX only. Verification uses a real
   // page.reload() to confirm the value actually persisted to GHL, since this
   // override would otherwise mask a bad round-trip.
@@ -1256,7 +1277,7 @@ export default function ContactWorkspace() {
   // scheduled this session.
   const [callbackOverride, setCallbackOverride] = useState<string | null | undefined>(undefined);
   const [callbackOpen, setCallbackOpen]         = useState(false);
-  const [callbackSaving, setCallbackSaving]     = useState(false);
+  const callbackSaving = pendingRef.current.callback.has(id);   // B15-27b P1: per contact
   const [callbackError, setCallbackError]       = useState<string | null>(null);
 
   /* B7-02 — Get Comps handoff state. SESSION-ONLY AND DELIBERATELY SO: this is
@@ -1283,6 +1304,15 @@ export default function ContactWorkspace() {
       .finally(() => { if (currentIdRef.current === forId) setLoading(false); });
   }
 
+  /* B15-27b r2 -- the explicit recovery for an uncertain note: the operator
+     chooses to save the kept text as a new note anyway. */
+  function resendUncertainNote() {
+    const did = noteDraft.identityFor({ contactId: id });
+    if (noteDraft.noticeOf(did)?.kind !== "sending" || pendingRef.current.note.has(id)) return;
+    noteDraft.clearNotice(did);
+    void handleNoteBlurForce();
+  }
+
   function loadNotes() {
     const forId = id;
     if (currentIdRef.current !== forId) return;   // started for a contact no longer shown
@@ -1297,6 +1327,15 @@ export default function ContactWorkspace() {
       })
       .catch((e: Error) => { if (currentIdRef.current === forId) setNotesError(e.message); });
   }
+
+  /* B15-27b r4 (Bones R3 P2): an uncertain note draft is NEVER cleared because
+     a note with the same text appears in the contact's notes. A matching body
+     and a timestamp do not identify THIS save attempt (the same "Left a
+     voicemail" from an earlier call, a clock-skew window, another session), so
+     no read reconciles it. It stays "may already be in GHL", text kept, until
+     THIS attempt is confirmed by its own response, or the operator resolves it:
+     empties the box (the note is in GHL) or chooses "Save it as a new note
+     anyway" (resendUncertainNote). */
 
   // Read-only, GET-only. Scoped by explicit contactId via the conversations API
   // (§8 step 5) — never listAll, so §11's list lag/drop does not apply here.
@@ -1510,6 +1549,12 @@ export default function ContactWorkspace() {
     setCallbackOverride(undefined);
     setCallbackOpen(false);
     setCallbackError(null);
+    // B15-27 — the note save error belongs to the contact shown (the handlers
+    // below drop a late result for another contact). B15-27b P1: the busy
+    // state is per contact (pendingRef), so it needs no reset here. B15-27b P2:
+    // the note draft is per contact too (noteDraft loads this contact's own,
+    // before paint), so A's text is never on B and comes back on A.
+    setSaveError(null);
     // S2 — reset BOTH rail-read states on navigation. Leaving `opps` populated
     // would render the previous contact's deal under this contact's name for
     // one paint, which is the misattribution the name in the rail exists to
@@ -1720,26 +1765,46 @@ export default function ContactWorkspace() {
   // two-call sequence the Dashboard uses: create note, then mark attempt. After
   // saving, re-read notes from GHL (not a local prepend) so the displayed list
   // is what GHL actually holds — no shadow copy.
-  async function handleNoteBlur() {
+  async function handleNoteBlurForce() { return handleNoteBlur(true); }
+  async function handleNoteBlur(explicit = false) {
     const text = draft.trim();
     if (!text || saving) return;
-    setSaving(true);
+    // B15-27b P2 / r2 (Bones findings 1, 2): a note whose earlier save is
+    // uncertain may already be in GHL. Leaving the box never sends THAT text
+    // again -- until it is reconciled with the notes or explicitly re-sent.
+    // Decided from THIS contact's stored record (identity-bound), not a render.
+    // Different text is a new note and saves as usual.
+    const uncertain = noteDraft.noticeOf(noteDraft.identityFor({ contactId: id }));
+    if (!explicit && uncertain?.kind === "sending" && (uncertain.sent?.text ?? draft).trim() === text) return;
+    // B15-27 — every result below belongs to the contact this save started
+    // under. The writes still complete for that contact (unchanged), but after
+    // navigation their results never touch the contact now shown.
+    const forId = id;
+    const shown = () => currentIdRef.current === forId;
+    if (pendingRef.current.note.has(forId)) return;   // B15-27b P1: one note save per contact at a time
+    markPending("note", forId, true);
+    const draftId = noteDraft.identityFor({ contactId: forId });   // B15-27b P2: forId's draft, under the operator now
+    noteDraft.markSending(draftId, { text: draft });
     setSaveError(null);
     try {
       await ghl.notes.create(id, text);
-      setDraft("");
+      noteDraft.clearSent(draftId, { text: draft });   // saved: forId's draft goes, unless edited since
+      // B15-27b r2: the box is cleared only if it still shows THIS save's record (same contact AND operator).
+      if (shown() && draftId !== null && draftOperator() === draftId.operator) setDraft("");
       const nowIso = new Date().toISOString();
       try {
         await ghl.contacts.setLastCallAttempt(id, nowIso);
-        setAttemptOverride(nowIso);
+        if (shown()) setAttemptOverride(nowIso);
       } catch (e) {
-        setSaveError(`Note saved, but couldn't mark attempted: ${(e as Error).message}`);
+        if (shown()) setSaveError(`Note saved, but couldn't mark attempted: ${(e as Error).message}`);
       }
       loadNotes();
     } catch (e) {
-      setSaveError((e as Error).message);
+      if (shown()) setSaveError((e as Error).message);
+      // B15-27b P2: kept for forId, with why -- unless the error does not prove a failure (then it stays "sending").
+      if (!isUncertainFailure(e)) noteDraft.markFailed(draftId, (e as Error).message);
     } finally {
-      setSaving(false);
+      markPending("note", forId, false);   // always: the busy state is forId's, wherever the page is
     }
   }
 
@@ -1749,10 +1814,17 @@ export default function ContactWorkspace() {
   // callback. Still exactly three writes (setCallbackDatetime + notes.create +
   // setLastCallAttempt), no new method.
   async function handleSaveCallback(iso: string) {
-    setCallbackSaving(true);
+    const forId = id;   // B15-27 — results apply only while this contact is shown
+    if (pendingRef.current.callback.has(forId)) return;   // B15-27b P1: one callback save per contact at a time
+    markPending("callback", forId, true);
     setCallbackError(null);
-    const result = await scheduleCallbackGated(explicitCallbackClient, id, iso);
-    setCallbackSaving(false);
+    let result: Awaited<ReturnType<typeof scheduleCallbackGated>>;
+    try {
+      result = await scheduleCallbackGated(explicitCallbackClient, id, iso);
+    } finally {
+      markPending("callback", forId, false);   // always: the busy state is forId's, wherever the page is
+    }
+    if (currentIdRef.current !== forId) return;   // writes completed for forId; nothing to show here
 
     if (result.ok) {
       setCallbackOverride(iso);
@@ -1774,16 +1846,18 @@ export default function ContactWorkspace() {
 
   // Clearing is not scheduling — no note, no attempt. Clears the field only.
   async function handleClearCallback() {
-    setCallbackSaving(true);
+    const forId = id;   // B15-27 — results apply only while this contact is shown
+    const shown = () => currentIdRef.current === forId;
+    if (pendingRef.current.callback.has(forId)) return;   // B15-27b P1: one callback save per contact at a time
+    markPending("callback", forId, true);
     setCallbackError(null);
     try {
       await ghl.contacts.setExplicitCallback(id, null);
-      setCallbackOverride(null);
-      setCallbackOpen(false);
+      if (shown()) { setCallbackOverride(null); setCallbackOpen(false); }
     } catch (e) {
-      setCallbackError(`Couldn't clear callback: ${(e as Error).message}`);
+      if (shown()) setCallbackError(`Couldn't clear callback: ${(e as Error).message}`);
     } finally {
-      setCallbackSaving(false);
+      markPending("callback", forId, false);   // always
     }
   }
 
@@ -2470,6 +2544,8 @@ export default function ContactWorkspace() {
             />
           </div>
           {saveError && <div style={{ fontSize: "11px", color: "#F87171", marginBottom: "10px" }}>{saveError}</div>}
+          <DraftNotice testid="note-draft" kept={noteDraft.kept && !saving} notice={saving ? null : noteDraft.notice} what="note" owner="contact"
+            action={{ label: "Save it as a new note anyway", onClick: resendUncertainNote, disabled: saving || loading }} />
 
           {/* History, newest first */}
           {notesError ? (
