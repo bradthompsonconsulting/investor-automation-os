@@ -1,0 +1,23 @@
+{
+  "_comment": "B15-22 S8 combined-integration baseline (test-only). The ORIGINAL manifest b15-22-base-pins-a55ead5.json is kept unchanged as the feature's historical evidence. This file lists ONLY the protected files the reviewed Board #15 local integration changed, each from its original pin to its exact hash in the combined tree. S8 applies an entry only if `from` still equals the original pin; every other protected file must match the original manifest exactly (none added, none removed).",
+  "combinedTree": "dea207e3c09c4a3f5a8b8cc506927eb933d5889b",
+  "originalManifest": "b15-22-base-pins-a55ead5.json",
+  "review": "Bones REVISE 2026-11-05 audit-evidence/ca9396e-dea207e-review-20261105/10_COMBINED_INTEGRATION_REVISE.txt (FAILURE 2: exactly these three files, attributed to accepted B15-25 additions plus the reviewed parser/validator composition); evidence LOCAL_INTEGRATION_SCOTTY_dea207e_20261105/A5_*.",
+  "changes": {
+    "netlify/functions/lib/production-write-scope.ts": {
+      "from": "f748e38f0eaf8b2c0b7115e46d3a96b005cabe18866fec431d2f6bcfc577d5f4",
+      "to": "2fae8f72decf26baa227e129b655a96b5d40cb18f8f549a21143cb047ac91594",
+      "reason": "B15-25 r4 a7f3829 (Bones ACCEPT): the Deal Calculation Production note class (allow: null); auto-merged as the exact union."
+    },
+    "netlify/functions/lib/write-note-guard.ts": {
+      "from": "a35e9e27187fd366c240f1d865be3e372bba4edecc4954572a4903cf8be37621",
+      "to": "2a829cf378f103998da0961767695d468ff45f66b83436e33ab82d2e4a554931",
+      "reason": "B15-25 r4 a7f3829 (Bones ACCEPT): Deal Calculation note validation and parseDealCalculationNote appended to the ledger parser list after B15-03 parseSellerConversationNote (disjoint headers); co-edited parser line reviewed."
+    },
+    "shared/ghl-config.ts": {
+      "from": "c57a00a4f7d17e42af73af1ea5dacf89ee2a0e8ed4c6d6d471d50fc3d77e40ce",
+      "to": "6dda33bd08bc8107f72be6734dd5d785f9af62f28cf68de61df6012b9d7c105c",
+      "reason": "B15-25 r4 a7f3829 (Bones ACCEPT): the dealCalculationSave Test-only switch (committed DISABLED) beside B15-03 sellerConversationSave: completeness entry, RuntimeConfig field, projection, payload validator chained; co-edited validator line reviewed."
+    }
+  }
+}

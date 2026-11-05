@@ -38,7 +38,7 @@ const TMP = path.join(APP, '.tmp-b15-22-authoritative-test');
 const esbuild = require(path.join(APP, 'node_modules', '.pnpm', 'esbuild@0.25.12', 'node_modules', 'esbuild'));
 
 /** Literal check() call-site count in this file. */
-const FLOOR = 96;
+const FLOOR = 97;   // Board #15 integration r2: + S8a (the reviewed combined-integration delta)
 let checks = 0; let failures = 0;
 function check(name, actual, expected) {
   checks += 1;
@@ -337,10 +337,26 @@ check('S7 the label is backed by the resolver: Opportunity ARV first, Contact on
   };
   ROOTS.forEach(walk);
   const hashOf = (rel) => { const buf = fs.readFileSync(path.join(APP, rel)); return buf.includes(0) ? 'bin:' + crypto.createHash('sha256').update(buf).digest('hex') : sha(buf.toString('utf8').replace(/\r\n/g, '\n')); };
+  /* Board #15 integration r2 (Bones REVISE dea207e, FAILURE 2). The ORIGINAL manifest stays the feature's historical
+     evidence, unchanged. The combined tree changes exactly three protected files (accepted B15-25 r4 additions and the
+     reviewed parser/validator composition); they are listed, with reasons, in b15-22-combined-integration-dea207e.json.
+     Each entry applies ONLY if its `from` is still the original pin. Every other protected file must match the
+     original manifest exactly; none may be added or removed. */
+  const COMBINED = JSON.parse(fs.readFileSync(path.join(APP, 'scripts', 'fixtures', 'b15-22-combined-integration-dea207e.json'), 'utf8'));
+  const expected = { ...PINS.protected };
+  const deltaProblems = [];
+  for (const [rel, c] of Object.entries(COMBINED.changes || {})) {
+    if (!(rel in PINS.protected)) deltaProblems.push(`not in the original manifest: ${rel}`);
+    else if (!c || c.from !== PINS.protected[rel] || typeof c.to !== 'string' || c.to === c.from) deltaProblems.push(`not a reviewed change from the original pin: ${rel}`);
+    else expected[rel] = c.to;
+  }
+  check('S8a the combined-integration delta is exactly the three reviewed files, each from its original pin',
+    [Object.keys(COMBINED.changes || {}).sort(), deltaProblems],
+    [['netlify/functions/lib/production-write-scope.ts', 'netlify/functions/lib/write-note-guard.ts', 'shared/ghl-config.ts'], []]);
   const drift = [];
-  for (const rel of seen) { if (!(rel in PINS.protected)) drift.push(`added ${rel}`); else if (hashOf(rel) !== PINS.protected[rel]) drift.push(`changed ${rel}`); }
-  for (const rel of Object.keys(PINS.protected)) if (!seen.includes(rel)) drift.push(`removed ${rel}`);
-  check('S8 write paths, engines, ledger formats, functions and config unchanged vs base (SHA-256 manifest of every protected file)',
+  for (const rel of seen) { if (!(rel in expected)) drift.push(`added ${rel}`); else if (hashOf(rel) !== expected[rel]) drift.push(`changed ${rel}`); }
+  for (const rel of Object.keys(expected)) if (!seen.includes(rel)) drift.push(`removed ${rel}`);
+  check('S8 write paths, engines, ledger formats, functions and config unchanged vs base, except the reviewed combined-integration delta (SHA-256 manifest of every protected file)',
     Object.keys(PINS.protected).length > 50 ? drift : 'manifest too small', []);
 }
 
