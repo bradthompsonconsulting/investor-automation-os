@@ -9,6 +9,8 @@ import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home, AlertTriangle } from "lucide-react";
 import { ghl, type ContactDetail } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
+import { isUncertainFailure, useRecordDraft } from "../lib/contact-drafts";
+import { DraftNotice } from "../components/DraftNotice";
 import {
   parsePolicy,
   parseOpportunityValues,
@@ -708,18 +710,10 @@ export default function SellerCallWorkspace() {
      contact it was written for: this page survives A -> B navigation, and a
      late save for A must never become B's callback. */
   const [sessionCallback, setSessionCallback] = useState<{ contactId: string; iso: string } | null>(null);
-  /* B15-27 -- the outcome form (which form is open, the Pass reason, the
-     Follow-Up time) and its error are the shown contact's draft. This page
-     survives A -> B navigation, and handleRecordOutcome no longer resets them
-     for a contact that is not shown, so they are cleared here: A's typed
-     reason must never be recorded as B's. The in-flight flag is left as it
-     was. */
-  useEffect(() => {
-    setShowOutcomeForm(null);
-    setPassReasonInput("");
-    setFollowUpAtInput("");
-    setOutcomeActionError(null);
-  }, [contactId]);
+  /* B15-27 / B15-27b P2 -- the outcome form (which form is open, the Pass
+     reason, the Follow-Up time) and the readiness decision reason are the
+     shown DEAL's drafts (outcomeDraft / readinessDraft, below writeTarget):
+     A's typed text is never shown or recorded on B, and comes back on A. */
 
   /* B8-13 / INV-68 -- the four Offer Readiness determination carriers'
      write-in-flight/error state, one pair per carrier, mirroring
@@ -1341,6 +1335,10 @@ export default function SellerCallWorkspace() {
     }
     setReadinessDecisionError(null);
     setReadinessDecisionBusy(true);
+    // B15-27b P2: this deal's reason draft, bound to the deal now (removed once recorded, kept if it fails).
+    const readinessDraftId = readinessDraft.identityFor({ contactId: forContact, opportunityId: screen.opportunity.id });
+    const sentReason = readinessDecisionReasonInput;
+    readinessDraft.markSending(readinessDraftId, { reason: sentReason });
     const at = new Date().toISOString();
     // Jess Gate correction, 2026-09-08: every decision binds to
     // `liveReadinessEvidenceSnapshot` -- the SAME raw-facts object
@@ -1354,9 +1352,11 @@ export default function SellerCallWorkspace() {
     try {
       await ghl.notes.create(contactId, note);
       setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: note, dateAdded: at }]);
+      readinessDraft.clearSent(readinessDraftId, { reason: sentReason });
       setReadinessDecisionReasonInput("");
     } catch (e: any) {
       setReadinessDecisionError(e?.message ?? "Couldn't record this decision -- it is not yet in effect. Try again.");
+      if (!isUncertainFailure(e)) readinessDraft.markFailed(readinessDraftId, e?.message ?? "Couldn't record this decision.");
     } finally {
       setReadinessDecisionBusy(false);
     }
@@ -1955,6 +1955,27 @@ export default function SellerCallWorkspace() {
     return { contactId, opportunityId };
   }, [screen, contact, contactId, opps]);
   const sectionTarget = (section: string): AutosaveTarget | null => (writeTarget ? { ...writeTarget, section } : null);
+  /* B15-27b P2 -- per-deal drafts (lib/contact-drafts), kept in this browser
+     per deal and operator. They follow `writeTarget`, the deal whose own data
+     is loaded (null while it loads), and are loaded before paint: while B
+     loads nothing is shown, then B's own drafts. Drafts are never sent: only
+     Confirm / Override / Approve send anything, as before. */
+  const outcomeDraft = useRecordDraft({
+    scope: "outcome", env: CONFIG.locationId, record: writeTarget,
+    values: { form: showOutcomeForm ?? "", passReason: passReasonInput, followUpAt: followUpAtInput },
+    apply: (v) => {
+      const form = v && (v.form === "accept" || v.form === "follow_up" || v.form === "pass") ? v.form : null;
+      setShowOutcomeForm(v && (v.passReason !== "" || v.followUpAt !== "") ? form : null);
+      setPassReasonInput(v ? v.passReason : "");
+      setFollowUpAtInput(v ? v.followUpAt : "");
+      setOutcomeActionError(null);
+    },
+  });
+  const readinessDraft = useRecordDraft({
+    scope: "readiness", env: CONFIG.locationId, record: writeTarget,
+    values: { reason: readinessDecisionReasonInput },
+    apply: (v) => setReadinessDecisionReasonInput(v ? v.reason : ""),
+  });
   /* Board 14-13: while a newly selected seller (or deal) loads, the previous
      seller's data is still on screen and there is no record an edit could
      safely reach. The autosaved fields and Current Offer are locked then,
@@ -2307,6 +2328,11 @@ export default function SellerCallWorkspace() {
     const shown = () => contactIdRef.current === forContact;
     /* B15-27b P3 -- an Accept's timestamp recovery is kept for the deal it was recorded on. */
     const setTimestampRecovery = recoveryFor(forContact, screen.opportunity.id);
+    /* B15-27b P2 -- this deal's outcome draft: marked once the first write is
+       about to be sent, removed when the outcome is recorded, kept with the
+       message when it fails (wherever the page is by then). */
+    const outcomeDraftId = outcomeDraft.identityFor({ contactId: forContact, opportunityId: screen.opportunity.id });
+    const outcomeDraftValues = { form: kind, passReason: passReasonInput, followUpAt: followUpAtInput };
     try {
       if (kind === "accept") {
         /* attemptRecordOutcome already required snapshot.currentOffer
@@ -2372,6 +2398,7 @@ export default function SellerCallWorkspace() {
           setOutcomeActionError(`Cannot record acceptance -- ${reserved.message}`);
           return;
         }
+        outcomeDraft.markSending(outcomeDraftId, outcomeDraftValues);   // B15-27b P2
         let result: Awaited<ReturnType<typeof runConfirmAcceptWrites>>;
         try {
           result = await runConfirmAcceptWrites(
@@ -2393,6 +2420,9 @@ export default function SellerCallWorkspace() {
           // a block left by an uncertain step in this tab is lifted too.
           if (unresolved === null) offerSaves.clearUnresolved(acceptOppId);
         }
+        // B15-27b P2: a recorded agreement clears this deal's outcome draft; a failure keeps it, with why.
+        if (result.stage === "offer_failed" || result.stage === "offer_unconfirmed" || result.stage === "note_failed") outcomeDraft.markFailed(outcomeDraftId, result.message);
+        else outcomeDraft.remove(outcomeDraftId);
         if (!shown()) return;   // B15-27: a result for a contact no longer shown
         if (result.stage === "offer_failed" || result.stage === "offer_unconfirmed") {
           setOutcomeActionError(offerSaves.unresolvedMessage(acceptOppId) ?? result.message);
@@ -2459,6 +2489,7 @@ export default function SellerCallWorkspace() {
         setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${outcomeReserved.message}`);
         return;
       }
+      outcomeDraft.markSending(outcomeDraftId, outcomeDraftValues);   // B15-27b P2
       try {
         if (kind === "follow_up") {
           const followUpIso = new Date(followUpAtInput).toISOString();
@@ -2470,6 +2501,7 @@ export default function SellerCallWorkspace() {
             notes: { create: (id: string, body: string) => ghl.notes.create(id, body, { requestId: followIds.callback_note }) },
           }, contactId, followUpIso);
           if (cb.ok || cb.callbackPersisted) setSessionCallback({ contactId, iso: followUpIso });
+          if (!cb.ok) outcomeDraft.markFailed(outcomeDraftId, cb.error);   // B15-27b P2: kept, with why
           if (!cb.ok && !shown()) return;   // B15-27
           if (!cb.ok) {
             setOutcomeActionError(cb.error);
@@ -2489,12 +2521,14 @@ export default function SellerCallWorkspace() {
         offerSaves.endAccept(outcomeOppId, outcomeUnresolved);
         if (outcomeUnresolved === null) offerSaves.clearUnresolved(outcomeOppId);
       }
+      outcomeDraft.remove(outcomeDraftId);   // B15-27b P2: the outcome is recorded
       if (!shown()) return;   // B15-27: a result for a contact no longer shown
       setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attempt.note, dateAdded: nowIso }]);
       setShowOutcomeForm(null);
       setFollowUpAtInput("");
       setPassReasonInput("");
     } catch (e: any) {
+      if (!isUncertainFailure(e)) outcomeDraft.markFailed(outcomeDraftId, e?.message ?? "Couldn't record this outcome.");   // B15-27b P2
       if (!shown()) return;   // B15-27: a result for a contact no longer shown
       setOutcomeActionError(e?.message ?? "Couldn't record this outcome.");
     } finally {
@@ -2971,6 +3005,8 @@ export default function SellerCallWorkspace() {
               {readinessDecisionError ? (
                 <div data-testid="readiness-decision-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{readinessDecisionError}</div>
               ) : null}
+              <DraftNotice testid="readiness-reason-draft" kept={readinessDraft.kept && !readinessDecisionBusy}
+                notice={readinessDecisionError || readinessDecisionBusy ? null : readinessDraft.notice} what="reason" owner="deal" />
             </details>
           ) : null}
 
@@ -3460,6 +3496,8 @@ export default function SellerCallWorkspace() {
               </div>
             ) : null}
 
+            <DraftNotice testid="call-outcome-draft" kept={outcomeDraft.kept && recordingOutcome === null}
+              notice={outcomeActionError || recordingOutcome !== null ? null : outcomeDraft.notice} what="outcome" owner="deal" />
             {outcomeActionError ? (
               <div data-testid="call-outcome-error" style={{ marginTop: "8px", fontSize: "11px", color: "#EF4444" }}>{outcomeActionError}</div>
             ) : null}

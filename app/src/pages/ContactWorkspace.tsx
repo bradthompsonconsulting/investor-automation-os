@@ -41,6 +41,8 @@ import {
 } from "../lib/propstream";
 import { ADDITIONAL_INFO_SUBGROUPS, type AdditionalInfoSubgroup } from "../config/additionalInfoSubgroups";
 import { getRuntimeConfig } from "../../shared/ghl-config";
+import { isUncertainFailure, useRecordDraft } from "../lib/contact-drafts";
+import { DraftNotice } from "../components/DraftNotice";
 
 /**
  * Contact Workspace — docs/CONTACT_WORKSPACE_SPEC_v2.md §8 steps 1-3.
@@ -1247,6 +1249,14 @@ export default function ContactWorkspace() {
     setPendingTick((t) => t + 1);
   };
   const saving = pendingRef.current.note.has(id);
+  /* B15-27b P2 -- the note box's text is THIS contact's draft
+     (lib/contact-drafts): kept in this browser per contact and operator,
+     restored when the contact is shown again (also after a reload), never
+     shown on another contact. Leaving the box still saves it, as before. */
+  const noteDraft = useRecordDraft({
+    scope: "note", env: RAIL_CONFIG.locationId, record: id ? { contactId: id } : null,
+    values: { text: draft }, apply: (v) => setDraft(v ? v.text : ""),
+  });
   // In-session attempt override — immediate UX only. Verification uses a real
   // page.reload() to confirm the value actually persisted to GHL, since this
   // override would otherwise mask a bad round-trip.
@@ -1512,11 +1522,10 @@ export default function ContactWorkspace() {
     setCallbackOpen(false);
     setCallbackError(null);
     // B15-27 — the note save error belongs to the contact shown (the handlers
-    // below drop a late result for another contact). The note draft is this
-    // contact's too: otherwise A's text would stay in B's input and a blur
-    // would save it as a note on B. B15-27b P1: the busy state is per contact
-    // (pendingRef), so it needs no reset here: A stays busy, B is not.
-    setDraft("");
+    // below drop a late result for another contact). B15-27b P1: the busy
+    // state is per contact (pendingRef), so it needs no reset here. B15-27b P2:
+    // the note draft is per contact too (noteDraft loads this contact's own,
+    // before paint), so A's text is never on B and comes back on A.
     setSaveError(null);
     // S2 — reset BOTH rail-read states on navigation. Leaving `opps` populated
     // would render the previous contact's deal under this contact's name for
@@ -1731,6 +1740,9 @@ export default function ContactWorkspace() {
   async function handleNoteBlur() {
     const text = draft.trim();
     if (!text || saving) return;
+    // B15-27b P2: a restored draft whose earlier save was not seen to finish may
+    // already be in GHL; it is not sent again by leaving the box, only once edited.
+    if (noteDraft.notice?.kind === "sending") return;
     // B15-27 — every result below belongs to the contact this save started
     // under. The writes still complete for that contact (unchanged), but after
     // navigation their results never touch the contact now shown.
@@ -1738,9 +1750,12 @@ export default function ContactWorkspace() {
     const shown = () => currentIdRef.current === forId;
     if (pendingRef.current.note.has(forId)) return;   // B15-27b P1: one note save per contact at a time
     markPending("note", forId, true);
+    const draftId = noteDraft.identityFor({ contactId: forId });   // B15-27b P2: forId's draft, under the operator now
+    noteDraft.markSending(draftId, { text: draft });
     setSaveError(null);
     try {
       await ghl.notes.create(id, text);
+      noteDraft.clearSent(draftId, { text: draft });   // saved: forId's draft goes, unless edited since
       if (shown()) setDraft("");
       const nowIso = new Date().toISOString();
       try {
@@ -1752,6 +1767,8 @@ export default function ContactWorkspace() {
       loadNotes();
     } catch (e) {
       if (shown()) setSaveError((e as Error).message);
+      // B15-27b P2: kept for forId, with why -- unless the error does not prove a failure (then it stays "sending").
+      if (!isUncertainFailure(e)) noteDraft.markFailed(draftId, (e as Error).message);
     } finally {
       markPending("note", forId, false);   // always: the busy state is forId's, wherever the page is
     }
@@ -2493,6 +2510,7 @@ export default function ContactWorkspace() {
             />
           </div>
           {saveError && <div style={{ fontSize: "11px", color: "#F87171", marginBottom: "10px" }}>{saveError}</div>}
+          <DraftNotice testid="note-draft" kept={noteDraft.kept && !saving} notice={saveError || saving ? null : noteDraft.notice} what="note" owner="contact" />
 
           {/* History, newest first */}
           {notesError ? (
