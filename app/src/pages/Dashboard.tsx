@@ -20,6 +20,7 @@ import { isCallSuppressed } from "../lib/dnc";
 import { scheduleCallbackGated, formatCallbackTime } from "../lib/callbackWrite";
 import { formatPhone } from "../lib/format";
 import { displayContactName, NO_MESSAGE_TEXT, UNNAMED_CONTACT } from "../lib/operator-display";
+import { InboundPreview } from "../components/InboundPreview";
 import { readCurrentOfferFromOpportunity } from "../lib/current-offer-carrier";
 import { startCurrentRead } from "../lib/current-read";
 import {
@@ -1046,7 +1047,8 @@ export default function Dashboard() {
                     {formatPhone(r.phone) || r.email || "—"}
                   </span>
                   <span style={{ fontSize: "12px", color: "#94A3B8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-                    {r.preview || <em style={{ color: "#334155" }}>{NO_MESSAGE_TEXT}</em>}
+                    {/* B15-08: the latest inbound message from the thread's own source; an older response falls back to F51. */}
+                    {r.latestInbound ? <InboundPreview li={r.latestInbound} testId={`unanswered-preview-${r.conversationId}`} /> : <>{r.preview || <em style={{ color: "#334155" }}>{NO_MESSAGE_TEXT}</em>}</>}
                   </span>
                   <span style={{
                     marginLeft: "auto", fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",

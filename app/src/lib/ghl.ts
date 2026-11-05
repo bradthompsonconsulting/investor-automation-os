@@ -15,6 +15,7 @@ import { isReadAuthRefusal, readFetch, ReadUnavailableError } from "./read-sessi
  */
 
 import { getRuntimeConfig, CURRENT_OFFER_NOT_PROVISIONED } from "../../shared/ghl-config";
+import type { LatestInbound } from "../../shared/inbound-message";
 /* Board item #2C. The three option LABELS are declared once, in resolver-types,
    and this module reads them rather than retyping them. Retyping would create a
    second list that could drift from the one the resolver parses against, and a
@@ -325,6 +326,8 @@ export interface UnansweredInboundRow {
   lastMessageDate: number;
   preview:         string;
   unreadCount:     number;
+  /** B15-08: the latest inbound message from this conversation's own messages (absent from an older function). */
+  latestInbound?:  LatestInbound;
 }
 
 // Conversations phase — full thread-list row (read-only). Mirrors the
@@ -353,6 +356,8 @@ export interface ConvMessageRow {
   channel:        string; // friendly label (SMS / Email / Call / …)
   messageType:    string; // raw GHL enum
   body:           string;
+  /** B15-08 (r2): GHL's own body format, when the function supplies it. */
+  contentType?:   string;
   dateAdded:      string; // ISO
 }
 export interface ContactConversations {
