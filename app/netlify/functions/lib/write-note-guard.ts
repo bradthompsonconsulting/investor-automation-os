@@ -3,7 +3,7 @@ import { validateDerivedNote } from "./write-derived-note";
 /** INV-95: validate existing ledger schemas before they can acquire business authority. */
 import { parseArvApprovalNote } from "../../../src/lib/arv-approval-note";
 import { parseOutcomeNote } from "../../../src/lib/seller-call-outcome";
-import { parsePropertyIdentityConfirmationNote, parseTransactionAssumptionsNote, parseSellerPricePositionNote, parseReadinessHumanActionNote, parseReadinessDecisionInvalidationNote, parseContractReadyChecklistNote } from "../../../src/lib/seller-call-readiness-carriers";
+import { latestPropertyIdentityNoteForOpportunity, parsePropertyIdentityConfirmationNote, parseTransactionAssumptionsNote, parseSellerPricePositionNote, parseReadinessHumanActionNote, parseReadinessDecisionInvalidationNote, parseContractReadyChecklistNote } from "../../../src/lib/seller-call-readiness-carriers";
 import { parseNegotiationOverrideNote } from "../../../src/lib/seller-call-negotiation-override-note";
 /** B14-13 autosave (Brad + Jess, 2026-10-10): Seller Position is its own opportunity-scoped ledger note, kept apart from
  *  the Seller price position readiness note and from conversation outcomes. It gets the common checks below (operator,
@@ -27,13 +27,15 @@ import { MANUAL_SEND_TEMPLATE_SOURCE, MANUAL_SEND_NO_GHL_TEMPLATE } from "../../
 import { isSameContractVersion } from "../../../src/lib/board9-contract-model";
 import { identifier } from "./write-contracts";
 import { fieldValue, type GhlBoundary } from "./ghl-write-boundary";
-import { getConfig } from "../../../shared/ghl-config";
+import { getConfig, DEAL_CALCULATION_SAVE_ENABLED } from "../../../shared/ghl-config";
+/** B15-25 Phase 2 (Jess RULING 2026-10-30): the Deal Calculation ledger note -- a working calculation, never an approval. */
+import { parseDealCalculationNote, latestDealCalculationForOpportunity, basisFromOpportunityFields, validateDealCalculationAgainst } from "../../../src/lib/deal-calculation-carrier";
 import { latestOutcomeNoteForOpportunity } from "../../../src/lib/seller-call-outcome";
-const parsers: ((body: string) => any)[] = [parseArvApprovalNote, parseOutcomeNote, parsePropertyIdentityConfirmationNote, parseTransactionAssumptionsNote, parseSellerPricePositionNote, parseSellerPositionNote, parseSellerConversationNote, parseReadinessHumanActionNote, parseReadinessDecisionInvalidationNote, parseContractReadyChecklistNote, parseNegotiationOverrideNote, parseBuyerEntityOverrideNote, parsePartySignerFactsNote, parsePropertyLegalDescriptionFactsNote, parseLeaseDisclosureFactsNote, parseEarnestMoneyOptionFactsNote, parseTitleSurveyFactsNote, parsePropertyConditionFactsNote, parseClosingPossessionFactsNote, parseSettlementExpenseFactsNote, parseRepresentationFactsNote, parseAddendaApplicabilityFactsNote, parseSellerEquitableInterestDisclosureNote, parseAttorneyManualFieldDispositionNote, parseSellerNoticeConfirmationFactsNote, parseBuyerBusinessConfigFactsNote, parseSellerSigningModelNote, parseBradContractAuthorizationNote, parseDispositionHandoffNote, parseExecutedTermsAttestationNote, parseContractLifecycleNote, parseUnderContractNote, parseContractProjectionSyncNote, parseContractSendNote, parseSignerMappingAttestationNote];
+const parsers: ((body: string) => any)[] = [parseArvApprovalNote, parseOutcomeNote, parsePropertyIdentityConfirmationNote, parseTransactionAssumptionsNote, parseSellerPricePositionNote, parseSellerPositionNote, parseSellerConversationNote, parseReadinessHumanActionNote, parseReadinessDecisionInvalidationNote, parseContractReadyChecklistNote, parseNegotiationOverrideNote, parseBuyerEntityOverrideNote, parsePartySignerFactsNote, parsePropertyLegalDescriptionFactsNote, parseLeaseDisclosureFactsNote, parseEarnestMoneyOptionFactsNote, parseTitleSurveyFactsNote, parsePropertyConditionFactsNote, parseClosingPossessionFactsNote, parseSettlementExpenseFactsNote, parseRepresentationFactsNote, parseAddendaApplicabilityFactsNote, parseSellerEquitableInterestDisclosureNote, parseAttorneyManualFieldDispositionNote, parseSellerNoticeConfirmationFactsNote, parseBuyerBusinessConfigFactsNote, parseSellerSigningModelNote, parseBradContractAuthorizationNote, parseDispositionHandoffNote, parseExecutedTermsAttestationNote, parseContractLifecycleNote, parseUnderContractNote, parseContractProjectionSyncNote, parseContractSendNote, parseSignerMappingAttestationNote, parseDealCalculationNote];
 export async function validateLedgerNote(boundary: GhlBoundary, contactId: string, body: string, operatorEmail: string) {
   const record = parsers.map(parse => parse(body)).find(Boolean);
   if (!record) {
-    if (/^IAOS (?:ARV|OFFER|CONTRACT|BRAD|SELLER|PROPERTY|TRANSACTION|READINESS|UNDER|DISPOSITION|EXECUTED|SIGNER|NEGOTIATION|BUYER|PARTY|LEASE|EARNEST|TITLE|CLOSING|SETTLEMENT|REPRESENTATION|ADDENDA|ATTORNEY)/.test(body)) throw new Error("Malformed or undeclared ledger note");
+    if (/^IAOS (?:ARV|OFFER|CONTRACT|BRAD|SELLER|PROPERTY|TRANSACTION|READINESS|UNDER|DISPOSITION|EXECUTED|SIGNER|NEGOTIATION|BUYER|PARTY|LEASE|EARNEST|TITLE|CLOSING|SETTLEMENT|REPRESENTATION|ADDENDA|ATTORNEY|DEAL)/.test(body)) throw new Error("Malformed or undeclared ledger note");
     return;
   }
   if (record.operator !== undefined && record.operator !== null && record.operator !== "brad" && !(parseArvApprovalNote(body) && record.operator === "Brad Thompson")) throw new Error("Ledger operator does not match authenticated Brad");
@@ -58,6 +60,23 @@ export async function validateLedgerNote(boundary: GhlBoundary, contactId: strin
       const value = fieldValue(opportunity.customFields, getConfig(process.env.IAOS_ENV).opportunityFacts.currentOffer, "opportunity").value;
       if (typeof value !== "number" || value <= 0 || outcome.snapshot.currentOffer !== value) throw new Error("Accepted price must match confirmed Current Offer");
     }
+  }
+  /* B15-25 Phase 2 (Jess RULING 2026-10-30; Captain approved P2-1..P2-5). A Deal Calculation note is a working
+     calculation, never an approval: it is accepted only while the committed switch is ENABLED, only as a NEW note
+     that names the latest saved calculation for the deal (no silent overwrite), only with a fresh `Saved`, and
+     only when its basis snapshot equals the opportunity's own approved facts and the latest Property Identity
+     Confirmation, read fresh here. Nothing else is written; ARV, repairs and Current Offer are never touched. */
+  const calculation = parseDealCalculationNote(body);
+  if (calculation) {
+    const config = getConfig(process.env.IAOS_ENV);
+    if (config.dealCalculationSave.enabled !== DEAL_CALCULATION_SAVE_ENABLED) throw new Error("Deal calculation saving is disabled");
+    const refusal = validateDealCalculationAgainst(calculation, {
+      latest: latestDealCalculationForOpportunity(notes, calculation.opportunityId),
+      basis: basisFromOpportunityFields(opportunity.customFields, { arv: config.opportunityFacts.arv, repairs: config.opportunityFacts.repairs, currentOffer: config.opportunityFacts.currentOffer }),
+      propertyIdentity: latestPropertyIdentityNoteForOpportunity(notes, calculation.opportunityId)?.at ?? null,
+      nowMs: Date.now(),
+    });
+    if (refusal) throw new Error(`Deal calculation refused: ${refusal}`);
   }
   await validateDerivedNote(boundary, body, operatorEmail);
   const send = parseContractSendNote(body);
