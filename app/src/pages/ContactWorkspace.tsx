@@ -85,6 +85,9 @@ const ADDITIONAL_INFO_FOLDER_ID = FOLDERS.additionalInfo;
    makes it loadable outside a browser. The config keys and therefore the values
    are unchanged. */
 const RAIL_CONFIG = getRuntimeConfig();
+/* Board 15 R0b P2: the server-projected property-answer capability (false in Production and while the Test
+   evaluation is DISABLED). The same projection decides the dedicated close/recovery page. */
+const PROPERTY_ANSWERS_ENABLED = RAIL_CONFIG.propertyAnswerRecovery.enabled === true;
 const RAIL_IDS: RailIds = {
   oppFacts: {
     arv:            RAIL_CONFIG.opportunityFacts.arv,
@@ -2428,8 +2431,12 @@ export default function ContactWorkspace() {
           detail={detail && detail.id === id ? detail : null}
         />
       )}
-      {/* B15-04 Rev 6 property answers (controlled Test evaluation only; the server hides it everywhere else). */}
-      {contact && opps && opps.length > 0 && (
+      {/* B15-04 Rev 6 property answers (controlled Test evaluation only). Board 15 R0b P2 (Bones 2026-11-05):
+          the WHOLE panel, including its multi-deal selector, mounts only when the server-projected capability
+          says the evaluation applies to this deployment (Test AND the evaluation sentinel exactly ENABLED; see
+          projectRecovery). Otherwise nothing renders and no property-answer request is sent. The server still
+          refuses on its own config; this gate only stops the page offering a workflow the server will refuse. */}
+      {PROPERTY_ANSWERS_ENABLED && contact && opps && opps.length > 0 && (
         <PropertyAnswersPanel contactId={id!} deals={opps.map((o) => ({ id: o.id, name: o.opportunityName }))} />
       )}
 
