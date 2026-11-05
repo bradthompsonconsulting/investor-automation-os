@@ -8,8 +8,8 @@
  *       B's notes read HELD (and, in a second case, FAILED): A's notes are still on
  *       screen for the first render, yet B stays uncertain, text kept. After B's
  *       own read (no "X") it is still uncertain. An OLDER identical note on B
- *       proves nothing either. Only a later read of B holding an "X" created after
- *       the save began reconciles it.
+ *       proves nothing either. r4 (Bones R3 P2): neither does a later read of B
+ *       holding an "X" created after the save began -- no read reconciles it.
  *   G2  Call-log operator ownership is bound before the reservation. Operator two
  *       holds a call-log draft on A. Operator one saves a call on A; its
  *       reservation is HELD; the session switches to operator two; the operation
@@ -58,7 +58,7 @@ run({
       check(`G1 (${variant}) after B's own read (${variant === 'held' ? 'no "X" in it' : 'failed'}), B is still uncertain, text kept`,
         (await noteBox().inputValue()) === X && (await notice('note-draft')) === 'sending');
     }
-    // an OLDER identical note on B proves nothing; a later one created after the save does
+    // an OLDER identical note on B proves nothing; r4: nor does a later one created after the save began
     fixture.db[B].notes.push({ id: 'b-old-x', body: X, dateAdded: '2026-09-29T12:00:00.000Z' });
     await load(`/contacts/${B}`);
     await contactLoaded('Bravo');
@@ -67,9 +67,9 @@ run({
     fixture.applyWrite('note.create', B, { body: X });                   // B's "X" is now in GHL, created after the save began
     await load(`/contacts/${B}`);
     await contactLoaded('Bravo');
-    await until(async () => (await notice('note-draft')) === null, 'G1 reconciled').catch(() => {});
-    check('G1 a later read of B holding an "X" created after the save began reconciles it (draft gone; nothing re-sent)',
-      (await noteBox().inputValue()) === '' && (await notice('note-draft')) === null && opsFor(B).filter((o) => o === 'note.create').length === 1, { v: await noteBox().inputValue(), ops: opsFor(B) });
+    await settle(800);
+    check('G1 r4: a later read of B holding an "X" created after the save began does not reconcile it either (text kept, uncertain; nothing re-sent)',
+      (await noteBox().inputValue()) === X && (await notice('note-draft')) === 'sending' && opsFor(B).filter((o) => o === 'note.create').length === 1, { v: await noteBox().inputValue(), n: await notice('note-draft'), ops: opsFor(B) });
 
     // ── G2 ──
     const callNotes = () => page.getByTestId('call-log-notes');

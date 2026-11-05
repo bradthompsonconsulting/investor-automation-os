@@ -1223,11 +1223,6 @@ export default function ContactWorkspace() {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([OFFER_FOLDER_ID]));
 
   const [notes, setNotes]           = useState<NoteRow[] | null>(null);
-  /* B15-27b r3 (Bones R2-1): whose notes `notes` holds, and when that read
-     started -- set together with them by a SUCCESSFUL read only. A snapshot
-     is evidence about its own contact only, never about the contact shown
-     next (the reset that clears `notes` runs later than the first render). */
-  const [notesSnapshot, setNotesSnapshot] = useState<{ contactId: string; readStartedAt: number } | null>(null);
   const [notesError, setNotesError] = useState<string | null>(null);
 
   // Narrow-width F3 — the rail element (callback ref), so the scroll padding
@@ -1312,7 +1307,6 @@ export default function ContactWorkspace() {
     const forId = id;
     if (currentIdRef.current !== forId) return;   // started for a contact no longer shown
     setNotesError(null);
-    const readStartedAt = Date.now();   // B15-27b r3
     ghl.notes.list(forId)
       .then((res) => {
         if (currentIdRef.current !== forId) return;
@@ -1320,34 +1314,18 @@ export default function ContactWorkspace() {
           (a, b) => new Date(b.dateAdded).getTime() - new Date(a.dateAdded).getTime(),
         );
         setNotes(rows);
-        setNotesSnapshot({ contactId: forId, readStartedAt });
       })
       .catch((e: Error) => { if (currentIdRef.current === forId) setNotesError(e.message); });
   }
 
-  /* B15-27b r2 (Bones finding 2) -- reconciliation: an uncertain note draft
-     whose exact text is in THIS contact's notes (as read from GHL) did land; it
-     is cleared. Not finding it proves nothing, so the draft stays uncertain. */
-  /* B15-27b r3 (Bones R2-1): only a successful read of THIS contact's notes,
-     started after the uncertain save began, holding a note with that exact text
-     created after it began, reconciles it. Another contact's notes, an earlier
-     read, or an older identical note prove nothing. (2 min allows for clock
-     skew between this browser and GHL's note timestamps.) */
-  useEffect(() => {
-    if (!notes || !notesSnapshot || notesSnapshot.contactId !== id || pendingRef.current.note.has(id)) return;
-    const did = noteDraft.identityFor({ contactId: id });
-    if (noteDraft.noticeOf(did)?.kind !== "sending") return;
-    const uncertain = noteDraft.noticeOf(did);
-    const kept = noteDraft.storedValues(did);
-    const sentText = uncertain?.kind === "sending" ? (uncertain.sent?.text ?? kept?.text ?? "") : "";
-    const sentAt = uncertain?.kind === "sending" && uncertain.sentAt ? Date.parse(uncertain.sentAt) : NaN;
-    if (!Number.isFinite(sentAt) || notesSnapshot.readStartedAt < sentAt) return;   // evidence must be read after the save began
-    const SKEW_MS = 2 * 60 * 1000;
-    if (!kept || sentText.trim() === "" || !notes.some((n) => n.body === sentText.trim() && Date.parse(n.dateAdded) >= sentAt - SKEW_MS)) return;
-    noteDraft.clearSent(did, { text: sentText });   // removes the draft if it still holds the sent text; else just the notice
-    if (draft === sentText) setDraft("");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notes, notesSnapshot, id]);
+  /* B15-27b r4 (Bones R3 P2): an uncertain note draft is NEVER cleared because
+     a note with the same text appears in the contact's notes. A matching body
+     and a timestamp do not identify THIS save attempt (the same "Left a
+     voicemail" from an earlier call, a clock-skew window, another session), so
+     no read reconciles it. It stays "may already be in GHL", text kept, until
+     THIS attempt is confirmed by its own response, or the operator resolves it:
+     empties the box (the note is in GHL) or chooses "Save it as a new note
+     anyway" (resendUncertainNote). */
 
   // Read-only, GET-only. Scoped by explicit contactId via the conversations API
   // (§8 step 5) — never listAll, so §11's list lag/drop does not apply here.
@@ -1555,7 +1533,6 @@ export default function ContactWorkspace() {
     setDefs(null);
     setDefsError(null);
     setNotes(null);
-    setNotesSnapshot(null);
     setConversations(null);
     setConversationsError(null);
     setAttemptOverride(null);

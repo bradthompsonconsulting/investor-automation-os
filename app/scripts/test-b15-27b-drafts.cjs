@@ -133,7 +133,8 @@ run({
     await settle(500);
     check('D4c a 500 answer is uncertain too: kept as "may already be in GHL", not re-sent by leaving the box',
       (await notice('note-draft'))?.state === 'sending' && opsFor(A).filter((o) => o === 'note.create').length === 1, { n: await notice('note-draft'), ops: opsFor(A) });
-    // D5 — reloaded while the save was in flight: uncertain; never re-sent; reconciled once it is found in the notes.
+    // D5 — reloaded while the save was in flight: uncertain; never re-sent. r4: finding the text in the notes does NOT
+    // reconcile it (a body does not identify the attempt); the operator resolves it by emptying the box.
     await fresh({}, `/contacts/${A}`);
     await contactLoaded('Alpha');
     h = hold(isWrite('note.create', A));
@@ -153,8 +154,16 @@ run({
     await until(async () => c.fixture.db[A].notes.some((n) => n.body === NOTE), 'D5 original landed');
     await reloadTo(`/contacts/${A}`);
     await contactLoaded('Alpha');
-    await until(async () => (await notice('note-draft')) === null, 'D5 reconciled').catch(() => {});
-    check('D5 once the note is found in the contact\'s notes, the draft is reconciled away; nothing was re-sent',
+    await settle(800);
+    const d5b = await notice('note-draft');
+    check('D5 r4: the same text in the contact\'s notes does not clear it: still kept and "may already be in GHL"; nothing re-sent',
+      (await noteVal()) === NOTE && d5b?.state === 'sending' && opsFor(A).filter((o) => o === 'note.create').length === n5, { val: await noteVal(), d5b, ops: opsFor(A) });
+    await noteBox().fill(''); await noteBox().press('Tab');   // the operator sees it in GHL and empties the box
+    await settle(400);
+    await reloadTo(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await settle(400);
+    check('D5 r4: emptying the box resolves it (draft and notice gone after a reload); nothing was re-sent',
       (await noteVal()) === '' && (await notice('note-draft')) === null && opsFor(A).filter((o) => o === 'note.create').length === n5, { val: await noteVal(), ops: opsFor(A) });
     await settle(300);
     // D6 — a saved note is not kept.

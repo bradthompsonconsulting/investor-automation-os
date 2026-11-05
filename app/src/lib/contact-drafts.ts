@@ -63,7 +63,7 @@ export type DraftRecord = { contactId: string; opportunityId?: string };
 export type ContactDraftIdentity = { scope: DraftScope; env: string; operator: string; contactId: string; opportunityId?: string };
 export type DraftValues = Record<string, string>;
 /** `sent`: exactly what the uncertain save sent (B15-27b r2), so only an identical re-send is refused.
-    `sentAt`: when that save started (B15-27b r3), so only evidence read and created after it can reconcile it. */
+    `sentAt`: when that save started (B15-27b r3). Informational: since r4 no read of the notes reconciles an uncertain save. */
 export type DraftNotice = { kind: "sending"; sent?: DraftValues; sentAt?: string } | { kind: "failed"; message: string } | null;
 export type StoredDraft = {
   version: number; identity: ContactDraftIdentity; savedAt: string; values: DraftValues; notice: DraftNotice;
