@@ -177,6 +177,16 @@ async function bind(n, { at = Date.now(), email = 'brad@example.invalid' } = {})
   const cookie = readAuth.issueReadSession(email, readAuth.appReadConfig(), at, sid(n), g.epoch, { aetag: g.aetag, setag: g.setag }).token;
   return { sid: sid(n), cookie, epoch: g.epoch, aetag: g.aetag, setag: g.setag, exp: decode(cookie).exp };
 }
+/** Jeff (controls N43/N44 aborted the whole run at a top-level fixture): binds made OUTSIDE check() go through this.
+ *  A failed bind is recorded as a named FAIL and the run CONTINUES with an inert placeholder, so a mutation that breaks
+ *  sign-in still reaches -- and fails -- the named checks. Clean runs: bind succeeds, no extra check is recorded. */
+async function fixtureBind(n, opts) {
+  try { return await bind(n, opts); }
+  catch (e) {
+    await check(`FIXTURE bind(${n}) at top level could not sign in`, async () => { throw e; });
+    return { sid: sid(n), cookie: '', epoch: '', aetag: '', setag: '', exp: 0 };
+  }
+}
 const tokenFor = (b, { pexp = b.exp, env = 'test', at = Date.now() } = {}) =>
   writeAuth.issueBoundAppSession('brad@example.invalid', { env, sid: b.sid, pexp, epoch: b.epoch, aetag: b.aetag, setag: b.setag }, process.env, at).token;
 const signTok = (claims, secret) => { const crypto = require('node:crypto'); const input = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url') + '.' + Buffer.from(JSON.stringify(claims)).toString('base64url'); return input + '.' + crypto.createHmac('sha256', secret).update(input).digest('base64url'); };
@@ -251,7 +261,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
   // ---- r4 (Bones R3-1): ROLLBACK -- One Login bound saving tokens issued while ON are refused once it is turned OFF.
   {
     reset(); flag(true);
-    const live = await bind(70); const revoked = await bind(71);
+    const live = await fixtureBind(70); const revoked = await fixtureBind(71);
     const unexpired = parse(await load('app-write-token')(tokenEv(live.cookie))).token;   // a REAL mint while on
     const nowS = Math.floor(Date.now() / 1000);
     const parentExpired = tokenFor(live, { pexp: nowS - 10 });                              // its own 900 s still left
@@ -480,7 +490,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
   // =========================================================================== T
   reset(); flag(true);
   const mint = (e) => load('app-write-token')(e);
-  const T1 = await bind(10);
+  const T1 = await fixtureBind(10);
   await check('T1 success: same-origin POST, store-bound session -> the 900 s token with env/sid/pexp/epoch/aetag/setag; accepted by the unchanged requireAppWriter; one check (2 If-Match PUTs, no read)', async () => {
     blobs.log.length = 0;
     const res = await mint(tokenEv(T1.cookie));
@@ -900,7 +910,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     for (const n of RETIRED) assert.match(src(n), /statusCode: 410/);
   });
   reset(); flag(true);
-  const revokedB = await bind(40), liveB = await bind(41);
+  const revokedB = await fixtureBind(40), liveB = await fixtureBind(41);
   await rev.revokeSession(revokedB.sid, revokedB.epoch, 'test', { event: NF });
   const PRE_AUTH_GATES = {};
   for (const n of READERS) {
