@@ -1234,8 +1234,19 @@ export default function ContactWorkspace() {
   const [conversationsError, setConversationsError] = useState<string | null>(null);
 
   const [draft, setDraft]         = useState("");
-  const [saving, setSaving]       = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  /* B15-27b P1 -- the note save and the callback save in flight, PER CONTACT.
+     A save for A keeps A busy (Saving..., controls disabled) for as long as it
+     runs, including when the operator leaves A and comes back, so A can never
+     start a second, overlapping save; B, meanwhile, is not blocked by A's.
+     The ref is the synchronous double-submit guard; the tick re-renders. */
+  const pendingRef = useRef({ note: new Set<string>(), callback: new Set<string>() });
+  const [, setPendingTick] = useState(0);
+  const markPending = (kind: "note" | "callback", cid: string, on: boolean) => {
+    if (on) pendingRef.current[kind].add(cid); else pendingRef.current[kind].delete(cid);
+    setPendingTick((t) => t + 1);
+  };
+  const saving = pendingRef.current.note.has(id);
   // In-session attempt override — immediate UX only. Verification uses a real
   // page.reload() to confirm the value actually persisted to GHL, since this
   // override would otherwise mask a bad round-trip.
@@ -1246,7 +1257,7 @@ export default function ContactWorkspace() {
   // scheduled this session.
   const [callbackOverride, setCallbackOverride] = useState<string | null | undefined>(undefined);
   const [callbackOpen, setCallbackOpen]         = useState(false);
-  const [callbackSaving, setCallbackSaving]     = useState(false);
+  const callbackSaving = pendingRef.current.callback.has(id);   // B15-27b P1: per contact
   const [callbackError, setCallbackError]       = useState<string | null>(null);
 
   /* B7-02 — Get Comps handoff state. SESSION-ONLY AND DELIBERATELY SO: this is
@@ -1500,15 +1511,13 @@ export default function ContactWorkspace() {
     setCallbackOverride(undefined);
     setCallbackOpen(false);
     setCallbackError(null);
-    // B15-27 — the note and callback save state belong to the contact shown. A
-    // write still pending for the previous contact must neither disable B's
-    // controls nor report its result here (the handlers below drop it). The
-    // note draft is this contact's too: otherwise A's text would stay in B's
-    // (now enabled) input and a blur would save it as a note on B.
+    // B15-27 — the note save error belongs to the contact shown (the handlers
+    // below drop a late result for another contact). The note draft is this
+    // contact's too: otherwise A's text would stay in B's input and a blur
+    // would save it as a note on B. B15-27b P1: the busy state is per contact
+    // (pendingRef), so it needs no reset here: A stays busy, B is not.
     setDraft("");
-    setSaving(false);
     setSaveError(null);
-    setCallbackSaving(false);
     // S2 — reset BOTH rail-read states on navigation. Leaving `opps` populated
     // would render the previous contact's deal under this contact's name for
     // one paint, which is the misattribution the name in the rail exists to
@@ -1727,7 +1736,8 @@ export default function ContactWorkspace() {
     // navigation their results never touch the contact now shown.
     const forId = id;
     const shown = () => currentIdRef.current === forId;
-    setSaving(true);
+    if (pendingRef.current.note.has(forId)) return;   // B15-27b P1: one note save per contact at a time
+    markPending("note", forId, true);
     setSaveError(null);
     try {
       await ghl.notes.create(id, text);
@@ -1743,7 +1753,7 @@ export default function ContactWorkspace() {
     } catch (e) {
       if (shown()) setSaveError((e as Error).message);
     } finally {
-      if (shown()) setSaving(false);
+      markPending("note", forId, false);   // always: the busy state is forId's, wherever the page is
     }
   }
 
@@ -1754,11 +1764,16 @@ export default function ContactWorkspace() {
   // setLastCallAttempt), no new method.
   async function handleSaveCallback(iso: string) {
     const forId = id;   // B15-27 — results apply only while this contact is shown
-    setCallbackSaving(true);
+    if (pendingRef.current.callback.has(forId)) return;   // B15-27b P1: one callback save per contact at a time
+    markPending("callback", forId, true);
     setCallbackError(null);
-    const result = await scheduleCallbackGated(explicitCallbackClient, id, iso);
+    let result: Awaited<ReturnType<typeof scheduleCallbackGated>>;
+    try {
+      result = await scheduleCallbackGated(explicitCallbackClient, id, iso);
+    } finally {
+      markPending("callback", forId, false);   // always: the busy state is forId's, wherever the page is
+    }
     if (currentIdRef.current !== forId) return;   // writes completed for forId; nothing to show here
-    setCallbackSaving(false);
 
     if (result.ok) {
       setCallbackOverride(iso);
@@ -1782,7 +1797,8 @@ export default function ContactWorkspace() {
   async function handleClearCallback() {
     const forId = id;   // B15-27 — results apply only while this contact is shown
     const shown = () => currentIdRef.current === forId;
-    setCallbackSaving(true);
+    if (pendingRef.current.callback.has(forId)) return;   // B15-27b P1: one callback save per contact at a time
+    markPending("callback", forId, true);
     setCallbackError(null);
     try {
       await ghl.contacts.setExplicitCallback(id, null);
@@ -1790,7 +1806,7 @@ export default function ContactWorkspace() {
     } catch (e) {
       if (shown()) setCallbackError(`Couldn't clear callback: ${(e as Error).message}`);
     } finally {
-      if (shown()) setCallbackSaving(false);
+      markPending("callback", forId, false);   // always
     }
   }
 
