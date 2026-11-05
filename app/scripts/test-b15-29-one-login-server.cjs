@@ -184,7 +184,9 @@ async function fixtureBind(n, opts) {
   try { return await bind(n, opts); }
   catch (e) {
     await check(`FIXTURE bind(${n}) at top level could not sign in`, async () => { throw e; });
-    return { sid: sid(n), cookie: '', epoch: '', aetag: '', setag: '', exp: 0 };
+    // Valid-SHAPED but unbound: helpers like tokenFor() accept it, so top-level setup cannot throw; no store holds it,
+    // so every server check it reaches refuses it.
+    return { sid: sid(n), cookie: '', epoch: 'fixture-unbound-epoch', aetag: '"fixture-unbound"', setag: '"fixture-unbound"', exp: Math.floor(Date.now() / 1000) + 3600 };
   }
 }
 const tokenFor = (b, { pexp = b.exp, env = 'test', at = Date.now() } = {}) =>
