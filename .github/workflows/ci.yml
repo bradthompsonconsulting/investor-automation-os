@@ -417,6 +417,10 @@ jobs:
       # (NB6-NB8: a live, unspent reservation for A's deal is refused on B, then writes A once; 23770f6).
       - name: Contact isolation and Production write scope, real pages (B14-12, B14-13) — 105 checks
         run: node app/scripts/test-contact-isolation.cjs
+      # Board 15 R0b P2 (Bones 2026-11-05): the property-answers panel mounts on the real Contact page only when the
+      # server-projected capability is on; Production / committed Test (0-3 deals) render nothing and send nothing.
+      - name: Property answers gate on the real Contact page, Production / Test / Test-enabled (R0b P2) — 74 checks
+        run: node app/scripts/test-property-answers-gate.cjs
 
       # B15-04 C1-C4 r4: draft recovery, stored operation authority, wording and fresh-load non-bypass (real handler, offline).
       - name: Property answers recovery and authority, server (B15-04 C1-C4) - 21 cases
