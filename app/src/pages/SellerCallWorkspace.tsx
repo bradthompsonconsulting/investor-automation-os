@@ -688,6 +688,18 @@ export default function SellerCallWorkspace() {
      contact it was written for: this page survives A -> B navigation, and a
      late save for A must never become B's callback. */
   const [sessionCallback, setSessionCallback] = useState<{ contactId: string; iso: string } | null>(null);
+  /* B15-27 -- the outcome form (which form is open, the Pass reason, the
+     Follow-Up time) and its error are the shown contact's draft. This page
+     survives A -> B navigation, and handleRecordOutcome no longer resets them
+     for a contact that is not shown, so they are cleared here: A's typed
+     reason must never be recorded as B's. The in-flight flag is left as it
+     was. */
+  useEffect(() => {
+    setShowOutcomeForm(null);
+    setPassReasonInput("");
+    setFollowUpAtInput("");
+    setOutcomeActionError(null);
+  }, [contactId]);
 
   /* B8-13 / INV-68 -- the four Offer Readiness determination carriers'
      write-in-flight/error state, one pair per carrier, mirroring
@@ -2205,6 +2217,14 @@ export default function SellerCallWorkspace() {
     }
     setOutcomeActionError(null);
     setRecordingOutcome(kind);
+    /* B15-27 -- this page is reused across contacts. Results below (the local
+       outcome note, form state, timestamp recovery, errors) belong to the
+       contact this outcome started under; once another contact is shown they
+       are dropped. Each guard sits AFTER the deal's own bookkeeping (endAccept,
+       reconcile), so reservations, writes, their order and targets are
+       unchanged. setSessionCallback is already keyed by contact. */
+    const forContact = contactId;
+    const shown = () => contactIdRef.current === forContact;
     try {
       if (kind === "accept") {
         /* attemptRecordOutcome already required snapshot.currentOffer
@@ -2245,6 +2265,7 @@ export default function SellerCallWorkspace() {
         if (offerSaves.unresolvedMessage(acceptOppId) !== null) {
           const message = offerSaves.unresolvedMessage(acceptOppId)!;
           offerSaves.endAccept(acceptOppId, message);
+          if (!shown()) return;   // B15-27: a result for a contact no longer shown
           setOutcomeActionError(`Cannot record acceptance -- ${message}`);
           return;
         }
@@ -2259,11 +2280,13 @@ export default function SellerCallWorkspace() {
         } catch (e) {
           const signIn = e instanceof AppWriteSignInRequired;
           offerSaves.endAccept(acceptOppId, signIn ? null : RESERVATION_FAILED_MESSAGE);
+          if (!shown()) return;   // B15-27: a result for a contact no longer shown
           setOutcomeActionError(signIn ? (e as Error).message : `Cannot record acceptance -- ${RESERVATION_FAILED_MESSAGE}`);
           return;
         }
         if (reserved.state !== "reserved") {
           offerSaves.endAccept(acceptOppId, reserved.message);
+          if (!shown()) return;   // B15-27: a result for a contact no longer shown
           setOutcomeActionError(`Cannot record acceptance -- ${reserved.message}`);
           return;
         }
@@ -2288,6 +2311,7 @@ export default function SellerCallWorkspace() {
           // a block left by an uncertain step in this tab is lifted too.
           if (unresolved === null) offerSaves.clearUnresolved(acceptOppId);
         }
+        if (!shown()) return;   // B15-27: a result for a contact no longer shown
         if (result.stage === "offer_failed" || result.stage === "offer_unconfirmed") {
           setOutcomeActionError(offerSaves.unresolvedMessage(acceptOppId) ?? result.message);
           return;
@@ -2326,6 +2350,7 @@ export default function SellerCallWorkspace() {
       const blockedBefore = offerSaves.unresolvedMessage(outcomeOppId);
       if (blockedBefore !== null) {
         offerSaves.endAccept(outcomeOppId, blockedBefore);
+        if (!shown()) return;   // B15-27: a result for a contact no longer shown
         setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${blockedBefore}`);
         return;
       }
@@ -2342,11 +2367,13 @@ export default function SellerCallWorkspace() {
       } catch (e) {
         const signIn = e instanceof AppWriteSignInRequired;
         offerSaves.endAccept(outcomeOppId, signIn ? null : RESERVATION_FAILED_MESSAGE);
+        if (!shown()) return;   // B15-27: a result for a contact no longer shown
         setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${signIn ? (e as Error).message : RESERVATION_FAILED_MESSAGE}`);
         return;
       }
       if (outcomeReserved.state !== "reserved") {
         offerSaves.endAccept(outcomeOppId, outcomeReserved.message);
+        if (!shown()) return;   // B15-27: a result for a contact no longer shown
         setOutcomeActionError(`Cannot record ${outcomeLabel} -- ${outcomeReserved.message}`);
         return;
       }
@@ -2361,6 +2388,7 @@ export default function SellerCallWorkspace() {
             notes: { create: (id: string, body: string) => ghl.notes.create(id, body, { requestId: followIds.callback_note }) },
           }, contactId, followUpIso);
           if (cb.ok || cb.callbackPersisted) setSessionCallback({ contactId, iso: followUpIso });
+          if (!cb.ok && !shown()) return;   // B15-27
           if (!cb.ok) {
             setOutcomeActionError(cb.error);
             return;
@@ -2379,11 +2407,13 @@ export default function SellerCallWorkspace() {
         offerSaves.endAccept(outcomeOppId, outcomeUnresolved);
         if (outcomeUnresolved === null) offerSaves.clearUnresolved(outcomeOppId);
       }
+      if (!shown()) return;   // B15-27: a result for a contact no longer shown
       setNotes((prev) => [...(prev ?? []), { id: `local-${Date.now()}`, body: attempt.note, dateAdded: nowIso }]);
       setShowOutcomeForm(null);
       setFollowUpAtInput("");
       setPassReasonInput("");
     } catch (e: any) {
+      if (!shown()) return;   // B15-27: a result for a contact no longer shown
       setOutcomeActionError(e?.message ?? "Couldn't record this outcome.");
     } finally {
       setRecordingOutcome(null);

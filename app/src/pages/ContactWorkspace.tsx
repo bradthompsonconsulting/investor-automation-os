@@ -1500,6 +1500,15 @@ export default function ContactWorkspace() {
     setCallbackOverride(undefined);
     setCallbackOpen(false);
     setCallbackError(null);
+    // B15-27 — the note and callback save state belong to the contact shown. A
+    // write still pending for the previous contact must neither disable B's
+    // controls nor report its result here (the handlers below drop it). The
+    // note draft is this contact's too: otherwise A's text would stay in B's
+    // (now enabled) input and a blur would save it as a note on B.
+    setDraft("");
+    setSaving(false);
+    setSaveError(null);
+    setCallbackSaving(false);
     // S2 — reset BOTH rail-read states on navigation. Leaving `opps` populated
     // would render the previous contact's deal under this contact's name for
     // one paint, which is the misattribution the name in the rail exists to
@@ -1713,23 +1722,28 @@ export default function ContactWorkspace() {
   async function handleNoteBlur() {
     const text = draft.trim();
     if (!text || saving) return;
+    // B15-27 — every result below belongs to the contact this save started
+    // under. The writes still complete for that contact (unchanged), but after
+    // navigation their results never touch the contact now shown.
+    const forId = id;
+    const shown = () => currentIdRef.current === forId;
     setSaving(true);
     setSaveError(null);
     try {
       await ghl.notes.create(id, text);
-      setDraft("");
+      if (shown()) setDraft("");
       const nowIso = new Date().toISOString();
       try {
         await ghl.contacts.setLastCallAttempt(id, nowIso);
-        setAttemptOverride(nowIso);
+        if (shown()) setAttemptOverride(nowIso);
       } catch (e) {
-        setSaveError(`Note saved, but couldn't mark attempted: ${(e as Error).message}`);
+        if (shown()) setSaveError(`Note saved, but couldn't mark attempted: ${(e as Error).message}`);
       }
       loadNotes();
     } catch (e) {
-      setSaveError((e as Error).message);
+      if (shown()) setSaveError((e as Error).message);
     } finally {
-      setSaving(false);
+      if (shown()) setSaving(false);
     }
   }
 
@@ -1739,9 +1753,11 @@ export default function ContactWorkspace() {
   // callback. Still exactly three writes (setCallbackDatetime + notes.create +
   // setLastCallAttempt), no new method.
   async function handleSaveCallback(iso: string) {
+    const forId = id;   // B15-27 — results apply only while this contact is shown
     setCallbackSaving(true);
     setCallbackError(null);
     const result = await scheduleCallbackGated(explicitCallbackClient, id, iso);
+    if (currentIdRef.current !== forId) return;   // writes completed for forId; nothing to show here
     setCallbackSaving(false);
 
     if (result.ok) {
@@ -1764,16 +1780,17 @@ export default function ContactWorkspace() {
 
   // Clearing is not scheduling — no note, no attempt. Clears the field only.
   async function handleClearCallback() {
+    const forId = id;   // B15-27 — results apply only while this contact is shown
+    const shown = () => currentIdRef.current === forId;
     setCallbackSaving(true);
     setCallbackError(null);
     try {
       await ghl.contacts.setExplicitCallback(id, null);
-      setCallbackOverride(null);
-      setCallbackOpen(false);
+      if (shown()) { setCallbackOverride(null); setCallbackOpen(false); }
     } catch (e) {
-      setCallbackError(`Couldn't clear callback: ${(e as Error).message}`);
+      if (shown()) setCallbackError(`Couldn't clear callback: ${(e as Error).message}`);
     } finally {
-      setCallbackSaving(false);
+      if (shown()) setCallbackSaving(false);
     }
   }
 
