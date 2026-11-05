@@ -76,7 +76,15 @@ const blocked = D.openContactDraftStore(() => { throw new Error('blocked'); });
 check('S4 unavailable storage falls back to this tab\'s memory (not persistent, still works)', !blocked.persistent && blocked.save(draft) && blocked.load(note()).draft.values.text === 'hi');
 
 // Uncertain failures
-check('U1 a network/abort error is uncertain; a server error is not', D.isUncertainFailure(new TypeError('Failed to fetch')) && !D.isUncertainFailure(new Error('GHL 500')));
+const { AppWriteSignInRequired } = require(path.join(APP, 'src/lib/app-write-session.ts'));
+check('U1 only the sign-in refusal (nothing was sent) is a definite failure', D.isDefiniteFailure(new AppWriteSignInRequired('Sign in')) && !D.isUncertainFailure(new AppWriteSignInRequired('Sign in')));
+check('U2 a server-declared 409 indeterminate, any other HTTP error, a parse error, a network error or an abort is uncertain (Bones finding 2)',
+  [new Error('The save may have reached GHL; it is unresolved'), new Error('Write refused or unconfirmed'), new SyntaxError('Unexpected token'),
+    new TypeError('Failed to fetch'), Object.assign(new Error('aborted'), { name: 'AbortError' })].every((e) => D.isUncertainFailure(e) && !D.isDefiniteFailure(e)));
+
+check('U3 an uncertain notice keeps exactly what was sent; a malformed one is refused',
+  D.parseStoredDraft(rec(note(), { text: 'hi' }, { notice: { kind: 'sending', sent: { text: 'hi' } } }), note()).draft.notice.sent.text === 'hi'
+  && D.parseStoredDraft(rec(note(), { text: 'hi' }, { notice: { kind: 'sending', sent: { text: 3 } } }), note()).reason === 'malformed');
 
 console.log(`\ncontact-drafts: ${checks - failures}/${checks} checks passed`);
-process.exit(failures === 0 && checks >= 20 ? 0 : 1);
+process.exit(failures === 0 && checks >= 22 ? 0 : 1);

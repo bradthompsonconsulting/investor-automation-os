@@ -21,7 +21,7 @@ const { run, twoContacts } = require('./harness/b15-27b/runner.cjs');
 const fixture = twoContacts();
 run({
   title: 'B15-27b P2 draft preservation',
-  floor: 43,
+  floor: 49,
   fixture,
   scenarios: async (c) => {
     const { page, A, B, check, hold, isWrite, holdThenFail, opsFor, writes, doneWrites, text, settle, until, go, fresh, load, setOperator } = c;
@@ -68,30 +68,72 @@ run({
     await contactLoaded('Alpha');
     check('D3 after a reload as operator two: only operator two\'s draft', (await noteVal()) === 'B15-27b operator two note', await noteVal());
     check('D3 no write', writes().length === 0, opsFor());
-    // D4 — a failed save keeps the text, with the reason, on A only.
+    let h;
+    // D4 — a DEFINITE failure (the client's own sign-in refusal: nothing was sent) keeps the text, with the reason.
     await fresh({}, `/contacts/${A}`);
     await contactLoaded('Alpha');
-    let h = holdThenFail('note.create', A);
+    await setOperator(null);   // signed out: the save is refused before any request (lastOperator keeps the key)
     await noteBox().fill(NOTE);
     await noteBox().press('Tab');
-    await h.hit;
+    await until(async () => (await notice('note-draft'))?.state === 'failed', 'D4 failed notice').catch(() => {});
+    check('D4 a save refused before sending is kept as "failed", with the reason; nothing was sent',
+      (await noteVal()) === NOTE && (await notice('note-draft'))?.state === 'failed' && /Sign in/.test((await notice('note-draft'))?.text || '') && writes().length === 0, await notice('note-draft'));
     await toB();
-    h.release();
-    await until(async () => c.log.some((r) => r.kind === 'write' && r.op === 'note.create' && r.status === 500), 'D4 failure');
-    await settle(300);
-    check('D4 A\'s failed save shows nothing on B', (await noteVal()) === '' && (await notice('note-draft')) === null);
-    await toA();
-    const d4 = await notice('note-draft');
-    check('D4 back on A, the text is restored with why it was not saved', (await noteVal()) === NOTE && d4?.state === 'failed' && d4.text.includes('fixture: injected failure'), { val: await noteVal(), d4 });
-    await reloadTo(`/contacts/${A}`);
+    check('D4 nothing of it on B', (await noteVal()) === '' && (await notice('note-draft')) === null);
+    await reloadTo(`/contacts/${A}`);   // signed in again as operator one
     await contactLoaded('Alpha');
-    check('D4 after a reload the failed text and its reason are still kept', (await noteVal()) === NOTE && (await notice('note-draft'))?.state === 'failed');
-    await noteBox().press('Tab');   // focus and leave: retry
+    check('D4 after a reload the failed text and its reason are still kept for A', (await noteVal()) === NOTE && (await notice('note-draft'))?.state === 'failed');
     await noteBox().focus(); await noteBox().press('Tab');
     await until(async () => doneWrites(A, 'contact.lastCallAttempt') >= 1, 'D4 retry').catch(() => {});
     await settle(400);
-    check('D4 leaving the box retries the kept note once; then it is gone', opsFor(A).filter((o) => o === 'note.create').length === 2 && (await noteVal()) === '' && (await notice('note-draft')) === null, opsFor(A));
-    // D5 — reloaded while the save was in flight: kept as "may already be in GHL", never re-sent blindly.
+    check('D4 leaving the box retries a definitely-failed note once; then it is gone', opsFor(A).filter((o) => o === 'note.create').length === 1 && (await noteVal()) === '' && (await notice('note-draft')) === null, opsFor(A));
+    // D4b — the server answers 409 "indeterminate" (it may have reached GHL): uncertain, across a reload; no automatic re-send.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    c.respondNext.push({ match: isWrite('note.create', A), status: 409, body: { outcome: 'indeterminate', error: 'The save may have reached GHL; it is unresolved' } });
+    await noteBox().fill(NOTE);
+    await noteBox().press('Tab');
+    await until(async () => (await notice('note-draft'))?.state === 'sending', 'D4b uncertain').catch(() => {});
+    check('D4b a 409 "indeterminate" answer keeps the text as "may already be in GHL", never "failed"', (await notice('note-draft'))?.state === 'sending', await notice('note-draft'));
+    await reloadTo(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await settle(300);
+    check('D4b after a reload it is still uncertain', (await noteVal()) === NOTE && (await notice('note-draft'))?.state === 'sending');
+    const n4b = opsFor(A).filter((o) => o === 'note.create').length;
+    await noteBox().focus(); await noteBox().press('Tab');
+    await noteBox().focus(); await noteBox().press('Tab');
+    await settle(600);
+    check('D4b leaving the box never re-sends the uncertain text', opsFor(A).filter((o) => o === 'note.create').length === n4b && (await notice('note-draft'))?.state === 'sending', opsFor(A));
+    if (await page.getByTestId('note-draft-action').count()) await page.getByTestId('note-draft-action').click();   // conditional, so a negative control runs on
+    await until(async () => doneWrites(A, 'contact.lastCallAttempt') >= 1, 'D4b explicit').catch(() => {});
+    await settle(400);
+    check('D4b "Save it as a new note anyway" sends it once, explicitly; then the draft is gone',
+      opsFor(A).filter((o) => o === 'note.create').length === n4b + 1 && (await noteVal()) === '' && (await notice('note-draft')) === null, opsFor(A));
+    // D4d — after an uncertain save, DIFFERENT text is a new note: it saves as usual (one write), the uncertain one is not re-sent.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    c.respondNext.push({ match: isWrite('note.create', A), status: 409, body: { outcome: 'indeterminate', error: 'The save may have reached GHL; it is unresolved' } });
+    await noteBox().fill(NOTE);
+    await noteBox().press('Tab');
+    await until(async () => (await notice('note-draft'))?.state === 'sending', 'D4d uncertain').catch(() => {});
+    await noteBox().fill('B15-27b a different, new note');
+    await noteBox().press('Tab');
+    await until(async () => doneWrites(A, 'contact.lastCallAttempt') >= 1, 'D4d new note').catch(() => {});
+    await settle(400);
+    const bodies = c.log.filter((r) => r.kind === 'write' && r.op === 'note.create').map((r) => r.args.body);
+    check('D4d a different note saves once; the uncertain text is never re-sent', JSON.stringify(bodies) === JSON.stringify([NOTE, 'B15-27b a different, new note']), bodies);
+    // D4c — any other server error (here a 500) does not prove nothing was sent either.
+    await fresh({}, `/contacts/${A}`);
+    await contactLoaded('Alpha');
+    c.failNext.push(isWrite('note.create', A));
+    await noteBox().fill(NOTE);
+    await noteBox().press('Tab');
+    await until(async () => (await notice('note-draft'))?.state === 'sending', 'D4c uncertain').catch(() => {});
+    await noteBox().focus(); await noteBox().press('Tab');
+    await settle(500);
+    check('D4c a 500 answer is uncertain too: kept as "may already be in GHL", not re-sent by leaving the box',
+      (await notice('note-draft'))?.state === 'sending' && opsFor(A).filter((o) => o === 'note.create').length === 1, { n: await notice('note-draft'), ops: opsFor(A) });
+    // D5 — reloaded while the save was in flight: uncertain; never re-sent; reconciled once it is found in the notes.
     await fresh({}, `/contacts/${A}`);
     await contactLoaded('Alpha');
     h = hold(isWrite('note.create', A));
@@ -99,7 +141,6 @@ run({
     await noteBox().press('Tab');
     await h.hit;
     await reloadTo(`/contacts/${A}`);
-    h.release();
     await contactLoaded('Alpha');
     await settle(400);
     const d5 = await notice('note-draft');
@@ -108,13 +149,14 @@ run({
     await noteBox().focus(); await noteBox().press('Tab');
     await settle(500);
     check('D5 leaving the box does not send it again', opsFor(A).filter((o) => o === 'note.create').length === n5, opsFor(A));
-    await noteBox().fill(`${NOTE} (edited)`);
-    await noteBox().press('Tab');
-    await until(async () => opsFor(A).filter((o) => o === 'note.create').length === n5 + 1, 'D5 edited send').catch(() => {});
-    check('D5 once edited, leaving the box saves it (one write)', opsFor(A).filter((o) => o === 'note.create').length === n5 + 1, opsFor(A));
-    // let D5's own save finish before the next case, so none of its requests lands in D6's log
-    await until(async () => c.log.filter((r) => r.kind === 'write' && r.contact === A && !r.done).length === 0 && (await noteVal()) === '', 'D5 settled').catch(() => {});
-    await settle(400);
+    h.release();   // the original request lands in GHL now
+    await until(async () => c.fixture.db[A].notes.some((n) => n.body === NOTE), 'D5 original landed');
+    await reloadTo(`/contacts/${A}`);
+    await contactLoaded('Alpha');
+    await until(async () => (await notice('note-draft')) === null, 'D5 reconciled').catch(() => {});
+    check('D5 once the note is found in the contact\'s notes, the draft is reconciled away; nothing was re-sent',
+      (await noteVal()) === '' && (await notice('note-draft')) === null && opsFor(A).filter((o) => o === 'note.create').length === n5, { val: await noteVal(), ops: opsFor(A) });
+    await settle(300);
     // D6 — a saved note is not kept.
     await fresh({}, `/contacts/${A}`);
     await contactLoaded('Alpha');
@@ -236,7 +278,7 @@ run({
     check('D13 nothing of A\'s failed Pass shows on B', ((await reason()) ?? '') === '' && (await notice('call-outcome-draft')) === null);
     await scA();
     const d13 = await notice('call-outcome-draft');
-    check('D13 back on A, A\'s Pass reason is restored with why it was not recorded', (await reason()) === 'B15-27b Alpha pass D13' && d13?.state === 'failed', { reason: await reason(), d13 });
+    check('D13 back on A, A\'s Pass reason is restored, marked "may already be in GHL" (a 500 does not prove nothing was sent)', (await reason()) === 'B15-27b Alpha pass D13' && d13?.state === 'sending', { reason: await reason(), d13 });
 
     // ── Seller Call: the readiness decision reason ─────────────────────────
     const openDecision = async () => {

@@ -37,7 +37,7 @@
  *   failed   the last save failed (with its message): the text is kept.
  */
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
-import { appWriteIdentity, subscribeAppWriteSession, type AppWriteIdentity } from "./app-write-session";
+import { AppWriteSignInRequired, appWriteIdentity, subscribeAppWriteSession, type AppWriteIdentity } from "./app-write-session";
 
 export const CONTACT_DRAFT_VERSION = 1;
 export const CONTACT_DRAFT_PREFIX = "iaos-contact-draft:v1:";
@@ -62,7 +62,8 @@ const DEAL_SCOPES: ReadonlySet<DraftScope> = new Set<DraftScope>(["outcome", "re
 export type DraftRecord = { contactId: string; opportunityId?: string };
 export type ContactDraftIdentity = { scope: DraftScope; env: string; operator: string; contactId: string; opportunityId?: string };
 export type DraftValues = Record<string, string>;
-export type DraftNotice = { kind: "sending" } | { kind: "failed"; message: string } | null;
+/** `sent`: exactly what the uncertain save sent (B15-27b r2), so only an identical re-send is refused. */
+export type DraftNotice = { kind: "sending"; sent?: DraftValues } | { kind: "failed"; message: string } | null;
 export type StoredDraft = {
   version: number; identity: ContactDraftIdentity; savedAt: string; values: DraftValues; notice: DraftNotice;
   /** The server operation a submitted call log belongs to (call log only). */
@@ -72,13 +73,20 @@ export type StoredDraft = {
 export class ContactDraftIdentityError extends Error {}
 
 /**
- * A save error that does NOT prove the save failed: the request may have reached
- * the server (a network error, or the browser aborting it because the page was
- * left or reloaded). Such a draft stays "sending" (it may already be in GHL) and
- * is never re-sent blindly; only a definite failure marks it "failed".
+ * B15-27b r2 (Bones finding 2) -- only a save error that PROVES nothing was sent
+ * is a definite failure. At the page, that is the client's own sign-in refusal
+ * (AppWriteSignInRequired, thrown before any request). Everything else -- the
+ * server's 409 "indeterminate" (the write may have reached GHL), any other HTTP
+ * refusal or error (confirmedCommand reports them all as a plain Error, so the
+ * page cannot tell a proven "not_sent" from an uncertain one), a parse failure,
+ * a network error or an abort on reload -- is UNCERTAIN: the draft stays
+ * "sending" (it may already be in GHL) and is never re-sent automatically.
  */
+export function isDefiniteFailure(e: unknown): boolean {
+  return e instanceof AppWriteSignInRequired;
+}
 export function isUncertainFailure(e: unknown): boolean {
-  return e instanceof TypeError || (typeof DOMException !== "undefined" && e instanceof DOMException && e.name === "AbortError");
+  return !isDefiniteFailure(e);
 }
 
 /** The operator a draft belongs to: the write-session operator, else the last one seen, else this browser (B15-25 rule). */
@@ -120,8 +128,10 @@ export function sameValues(scope: DraftScope, a: DraftValues, b: DraftValues): b
   return SCOPE_FIELDS[scope].every((f) => (a[f] ?? "") === (b[f] ?? ""));
 }
 
+const validSent = (v: unknown): boolean => v === undefined
+  || (!!v && typeof v === "object" && !Array.isArray(v) && Object.values(v as Record<string, unknown>).every((x) => typeof x === "string"));
 const validNotice = (n: unknown): n is DraftNotice =>
-  n === null || (!!n && typeof n === "object" && ((n as { kind?: unknown }).kind === "sending"
+  n === null || (!!n && typeof n === "object" && (((n as { kind?: unknown }).kind === "sending" && validSent((n as { sent?: unknown }).sent))
     || ((n as { kind?: unknown }).kind === "failed" && typeof (n as { message?: unknown }).message === "string")));
 
 /** Parses a stored record for `id`. Anything unexpected is refused, never partly applied. */
@@ -213,6 +223,10 @@ export type RecordDraft = {
   clearNotice(id: ContactDraftIdentity | null): void;
   /** The operation a kept draft was submitted as (call log), read from storage: any record, shown or not. */
   storedOp(id: ContactDraftIdentity | null): string | null;
+  /** The record's save notice as stored (identity-bound; any record, shown or not). */
+  noticeOf(id: ContactDraftIdentity | null): DraftNotice;
+  /** The record's kept values as stored, or null. */
+  storedValues(id: ContactDraftIdentity | null): DraftValues | null;
 };
 
 /**
@@ -275,23 +289,29 @@ export function useRecordDraft(opts: {
     const values = normalizeValues(scope, opts.values);
     const prev = store.load(owner.id);
     const before = prev.ok ? prev.draft : null;
+    const ownerKey = owner.key;
     if (isEmptyDraft(scope, values)) {
       if (before) store.remove(owner.id);
-      if (owner.notice !== null || owner.op !== null) setOwner((o) => ({ ...o, notice: null, op: null }));
+      if (owner.notice !== null || owner.op !== null) setOwner((o) => (o.key === ownerKey ? { ...o, notice: null, op: null } : o));
       return;
     }
     if (before && sameValues(scope, before.values, values)) return;   // nothing new (a restore, or a save mark)
     if (!before && clearedSent.get(owner.key ?? "") === JSON.stringify(values)) return;   // the text a confirmed save just removed
     clearedSent.delete(owner.key ?? "");
-    // An edit: kept, and any earlier save notice no longer describes this text.
-    store.save({ version: CONTACT_DRAFT_VERSION, identity: owner.id, savedAt: new Date().toISOString(), values, notice: null });
-    if (owner.notice !== null || owner.op !== null) setOwner((o) => ({ ...o, notice: null, op: null }));
+    // An edit: kept. B15-27b r2: its save notice is kept too -- an uncertain draft
+    // stays uncertain until reconciled, explicitly re-sent, emptied or removed.
+    store.save({ version: CONTACT_DRAFT_VERSION, identity: owner.id, savedAt: new Date().toISOString(), values,
+      notice: before ? before.notice : null, ...(before?.op ? { op: before.op } : {}) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [valuesJson, owner, initialised, shownKey]);
 
-  const isOwner = (id: ContactDraftIdentity | null) => !!id && owner.key !== null && contactDraftKey(id) === owner.key;
+  /* B15-27b r2 (Bones finding 1): a notice change for `id` applies to the
+     record shown NOW only if it IS `id` -- compared inside the state updater,
+     against the current owner, never a render captured by an earlier save. */
   const setNotice = (id: ContactDraftIdentity | null, notice: DraftNotice, op: string | null) => {
-    if (isOwner(id)) setOwner((o) => ({ ...o, notice, op }));
+    if (!id) return;
+    const key = contactDraftKey(id);
+    setOwner((o) => (o.key === key ? { ...o, notice, op } : o));
   };
   return {
     owner: owner.id,
@@ -302,8 +322,9 @@ export function useRecordDraft(opts: {
     markSending(id, values, op) {
       if (!id) return;
       clearedSent.delete(contactDraftKey(id));
-      store.save({ version: CONTACT_DRAFT_VERSION, identity: id, savedAt: new Date().toISOString(), values: normalizeValues(scope, values), notice: { kind: "sending" }, ...(op ? { op } : {}) });
-      setNotice(id, { kind: "sending" }, op ?? null);
+      const sent = normalizeValues(scope, values);
+      store.save({ version: CONTACT_DRAFT_VERSION, identity: id, savedAt: new Date().toISOString(), values: sent, notice: { kind: "sending", sent }, ...(op ? { op } : {}) });
+      setNotice(id, { kind: "sending", sent }, op ?? null);
     },
     markFailed(id, message) {
       if (!id) return;
@@ -326,6 +347,16 @@ export function useRecordDraft(opts: {
       if (!id) return;
       store.remove(id);
       setNotice(id, null, null);
+    },
+    noticeOf(id) {
+      if (!id) return null;
+      const prev = store.load(id);
+      return prev.ok && prev.draft ? prev.draft.notice : null;
+    },
+    storedValues(id) {
+      if (!id) return null;
+      const prev = store.load(id);
+      return prev.ok && prev.draft ? prev.draft.values : null;
     },
     storedOp(id) {
       if (!id) return null;

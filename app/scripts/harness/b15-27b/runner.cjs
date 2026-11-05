@@ -14,6 +14,10 @@
  *   twoContacts()   contacts A (Alpha) and B (Bravo), one deal each (the
  *                   B15-27 fixture);
  * ctx.refuseNext: the server refuses the next matching write BEFORE sending (not_sent).
+ * ctx.abortNext: the next matching request is aborted (a network error in the page).
+ * ctx.respondNext: { match, status, body, apply } -- answer the next match with this response; `apply`
+ *   lands the write first (a server that wrote to GHL but could not confirm it: 409 indeterminate).
+ * twoContacts().reset({ aDeals, bDeals }): a contact may hold two deals ("<First> deal", "<First> deal 2").
  *
  *   readyPlusB()    A = the Offer Ready deal of seller-call-offer-ready-fixture
  *                   (Confirm Accept genuinely enabled) and B (Bravo), a plain
@@ -96,9 +100,9 @@ function twoContacts() {
   const field = (c, fid) => (c.fields.has(fid) ? c.fields.get(fid) : null);
   return {
     name: 'twoContacts',
-    reset({ aCallback = null, bCallback = null } = {}) { db = { [A]: contact(A, 'Alpha', aCallback), [B]: contact(B, 'Bravo', bCallback) }; },
+    reset({ aCallback = null, bCallback = null, aDeals = 1, bDeals = 1 } = {}) { db = { [A]: contact(A, 'Alpha', aCallback), [B]: contact(B, 'Bravo', bCallback) }; db[A].deals = aDeals; db[B].deals = bDeals; },
     get db() { return db; },
-    contactOf: (o) => (o === `${A}-opp` ? A : o === `${B}-opp` ? B : null),
+    contactOf: (o) => (o === `${A}-opp` || o === `${A}-opp-2` ? A : o === `${B}-opp` || o === `${B}-opp-2` ? B : null),
     precheck: () => null,
     applyWrite(op, target, args) {
       const c = db[target];
@@ -129,8 +133,8 @@ function twoContacts() {
         case 'defs': return { status: 200, body: { customFields: [] } };
         case 'folder': return { status: 200, body: { customField: { id: 'folder', name: 'Folder', position: 0 } } };
         case 'ghl-opportunities': return { status: 200, body: { pipelineId: 'fixture-pipeline', stages: [],
-          opportunities: [A, B].map((cid) => ({ id: `${cid}-opp`, contactId: cid, contactName: db[cid].first, opportunityName: `${db[cid].first} deal`,
-            phone: '', email: '', stageId: 'fixture-stage', customFields: [] })) } };
+          opportunities: [A, B].flatMap((cid) => Array.from({ length: db[cid].deals }, (_, i) => ({ id: i === 0 ? `${cid}-opp` : `${cid}-opp-${i + 1}`, contactId: cid, contactName: db[cid].first,
+            opportunityName: i === 0 ? `${db[cid].first} deal` : `${db[cid].first} deal ${i + 1}`, phone: '', email: '', stageId: 'fixture-stage', customFields: [] }))) } };
         case 'ghl-underwriting-policy': return { status: 200, body: { values: [] } };
         case 'ghl-contact-conversations': return { status: 200, body: { messages: [], conversations: [] } };
         default: return { status: 404, body: { error: `fixture does not model ${req.kind}` } };
@@ -214,7 +218,7 @@ async function run({ title, floor, fixture, scenarios }) {
   };
   const entry = prepareEntry();
   const bf = createBarrierFixture({ contactOf: fixture.contactOf });
-  const ctx = { A, B, A_CALLBACK, B_CALLBACK, F, fixture, bf, check, log: [], holds: [], failNext: [], refuseNext: [], foreign: [], pageErrors: [] };
+  const ctx = { A, B, A_CALLBACK, B_CALLBACK, F, fixture, bf, check, log: [], holds: [], failNext: [], refuseNext: [], abortNext: [], respondNext: [], foreign: [], pageErrors: [] };
   const { createServer } = await import('vite');
   const react = (await import('@vitejs/plugin-react')).default;
   const { chromium } = require('playwright');
@@ -248,6 +252,14 @@ async function run({ title, floor, fixture, scenarios }) {
       const fulfill = (res) => { req.status = res.status; req.done = true; return route.fulfill({ status: res.status, contentType: 'application/json', body: JSON.stringify(res.body) }); };
       if (req.kind === 'call-log-barrier') return fulfill(await bf.handleCallLog(method, url, post));
       if (req.kind === 'current-offer-barrier') return fulfill(await bf.handle(method, url, post));
+      const ai = ctx.abortNext.findIndex((p) => p(req));
+      if (ai >= 0) { ctx.abortNext.splice(ai, 1); req.done = true; req.status = 'aborted'; return route.abort('failed'); }
+      const ri2 = ctx.respondNext.findIndex((x) => x.match(req));
+      if (ri2 >= 0) {
+        const x = ctx.respondNext.splice(ri2, 1)[0];
+        if (x.apply && req.kind === 'write') fixture.applyWrite(req.op, req.contact, req.args);
+        return fulfill({ status: x.status, body: x.body });
+      }
       const fi = ctx.failNext.findIndex((p) => p(req));
       if (fi >= 0) { ctx.failNext.splice(fi, 1); return fulfill({ status: 500, body: { error: 'fixture: injected failure' } }); }
       if (req.kind === 'write') {
@@ -292,7 +304,7 @@ async function run({ title, floor, fixture, scenarios }) {
     ctx.clearStorage = () => page.evaluate(() => { try { localStorage.clear(); sessionStorage.clear(); } catch { /* none */ } });
     /** Fresh fixture, request log and browser storage, then a document load on `to`. */
     ctx.fresh = async (opts, to, op) => {
-      fixture.reset(opts); ctx.log.length = 0; ctx.holds.length = 0; ctx.failNext.length = 0; ctx.refuseNext.length = 0; bf.reset();
+      fixture.reset(opts); ctx.log.length = 0; ctx.holds.length = 0; ctx.failNext.length = 0; ctx.refuseNext.length = 0; ctx.abortNext.length = 0; ctx.respondNext.length = 0; bf.reset();
       await ctx.load(null, op);
       await ctx.clearStorage();
       await ctx.load(to, op);

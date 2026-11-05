@@ -32,7 +32,7 @@ const { run, readyPlusB } = require('./harness/b15-27b/runner.cjs');
 const fixture = readyPlusB();
 run({
   title: 'B15-27b P3+P4 Seller Call',
-  floor: 28,
+  floor: 34,
   fixture,
   scenarios: async (c) => {
     const { page, check, hold, isWrite, holdThenFail, opsFor, writes, doneWrites, text, allText, settle, until, go, fresh } = c;
@@ -106,6 +106,70 @@ run({
     await toA();
     await until(async () => (await recover().count()) > 0, 'R2 A recovery kept').catch(() => {});
     check('R2 back on A, A\'s recovery is still offered (its timestamp is still unconfirmed)', (await recover().count()) === 1);
+
+    // R7 — B15-27b r2 (Bones finding 4): Accept pending at A -> B; it finishes with timestamp_failed while A is
+    // hidden. Back on A the recovery is there (kept for A's deal); B never gets it, nothing is written to B.
+    await freshA();
+    c.refuseNext.push(isWrite('contact.lastCallAttempt', RA));   // refused before sending -> timestamp_failed
+    h = hold(isWrite('contact.lastCallAttempt', RA));
+    if (!(await acceptConfirm().count())) await acceptToggle().click();
+    await acceptConfirm().waitFor({ timeout: 5000 });
+    await acceptConfirm().click();
+    await h.hit;   // the offer and the acceptance note are written; the last touch is pending
+    await toB();
+    h.release();
+    await until(async () => c.log.some((r) => r.kind === 'write' && r.op === 'contact.lastCallAttempt' && r.contact === RA && r.done), 'R7 touch refused');
+    await settle(1500);
+    check('R7 while A is hidden its Accept finished: B shows no recovery and nothing is written to B', (await recover().count()) === 0 && !bTouched(), opsFor(B));
+    await toA();
+    await until(async () => (await recover().count()) > 0, 'R7 A recovery').catch(() => {});
+    check('R7 back on A, the timestamp recovery recorded while A was hidden is offered', (await recover().count()) === 1);
+    if ((await recover().count()) > 0) await recover().click();   // conditional, so a negative control runs on
+    await until(async () => (await recover().count()) === 0, 'R7 recovered').catch(() => {});
+    await settle(500);
+    check('R7 it recovers A\'s timestamp on A, once', c.log.filter((r) => r.kind === 'write' && r.op === 'contact.lastCallAttempt' && r.contact === RA && r.status === 200).length === 1 && !bTouched());
+
+    // R8 — B15-27b r2: the readiness-invalidation RETRY (an effect, not a click), rendered. A's approved decision
+    // goes stale (the seller price changes), so the page writes the invalidation note; it is held across A -> B.
+    const INVALIDATION = 'IAOS OFFER READINESS DECISION INVALIDATION';
+    const isInvalidation = (r) => r.kind === 'write' && r.op === 'note.create' && r.contact === RA && r.args && String(r.args.body).includes(INVALIDATION);
+    const approveThenStale = async () => {
+      const panel = page.getByTestId('readiness-human-action-panel');
+      await panel.waitFor({ timeout: 15000 });
+      if (!(await panel.evaluate((el) => el.open))) await panel.locator('summary').first().click();
+      await page.getByTestId('readiness-approve-button').click();
+      await until(async () => (await page.getByTestId('readiness-human-action-current').count()) > 0, 'approved');
+      const price = page.getByTestId('seller-price-position-input');
+      await price.fill('431000');
+      await price.evaluate((el) => el.blur());
+    };
+    // same contact (positive): the invalidation note is written and shown on A
+    await freshA();
+    await approveThenStale();
+    await until(async () => c.log.some((r) => isInvalidation(r) && r.done), 'R8p invalidation write').catch(() => {});
+    await settle(600);
+    check('R8p same contact: a stale decision writes its invalidation note once, shown in A\'s notes',
+      c.log.filter((r) => isInvalidation(r)).length === 1 && (await notesText()).includes(INVALIDATION));
+    // success while B is shown
+    await freshA();
+    h = hold(isInvalidation);
+    await approveThenStale();
+    await h.hit;
+    await toB();
+    h.release();
+    await until(async () => c.log.some((r) => isInvalidation(r) && r.done), 'R8 invalidation lands');
+    await settle(800);
+    check('R8 A -> B with A\'s invalidation retry pending: A\'s invalidation note never appears in B\'s Notes list', !(await notesText()).includes(INVALIDATION) && !bTouched());
+    // failure while B is shown
+    await freshA();
+    h = hold(isInvalidation); c.failNext.push(isInvalidation);
+    await approveThenStale();
+    await h.hit;
+    await toB();
+    h.release();
+    await until(async () => c.log.some((r) => isInvalidation(r) && r.status === 500), 'R8 invalidation fails');
+    await settle(800);
+    check('R8 A\'s failed invalidation retry shows no error on B', (await page.getByTestId('readiness-invalidation-write-error').count()) === 0 && !(await text()).includes(INJECTED));
 
     // ── P4 ─────────────────────────────────────────────────────────────────
     const actions = [

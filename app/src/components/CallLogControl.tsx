@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getRuntimeConfig } from "../../shared/ghl-config";
-import { useRecordDraft } from "../lib/contact-drafts";
+import { draftOperator, useRecordDraft } from "../lib/contact-drafts";
 import { DraftNotice } from "./DraftNotice";
 import { ghl, CALL_DISPOSITION_ID } from "../lib/ghl";
 import { recordOverride, type StorageLike } from "../lib/dispositionOverride";
@@ -104,6 +104,9 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
      operation for A keeps running to its end after the page moves to B, and
      neither blocks the other. */
   const inFlight = useRef<Set<string>>(new Set());
+  /* B15-27b r2: the operator each contact's Save was submitted by; a finished
+     operation clears the inputs only while that operator is the one shown. */
+  const submittedBy = useRef<Map<string, string>>(new Map());
   /* The operation this page knows for each contact (its own Save, or the one
      the server reported open). Delayed answers are read by this ORIGINAL id. */
   const operations = useRef<Map<string, string>>(new Map());
@@ -124,7 +127,7 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
     if (d.tone === "clear") { setOwner({ kind: "clear" }); return; }
     if (d.tone === "done" && view.state === "finished") {
       setSubmit({ status: "done", result: view.outcome.result as CallLogResult });
-      setResult(null); setText("");
+      if ((submittedBy.current.get(cid) ?? draftOperator()) === draftOperator()) { setResult(null); setText(""); }
       setOwner({ kind: "clear" });
       return;
     }
@@ -223,6 +226,7 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
       if (reserved.state === "held") { operations.current.delete(cid); if (forThis(cid)) { setSubmit({ status: "idle" }); apply(cid, reserved.current); } return; }
       if (reserved.state !== "reserved") { apply(cid, reserved); return; }
       callDraft.markSending(draftId, { result: chosen, text }, op);   // B15-27b P2: the draft now belongs to this operation
+      submittedBy.current.set(cid, draftOperator());
 
       // 1. The result, sent ONCE with its derived id. From here the operation runs
       // to its end for ITS contact, even if the page has moved on.

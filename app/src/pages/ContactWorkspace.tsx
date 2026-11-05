@@ -41,7 +41,7 @@ import {
 } from "../lib/propstream";
 import { ADDITIONAL_INFO_SUBGROUPS, type AdditionalInfoSubgroup } from "../config/additionalInfoSubgroups";
 import { getRuntimeConfig } from "../../shared/ghl-config";
-import { isUncertainFailure, useRecordDraft } from "../lib/contact-drafts";
+import { draftOperator, isUncertainFailure, useRecordDraft } from "../lib/contact-drafts";
 import { DraftNotice } from "../components/DraftNotice";
 
 /**
@@ -1294,6 +1294,15 @@ export default function ContactWorkspace() {
       .finally(() => { if (currentIdRef.current === forId) setLoading(false); });
   }
 
+  /* B15-27b r2 -- the explicit recovery for an uncertain note: the operator
+     chooses to save the kept text as a new note anyway. */
+  function resendUncertainNote() {
+    const did = noteDraft.identityFor({ contactId: id });
+    if (noteDraft.noticeOf(did)?.kind !== "sending" || pendingRef.current.note.has(id)) return;
+    noteDraft.clearNotice(did);
+    void handleNoteBlurForce();
+  }
+
   function loadNotes() {
     const forId = id;
     if (currentIdRef.current !== forId) return;   // started for a contact no longer shown
@@ -1308,6 +1317,22 @@ export default function ContactWorkspace() {
       })
       .catch((e: Error) => { if (currentIdRef.current === forId) setNotesError(e.message); });
   }
+
+  /* B15-27b r2 (Bones finding 2) -- reconciliation: an uncertain note draft
+     whose exact text is in THIS contact's notes (as read from GHL) did land; it
+     is cleared. Not finding it proves nothing, so the draft stays uncertain. */
+  useEffect(() => {
+    if (!notes || pendingRef.current.note.has(id)) return;
+    const did = noteDraft.identityFor({ contactId: id });
+    if (noteDraft.noticeOf(did)?.kind !== "sending") return;
+    const uncertain = noteDraft.noticeOf(did);
+    const kept = noteDraft.storedValues(did);
+    const sentText = uncertain?.kind === "sending" ? (uncertain.sent?.text ?? kept?.text ?? "") : "";
+    if (!kept || sentText.trim() === "" || !notes.some((n) => n.body === sentText.trim())) return;
+    noteDraft.clearSent(did, { text: sentText });   // removes the draft if it still holds the sent text; else just the notice
+    if (draft === sentText) setDraft("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes, id]);
 
   // Read-only, GET-only. Scoped by explicit contactId via the conversations API
   // (§8 step 5) — never listAll, so §11's list lag/drop does not apply here.
@@ -1737,12 +1762,17 @@ export default function ContactWorkspace() {
   // two-call sequence the Dashboard uses: create note, then mark attempt. After
   // saving, re-read notes from GHL (not a local prepend) so the displayed list
   // is what GHL actually holds — no shadow copy.
-  async function handleNoteBlur() {
+  async function handleNoteBlurForce() { return handleNoteBlur(true); }
+  async function handleNoteBlur(explicit = false) {
     const text = draft.trim();
     if (!text || saving) return;
-    // B15-27b P2: a restored draft whose earlier save was not seen to finish may
-    // already be in GHL; it is not sent again by leaving the box, only once edited.
-    if (noteDraft.notice?.kind === "sending") return;
+    // B15-27b P2 / r2 (Bones findings 1, 2): a note whose earlier save is
+    // uncertain may already be in GHL. Leaving the box never sends THAT text
+    // again -- until it is reconciled with the notes or explicitly re-sent.
+    // Decided from THIS contact's stored record (identity-bound), not a render.
+    // Different text is a new note and saves as usual.
+    const uncertain = noteDraft.noticeOf(noteDraft.identityFor({ contactId: id }));
+    if (!explicit && uncertain?.kind === "sending" && (uncertain.sent?.text ?? draft).trim() === text) return;
     // B15-27 — every result below belongs to the contact this save started
     // under. The writes still complete for that contact (unchanged), but after
     // navigation their results never touch the contact now shown.
@@ -1756,7 +1786,8 @@ export default function ContactWorkspace() {
     try {
       await ghl.notes.create(id, text);
       noteDraft.clearSent(draftId, { text: draft });   // saved: forId's draft goes, unless edited since
-      if (shown()) setDraft("");
+      // B15-27b r2: the box is cleared only if it still shows THIS save's record (same contact AND operator).
+      if (shown() && draftId !== null && draftOperator() === draftId.operator) setDraft("");
       const nowIso = new Date().toISOString();
       try {
         await ghl.contacts.setLastCallAttempt(id, nowIso);
@@ -2510,7 +2541,8 @@ export default function ContactWorkspace() {
             />
           </div>
           {saveError && <div style={{ fontSize: "11px", color: "#F87171", marginBottom: "10px" }}>{saveError}</div>}
-          <DraftNotice testid="note-draft" kept={noteDraft.kept && !saving} notice={saveError || saving ? null : noteDraft.notice} what="note" owner="contact" />
+          <DraftNotice testid="note-draft" kept={noteDraft.kept && !saving} notice={saving ? null : noteDraft.notice} what="note" owner="contact"
+            action={{ label: "Save it as a new note anyway", onClick: resendUncertainNote, disabled: saving || loading }} />
 
           {/* History, newest first */}
           {notesError ? (

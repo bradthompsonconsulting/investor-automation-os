@@ -17,10 +17,22 @@ export function draftNoticeText(kept: boolean, notice: Notice, what: string, own
   return null;
 }
 
-export function DraftNotice({ kept, notice, what, owner, testid }: {
+export function DraftNotice({ kept, notice, what, owner, testid, action }: {
   kept: boolean; notice: Notice; what: string; owner: "contact" | "deal"; testid: string;
+  /** B15-27b r2: an explicit action offered with an uncertain ("sending") draft. */
+  action?: { label: string; onClick: () => void; disabled?: boolean };
 }) {
   const text = draftNoticeText(kept, notice, what, owner);
   if (!text) return null;
-  return <div data-testid={testid} data-draft-state={notice?.kind ?? "kept"} role="status" style={STYLE}>{text}</div>;
+  return (
+    <div data-testid={testid} data-draft-state={notice?.kind ?? "kept"} role="status" style={STYLE}>
+      {text}
+      {action && notice?.kind === "sending" ? (
+        <> <button type="button" data-testid={`${testid}-action`} onClick={action.onClick} disabled={action.disabled}
+          style={{ fontSize: "10px", color: "#F59E0B", background: "transparent", border: "1px solid rgba(245,158,11,0.5)", borderRadius: "4px", padding: "1px 6px", cursor: "pointer" }}>
+          {action.label}
+        </button></>
+      ) : null}
+    </div>
+  );
 }
