@@ -62,8 +62,9 @@ const DEAL_SCOPES: ReadonlySet<DraftScope> = new Set<DraftScope>(["outcome", "re
 export type DraftRecord = { contactId: string; opportunityId?: string };
 export type ContactDraftIdentity = { scope: DraftScope; env: string; operator: string; contactId: string; opportunityId?: string };
 export type DraftValues = Record<string, string>;
-/** `sent`: exactly what the uncertain save sent (B15-27b r2), so only an identical re-send is refused. */
-export type DraftNotice = { kind: "sending"; sent?: DraftValues } | { kind: "failed"; message: string } | null;
+/** `sent`: exactly what the uncertain save sent (B15-27b r2), so only an identical re-send is refused.
+    `sentAt`: when that save started (B15-27b r3), so only evidence read and created after it can reconcile it. */
+export type DraftNotice = { kind: "sending"; sent?: DraftValues; sentAt?: string } | { kind: "failed"; message: string } | null;
 export type StoredDraft = {
   version: number; identity: ContactDraftIdentity; savedAt: string; values: DraftValues; notice: DraftNotice;
   /** The server operation a submitted call log belongs to (call log only). */
@@ -131,7 +132,8 @@ export function sameValues(scope: DraftScope, a: DraftValues, b: DraftValues): b
 const validSent = (v: unknown): boolean => v === undefined
   || (!!v && typeof v === "object" && !Array.isArray(v) && Object.values(v as Record<string, unknown>).every((x) => typeof x === "string"));
 const validNotice = (n: unknown): n is DraftNotice =>
-  n === null || (!!n && typeof n === "object" && (((n as { kind?: unknown }).kind === "sending" && validSent((n as { sent?: unknown }).sent))
+  n === null || (!!n && typeof n === "object" && (((n as { kind?: unknown }).kind === "sending" && validSent((n as { sent?: unknown }).sent)
+      && ((n as { sentAt?: unknown }).sentAt === undefined || typeof (n as { sentAt?: unknown }).sentAt === "string"))
     || ((n as { kind?: unknown }).kind === "failed" && typeof (n as { message?: unknown }).message === "string")));
 
 /** Parses a stored record for `id`. Anything unexpected is refused, never partly applied. */
@@ -271,7 +273,8 @@ export function useRecordDraft(opts: {
     /* Text typed while no record was resolved (for example while Seller B's own
        data was still loading: the values were cleared when A was left) belongs
        to the record now shown, so it is adopted for it, never overwritten. */
-    if (initialised && owner.key === null && shownId !== null && !isEmptyDraft(scope, normalizeValues(scope, opts.values))) {
+    // B15-27b r3: anything entered while loading counts -- also a form merely opened (contact-isolation S-cases).
+    if (initialised && owner.key === null && shownId !== null && Object.values(normalizeValues(scope, opts.values)).some((v) => v !== "")) {
       setOwner({ key: shownKey, id: shownId, notice: null, op: null });
       return;
     }
@@ -323,8 +326,9 @@ export function useRecordDraft(opts: {
       if (!id) return;
       clearedSent.delete(contactDraftKey(id));
       const sent = normalizeValues(scope, values);
-      store.save({ version: CONTACT_DRAFT_VERSION, identity: id, savedAt: new Date().toISOString(), values: sent, notice: { kind: "sending", sent }, ...(op ? { op } : {}) });
-      setNotice(id, { kind: "sending", sent }, op ?? null);
+      const sentAt = new Date().toISOString();
+      store.save({ version: CONTACT_DRAFT_VERSION, identity: id, savedAt: sentAt, values: sent, notice: { kind: "sending", sent, sentAt }, ...(op ? { op } : {}) });
+      setNotice(id, { kind: "sending", sent, sentAt }, op ?? null);
     },
     markFailed(id, message) {
       if (!id) return;

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getRuntimeConfig } from "../../shared/ghl-config";
-import { draftOperator, useRecordDraft } from "../lib/contact-drafts";
+import { contactDraftKey, useRecordDraft, type ContactDraftIdentity } from "../lib/contact-drafts";
 import { DraftNotice } from "./DraftNotice";
 import { ghl, CALL_DISPOSITION_ID } from "../lib/ghl";
 import { recordOverride, type StorageLike } from "../lib/dispositionOverride";
@@ -93,8 +93,25 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
       setText(v ? v.text : "");
     },
   });
-  /** A finished operation for `cid`: its submitted draft goes (wherever the page is). */
+  /* B15-27b r3 (Bones R2-2): the draft identity (contact + OPERATOR) each
+     contact's Save started under, with its operation id -- recorded BEFORE the
+     first await, so an operator change during the reservation can never make
+     the new operator the owner of the earlier operator's save. */
+  const submitted = useRef<Map<string, { id: ContactDraftIdentity; op: string }>>(new Map());
+  /**
+   * A finished operation for `cid`: the draft it was submitted from goes (wherever the page is).
+   * Returns whether the inputs shown now ARE that draft (same contact and operator), i.e. may be cleared.
+   * Without a recorded submission (a finish found on load or from another session), only the shown
+   * operator's own stored draft for that same operation counts -- never a broader match.
+   */
   const finishedDraft = (cid: string, op: string): boolean => {
+    const sub = submitted.current.get(cid);
+    if (sub && sub.op === op) {
+      submitted.current.delete(cid);
+      if (callDraft.storedOp(sub.id) === op) callDraft.remove(sub.id);
+      const now = callDraft.identityFor({ contactId: cid });
+      return !!now && contactDraftKey(now) === contactDraftKey(sub.id);
+    }
     const id = callDraft.identityFor({ contactId: cid });
     if (!id || callDraft.storedOp(id) !== op) return false;
     callDraft.remove(id);
@@ -104,9 +121,6 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
      operation for A keeps running to its end after the page moves to B, and
      neither blocks the other. */
   const inFlight = useRef<Set<string>>(new Set());
-  /* B15-27b r2: the operator each contact's Save was submitted by; a finished
-     operation clears the inputs only while that operator is the one shown. */
-  const submittedBy = useRef<Map<string, string>>(new Map());
   /* The operation this page knows for each contact (its own Save, or the one
      the server reported open). Delayed answers are read by this ORIGINAL id. */
   const operations = useRef<Map<string, string>>(new Map());
@@ -120,14 +134,14 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
 
   /** Shows what the server recorded for an operation (or the contact). Never sends anything. */
   function apply(cid: string, view: CallLogView, keepMessage = false) {
-    if (view.state === "finished") finishedDraft(cid, view.op);   // B15-27b P2
+    const ownInputs = view.state === "finished" ? finishedDraft(cid, view.op) : false;   // B15-27b P2 / r3
     if (!forThis(cid)) return;
     if (view.state === "open") operations.current.set(cid, view.op);
     const d = describe(view);
     if (d.tone === "clear") { setOwner({ kind: "clear" }); return; }
     if (d.tone === "done" && view.state === "finished") {
       setSubmit({ status: "done", result: view.outcome.result as CallLogResult });
-      if ((submittedBy.current.get(cid) ?? draftOperator()) === draftOperator()) { setResult(null); setText(""); }
+      if (ownInputs) { setResult(null); setText(""); }   // B15-27b r3: only the inputs of the draft this operation was submitted from
       setOwner({ kind: "clear" });
       return;
     }
@@ -210,6 +224,7 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
     const body = callLogNote(chosen, text.slice(0, CALL_NOTES_MAX));
     const op = crypto.randomUUID();
     const draftId = callDraft.identityFor({ contactId: cid });   // B15-27b P2: cid's draft, under the operator now
+    if (draftId) submitted.current.set(cid, { id: draftId, op });   // B15-27b r3: bound before the first await
     operations.current.set(cid, op);
     setSubmit({ status: "in_flight" });
     setOwner({ kind: "busy" });
@@ -226,7 +241,6 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
       if (reserved.state === "held") { operations.current.delete(cid); if (forThis(cid)) { setSubmit({ status: "idle" }); apply(cid, reserved.current); } return; }
       if (reserved.state !== "reserved") { apply(cid, reserved); return; }
       callDraft.markSending(draftId, { result: chosen, text }, op);   // B15-27b P2: the draft now belongs to this operation
-      submittedBy.current.set(cid, draftOperator());
 
       // 1. The result, sent ONCE with its derived id. From here the operation runs
       // to its end for ITS contact, even if the page has moved on.
