@@ -32,6 +32,16 @@
  *
  * Reads are the existing ones: the contact's notes and the selected opportunity (its own ARV / Repairs / Current
  * Offer fields, for the basis snapshot). No pipeline read here: the page owns the deal choice.
+ *
+ * r4 (Bones REVISE on 80bfe48):
+ *   P2-1  A visit ENDS when the deal changes or the panel unmounts (contact or operator change, unlink, leaving the
+ *         page). A save or a resend whose evidence read was still pending then sends nothing: every continuation
+ *         after a read checks a still-current, mounted visit before the one note.create. (A request already
+ *         dispatched is not claimed cancelled.)
+ *   P2-2  Figures restored from this browser (or typed) are unsaved work: the page says so (`hasUnsavedWork`, Phase 1
+ *         holds a kept draft). Load asks before replacing them unless they ARE a calculation saved for this deal (the
+ *         last one loaded or confirmed here, or one in GHL's list). A confirmed save, or a reconciled one, marks only
+ *         the figures it actually sent as saved -- never newer figures typed meanwhile.
  */
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Save, Download, RefreshCw } from "lucide-react";
@@ -58,7 +68,7 @@ export type CalculatorFigures = {
 
 type Evidence = { list: DealCalculation[]; latest: DealCalculation | null; basis: DealCalculationBasis; propertyIdentity: string | null; bodies: Set<string> };
 /** A sent save whose outcome is not known: the exact note, so it can be found, ruled out, or resent unchanged. */
-type Unconfirmed = { opportunityId: string; body: string; saved: string; supersedes: string | null };
+type Unconfirmed = { opportunityId: string; body: string; saved: string; supersedes: string | null; figures: CalculatorFigures };
 type SaveState =
   | { kind: "idle" }
   | { kind: "saving" }
@@ -73,6 +83,17 @@ const BUTTON: React.CSSProperties = { display: "inline-flex", alignItems: "cente
 const money = (n: number | null) => (n === null ? "—" : `$${n.toLocaleString("en-US")}`);
 const when = (iso: string) => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 const sameFigures = (a: CalculatorFigures, b: CalculatorFigures) => JSON.stringify(a) === JSON.stringify(b);
+/** The calculator figures a saved calculation holds (what Load puts on screen). */
+function figuresOf(c: DealCalculation): CalculatorFigures {
+  return {
+    arvInput: c.arvInput === null ? "" : String(c.arvInput),
+    repairsQuickInput: c.repairsQuick === null ? "" : String(c.repairsQuick),
+    testPriceInput: c.testPrice === null ? "" : String(c.testPrice),
+    assignmentMode: c.assignmentMode,
+    manualAmountInput: c.manualAmount === null ? "" : String(c.manualAmount),
+    repairsMode: "quick",
+  };
+}
 
 /** A figure for the note: whole dollars or blank; anything else blocks the save (never rounded silently). */
 function wholeDollars(parsed: { kind: string; value?: number }): number | null | "invalid" {
@@ -100,8 +121,10 @@ async function readEvidence(contactId: string, opportunityId: string): Promise<E
   };
 }
 
-export function DealCalculationSavePanel({ contactId, opportunityId, dealName, figures, onLoad }: {
+export function DealCalculationSavePanel({ contactId, opportunityId, dealName, figures, hasUnsavedWork, onLoad }: {
   contactId: string;
+  /** r4 P2-2: the page holds unsaved work for this deal (Phase 1 keeps a browser draft: typed or restored). */
+  hasUnsavedWork: boolean;
   /** I1: the deal the calculator page has chosen for this contact, or null (none chosen yet). */
   opportunityId: string | null;
   dealName: string | null;
@@ -122,16 +145,20 @@ export function DealCalculationSavePanel({ contactId, opportunityId, dealName, f
       </div>
     );
   }
-  return <EnabledPanel contactId={contactId} opportunityId={opportunityId} dealName={dealName} figures={figures} onLoad={onLoad} />;
+  return <EnabledPanel contactId={contactId} opportunityId={opportunityId} dealName={dealName} figures={figures} hasUnsavedWork={hasUnsavedWork} onLoad={onLoad} />;
 }
 
-function EnabledPanel({ contactId, opportunityId, dealName, figures, onLoad }: { contactId: string; opportunityId: string | null; dealName: string | null; figures: CalculatorFigures; onLoad: (next: CalculatorFigures, savedAt: string) => void }) {
+function EnabledPanel({ contactId, opportunityId, dealName, figures, hasUnsavedWork, onLoad }: { contactId: string; opportunityId: string | null; dealName: string | null; figures: CalculatorFigures; hasUnsavedWork: boolean; onLoad: (next: CalculatorFigures, savedAt: string) => void }) {
   /* I1: one deal truth -- the page's chosen deal. */
   const selected = opportunityId ? { id: opportunityId, name: dealName || opportunityId } : null;
 
   /* r2 finding 1: the visit. Bumped on every deal change; every async continuation checks it before touching state. */
   const visit = useRef(0);
   const visitDeal = useRef<string | null>(null);
+  /* r4 P2-1: false once this panel is gone; with the visit, gates the one send. */
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; visit.current += 1; }; }, []);
+  const stillCurrent = (myVisit: number) => mounted.current && myVisit === visit.current;
   /* r2 finding 2: one save at a time, decided synchronously (state updates are too late for a double click). */
   const sending = useRef(false);
   /* r2 finding 2: unconfirmed attempts, per deal, for the life of this panel. */
@@ -141,10 +168,13 @@ function EnabledPanel({ contactId, opportunityId, dealName, figures, onLoad }: {
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
   const [basedOn, setBasedOn] = useState<string | null>(null);
   const [loadedFrom, setLoadedFrom] = useState<string | null>(null);
-  const [clean, setClean] = useState<CalculatorFigures>(figures);
+  /* r4 P2-2: the figures KNOWN to be saved for this deal (loaded, or confirmed as sent) -- none at first: incoming
+     figures may be restored browser work, never assumed saved. */
+  const [clean, setClean] = useState<CalculatorFigures | null>(null);
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
   const [pendingLoad, setPendingLoad] = useState<DealCalculation | null>(null);
-  const dirty = !sameFigures(figures, clean);
+  const isSavedFigures = (f: CalculatorFigures) => (clean !== null && sameFigures(f, clean)) || !!evidence?.list.some((c) => sameFigures(figuresOf(c), f));
+  const dirty = hasUnsavedWork && !isSavedFigures(figures);
 
   /** Reads evidence for `opportunityId` and applies it ONLY if that visit is still current. */
   const refresh = async (opportunityId: string, myVisit: number): Promise<Evidence | null | "stale"> => {
@@ -162,7 +192,7 @@ function EnabledPanel({ contactId, opportunityId, dealName, figures, onLoad }: {
   useEffect(() => {
     visit.current += 1; visitDeal.current = selected?.id ?? null;
     const myVisit = visit.current;
-    setEvidence(null); setEvidenceError(null); setLoadedFrom(null); setPendingLoad(null);
+    setEvidence(null); setEvidenceError(null); setLoadedFrom(null); setPendingLoad(null); setClean(null);
     setSave(selected && unconfirmed.current.has(selected.id) ? { kind: "unconfirmed", checked: false } : { kind: "idle" });
     if (!selected) { setBasedOn(null); return; }
     const pending = unconfirmed.current.get(selected.id);
@@ -173,14 +203,7 @@ function EnabledPanel({ contactId, opportunityId, dealName, figures, onLoad }: {
   }, [contactId, selected?.id]);
 
   function applyLoad(c: DealCalculation) {
-    const next: CalculatorFigures = {
-      arvInput: c.arvInput === null ? "" : String(c.arvInput),
-      repairsQuickInput: c.repairsQuick === null ? "" : String(c.repairsQuick),
-      testPriceInput: c.testPrice === null ? "" : String(c.testPrice),
-      assignmentMode: c.assignmentMode,
-      manualAmountInput: c.manualAmount === null ? "" : String(c.manualAmount),
-      repairsMode: "quick",
-    };
+    const next: CalculatorFigures = figuresOf(c);
     onLoad(next, c.saved);
     setClean(next); setBasedOn(c.saved); setLoadedFrom(c.saved); setPendingLoad(null);
     if (save.kind !== "unconfirmed") setSave({ kind: "idle" });
@@ -206,7 +229,7 @@ function EnabledPanel({ contactId, opportunityId, dealName, figures, onLoad }: {
       if (!fresh) { setSave({ kind: "unconfirmed", checked: true }); return; }
       if (fresh.bodies.has(attempt.body)) {
         unconfirmed.current.delete(opportunityId);
-        setBasedOn(attempt.saved); setLoadedFrom(null); setClean(figures); setSave({ kind: "saved", at: attempt.saved });
+        setBasedOn(attempt.saved); setLoadedFrom(null); setClean(attempt.figures); setSave({ kind: "saved", at: attempt.saved });
         return;
       }
       const latestSaved = fresh.latest?.saved ?? null;
@@ -219,11 +242,12 @@ function EnabledPanel({ contactId, opportunityId, dealName, figures, onLoad }: {
         return;
       }
       if (!resend) { setSave({ kind: "unconfirmed", checked: true }); return; }
+      if (!stillCurrent(myVisit)) return;   // r4 P2-1: the visit ended while reading -- nothing is sent
       const outcome = await send(opportunityId, attempt.body);
       if (myVisit !== visit.current) return;
       if (outcome === "confirmed") {
         unconfirmed.current.delete(opportunityId);
-        setBasedOn(attempt.saved); setLoadedFrom(null); setClean(figures); setSave({ kind: "saved", at: attempt.saved });
+        setBasedOn(attempt.saved); setLoadedFrom(null); setClean(attempt.figures); setSave({ kind: "saved", at: attempt.saved });
         void refresh(opportunityId, myVisit);
       } else setSave({ kind: "unconfirmed", checked: true });
     } finally { sending.current = false; }
@@ -233,6 +257,7 @@ function EnabledPanel({ contactId, opportunityId, dealName, figures, onLoad }: {
   async function handleSave(supersedesOverride?: string | null) {
     if (!selected || sending.current) return;
     const opportunityId = selected.id; const myVisit = visit.current;
+    const submitted = figures;   // r4 P2-2: exactly the figures this save sends
     if (unconfirmed.current.has(opportunityId)) { setSave({ kind: "unconfirmed", checked: false }); return; }
     const arv = wholeDollars(parseAcquisitionPriceInput(figures.arvInput));
     const repairs = wholeDollars(parseNonNegativeAmountInput(figures.repairsQuickInput));
@@ -263,13 +288,14 @@ function EnabledPanel({ contactId, opportunityId, dealName, figures, onLoad }: {
         setSave({ kind: "newer", latest: l }); return;   // nothing sent
       }
       const body = formatDealCalculationNote(calc);
+      if (!stillCurrent(myVisit)) return;   // r4 P2-1: the visit ended while reading -- nothing is sent
       /* Recorded BEFORE sending: whatever happens next, this deal is blocked until the attempt is reconciled. */
-      unconfirmed.current.set(opportunityId, { opportunityId, body, saved: calc.saved, supersedes });
+      unconfirmed.current.set(opportunityId, { opportunityId, body, saved: calc.saved, supersedes, figures: submitted });
       const outcome = await send(opportunityId, body);
       if (outcome === "confirmed") unconfirmed.current.delete(opportunityId);
       if (myVisit !== visit.current) return;   // the operator moved on: nothing from deal A reaches deal B
       if (outcome === "confirmed") {
-        setBasedOn(calc.saved); setLoadedFrom(null); setClean(figures); setSave({ kind: "saved", at: calc.saved });
+        setBasedOn(calc.saved); setLoadedFrom(null); setClean(submitted); setSave({ kind: "saved", at: calc.saved });
         void refresh(opportunityId, myVisit);
       } else setSave({ kind: "unconfirmed", checked: false });
     } finally { sending.current = false; }

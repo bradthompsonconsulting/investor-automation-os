@@ -1030,6 +1030,8 @@ export default function DealCalculator() {
           opportunityId={context && context.kind === "deal" && context.contactId === linkedContactId ? context.opportunityId : null}
           dealName={context && context.kind === "deal" ? (deals?.find((d) => d.id === context.opportunityId)?.opportunityName || null) : null}
           figures={calculatorFigures}
+          /* r4 P2-2: a kept browser draft (typed or restored) is unsaved work: Load asks before replacing it. */
+          hasUnsavedWork={draft !== null}
           onLoad={handleLoadCalculation}
         />
       ) : null}

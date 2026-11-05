@@ -30,7 +30,8 @@ const PAGE = path.join(APP, 'src', 'pages', 'DealCalculator.tsx');
 const SEND = '    try { await ghl.notes.create(contactId, body, { requestId: crypto.randomUUID() }); return "confirmed"; }';
 
 const MUTATIONS = {
-  autosave: [{ from: '  const dirty = !sameFigures(figures, clean);', to: '  const dirty = !sameFigures(figures, clean);\n  useEffect(() => { if (selected && figures.arvInput !== "") void handleSave(); }, [figures.arvInput]);' }],
+  /* r4: anchor moved with the P2-2 dirty rule; same intent (an autosave on typing must be caught). */
+  autosave: [{ from: '  const dirty = hasUnsavedWork && !isSavedFigures(figures);', to: '  const dirty = hasUnsavedWork && !isSavedFigures(figures);\n  useEffect(() => { if (selected && figures.arvInput !== "") void handleSave(); }, [figures.arvInput]);' }],
   overwrite: [{ from: '=== "newer_calculation_exists" && l) {', to: '=== "never_refused" && l) {' }],
   'double-write': [{ from: SEND, to: '    try { await ghl.notes.create(contactId, body, { requestId: crypto.randomUUID() }); await ghl.notes.create(contactId, body, { requestId: crypto.randomUUID() }); return "confirmed"; }' }],
   'current-offer': [{ from: SEND, to: '    try { await ghl.notes.create(contactId, body, { requestId: crypto.randomUUID() }); await (await import("../lib/write-command")).writeCommand("opportunity.currentOffer", opportunityId, { value: 1 }); return "confirmed"; }' }],
