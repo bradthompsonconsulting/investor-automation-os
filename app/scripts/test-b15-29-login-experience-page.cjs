@@ -84,8 +84,11 @@ const SHOTS = process.env.LOGIN_UI_SHOTS || '';
 if (SHOTS) fs.mkdirSync(SHOTS, { recursive: true });
 
 let checks = 0, failures = 0;
+/* B15-29 test reliability (Bones HOLD b877cea): every failing check's NAME is kept and printed again just before the
+   summary, so a truncated or filtered log still identifies the failing assertion. */
+const failedNames = [];
 function check(name, ok, detail) {
-  checks += 1; if (!ok) failures += 1;
+  checks += 1; if (!ok) { failures += 1; failedNames.push(name); }
   console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail)}`}`);
 }
 
@@ -174,13 +177,25 @@ async function main() {
     if (fn === 'app-write-token') { try { entry.token = JSON.parse(res.body).token || null; } catch { /* not JSON */ } }
     const h = holds.find((x) => !x.taken && x.fn === fn && (!x.method || x.method === request.method()) && tab !== 'popup');
     if (h) { h.taken = true; h.entered = true; entry.held = true; await h.promise; }
-    return route.fulfill({ status: res.statusCode, contentType: 'application/json', body: res.body });
+    const done = route.fulfill({ status: res.statusCode, contentType: 'application/json', body: res.body });
+    if (h) { await done; h.fulfilled = true; }   // reliability: a test waits for this instead of a fixed sleep
+    return done;
   };
   const names = new WeakMap();
   const routed = new WeakSet();
   const tabOf = (request) => { try { return names.get(request.frame().page()) || 'popup'; } catch { return 'worker'; } };
   const newCtx = async (opts = {}) => {
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, ...opts });
+    // Reliability: count each /.netlify/functions answer the PAGE has received, so a test can wait for a delayed answer
+    // to have reached the app (then let it settle) instead of sleeping a fixed time. Counting only; responses untouched.
+    await ctx.addInitScript(() => {
+      const f = window.fetch.bind(window); const w = window; w.__iaosAnswers = {};
+      window.fetch = async (...a) => {
+        const r = await f(...a);
+        try { const u = String((a[0] && a[0].url) || a[0]); const m = /\/\.netlify\/functions\/([\w-]+)/.exec(u); if (m) w.__iaosAnswers[m[1]] = (w.__iaosAnswers[m[1]] || 0) + 1; } catch { /* counting only */ }
+        return r;
+      };
+    });
     routed.add(ctx); await ctx.route('**/*', (r) => router(r, tabOf(r.request())));
     return ctx;
   };
@@ -203,6 +218,14 @@ async function main() {
   const draftValue = (p) => p.getByTestId('draft').inputValue().catch(() => null);
   const mounts = (p) => p.evaluate(() => window.__workspaceMounts || 0);
   const activeTestId = (p) => p.evaluate(() => document.activeElement && document.activeElement.getAttribute('data-testid'));
+  /* Reliability helpers (replace fixed sleeps). settled: two animation frames -- React has committed and the browser
+     painted whatever state is current now. reminderDecided: the session reminder is computed in the SAME render as the
+     signed-in status line (OneLoginAccess), so once that line is shown and the page has settled, the reminder decision
+     for the current status is final -- an absence check after this is not vacuous. */
+  const settled = (p) => p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))).catch(() => false);
+  const reminderDecided = async (p) => (await until(() => shown(p, 'read-access-signed-in'), 20000)) && (await settled(p)) && (await settled(p));
+  const answers = (p, fn) => p.evaluate((k) => (window.__iaosAnswers && window.__iaosAnswers[k]) || 0, fn).catch(() => -1);
+  const statusAnswersFor = (tab) => log.filter((e) => e.tab === tab && e.fn === 'app-read-session' && e.method === 'GET' && e.status !== undefined).length;
   const overlayOnTop = (p, id) => p.evaluate((tid) => { const el = document.elementFromPoint(innerWidth / 2, innerHeight / 2); return !!(el && el.closest(`[data-testid="${tid}"]`)); }, id);
   /** Click the IAOS button, then Google's (stubbed) button in the REAL popup page. Returns the popup page. */
   const signInViaPopup = async (ctx, p, opts) => { try { return await signInViaPopupOnce(ctx, p, opts); } catch { return null; } };
@@ -238,7 +261,8 @@ async function main() {
 
     for (const [w, h, name] of [[1440, 900, 'entrance-1440x900.png'], [768, 1024, 'entrance-768x1024.png'], [375, 812, 'entrance-375x812.png']]) {
       await A.setViewportSize({ width: w, height: h });
-      await sleep(150);
+      await until(async () => (await A.evaluate(() => innerWidth).catch(() => 0)) === w, 5000);
+      await settled(A); await settled(A);
       const m = await A.evaluate(() => {
         const card = document.querySelector('[data-testid="one-login-card"]').getBoundingClientRect();
         const btn = document.querySelector('[data-testid="one-login-sign-in"]').getBoundingClientRect();
@@ -389,7 +413,8 @@ async function main() {
     const oldSid3 = jarSid();
     await signInViaPopup(ctx3, X);
     await until(async () => !(await shown(X, 'read-access-recovery')) && await shown(X, 'route'));
-    await sleep(100);
+    await until(async () => (await activeTestId(X)) === 'draft' && await shown(X, 'read-access-signed-in'), 10000);
+    await settled(X);
     check('L11 after re-sign-in the same page shows the same draft (same route, not remounted, nothing re-sent)',
       (await draftValue(X)) === 'Seller agreed to 142k, wants a 30-day close -- NOT saved' && (await txt(X, 'route')) === '/ws/seller-call/42?tab=notes' &&
       (await mounts(X)) === 1 && log.filter((e) => e.tab === 'X' && e.fn === 'ghl-write').length === xWrites);
@@ -404,8 +429,8 @@ async function main() {
     const ctx4 = await newCtx();
     const R = await newTab(ctx4, 'R');
     await until(() => shown(R, 'draft'));
-    await sleep(300);
-    check('L12 no reminder before T5 (expiry 5 days + 4 s away)', Date.now() < T5 && !(await shown(R, 'session-reminder')), { msToT5: T5 - Date.now() });
+    const decidedBeforeT5 = await reminderDecided(R);
+    check('L12 no reminder before T5 (expiry 5 days + 4 s away)', decidedBeforeT5 && Date.now() < T5 && !(await shown(R, 'session-reminder')), { decidedBeforeT5, msToT5: T5 - Date.now() });
     await until(() => shown(R, 'session-reminder'), 10000);
     check('L12 at T5 the 5-day reminder appears with no reload (timer to the checkpoint): "Your IAOS session expires within 5 days. …"; Remind Me Later + Log In Again',
       Date.now() >= T5 && ((await txt(R, 'session-reminder-text')) || '') === 'Your IAOS session expires within 5 days. Log in again now to keep your workflow uninterrupted.' &&
@@ -413,24 +438,36 @@ async function main() {
     await shot(R, 'reminder-5-day-1440x900.png');
     const before = log.length; const cookiesBefore = setCookies.length; const statusBeforeLater = await serverStatus();
     await R.getByTestId('session-reminder-later').click({ timeout: 8000 }).catch(() => {});
-    await sleep(1500);
+    await until(async () => !(await shown(R, 'session-reminder')), 10000);
+    await settled(R);
+    // Positive barrier (not a fixed sleep): ask the page for one status check and wait for it to be answered. Anything
+    // Remind Me Later had sent would already be in the log before this barrier; the ONLY new request may be that check.
+    const barrierAt = statusAnswersFor('R');
+    await R.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await until(() => statusAnswersFor('R') > barrierAt, 20000);
     const statusAfterLater = await serverStatus();
+    const sinceLater = log.slice(before);
     check('L13 Remind Me Later sends no request and changes no cookie; the server expiresAt is unchanged',
-      log.length === before && setCookies.length === cookiesBefore && statusAfterLater.expiresAt === statusBeforeLater.expiresAt && Date.parse(statusAfterLater.expiresAt) === exp4,
-      { requests: log.slice(before), before: statusBeforeLater.expiresAt, after: statusAfterLater.expiresAt });
+      sinceLater.length >= 1 && sinceLater.every((e) => e.tab === 'R' && e.fn === 'app-read-session' && e.method === 'GET') &&
+      setCookies.length === cookiesBefore && statusAfterLater.expiresAt === statusBeforeLater.expiresAt && Date.parse(statusAfterLater.expiresAt) === exp4,
+      { requests: sinceLater.map((e) => `${e.tab} ${e.method} ${e.fn}`), before: statusBeforeLater.expiresAt, after: statusAfterLater.expiresAt });
     check('L13 Remind Me Later closes the reminder; the app is interactive again', !(await shown(R, 'session-reminder')) && !(await rootInert(R)));
     await R.getByTestId('nav-pipeline').click({ timeout: 8000 }).catch(() => {});
     await until(async () => (await txt(R, 'route')) === '/ws/pipeline');
-    await sleep(300);
-    check('L13 Remind Me Later: no re-show after navigation', (await txt(R, 'route')) === '/ws/pipeline' && !(await shown(R, 'session-reminder')));
+    const decidedNav = await reminderDecided(R);
+    check('L13 Remind Me Later: no re-show after navigation', decidedNav && (await txt(R, 'route')) === '/ws/pipeline' && !(await shown(R, 'session-reminder')), { decidedNav });
+    const reloadAt = statusAnswersFor('R');
     await R.reload();
     await until(() => shown(R, 'draft'));
-    await sleep(400);
-    check('L13 Remind Me Later: no re-show after reload', await shown(R, 'draft') && !(await shown(R, 'session-reminder')));
+    // A FRESH status answer after the reload, then the reminder decision for it.
+    const freshAfterReload = await until(() => statusAnswersFor('R') > reloadAt, 20000);
+    const decidedReload = await reminderDecided(R);
+    check('L13 Remind Me Later: no re-show after reload', freshAfterReload && decidedReload && await shown(R, 'draft') && !(await shown(R, 'session-reminder')), { freshAfterReload, decidedReload });
     const R2 = await newTab(ctx4, 'R2', '/ws/pipeline');
     await until(() => shown(R2, 'draft'));
-    await sleep(400);
-    check('L13 Remind Me Later: no re-show in another tab of the same browser', !(await shown(R2, 'session-reminder')));
+    const freshR2 = await until(() => statusAnswersFor('R2') > 0, 20000);
+    const decidedR2 = await reminderDecided(R2);
+    check('L13 Remind Me Later: no re-show in another tab of the same browser', freshR2 && decidedR2 && !(await shown(R2, 'session-reminder')), { freshR2, decidedR2 });
     check('L13 nothing on the way extended the session (server expiresAt still the original)', Date.parse((await serverStatus()).expiresAt) === exp4 &&
       log.filter((e) => (e.tab === 'R' || e.tab === 'R2') && e.fn === 'app-read-session' && e.expiresAt).every((e) => Date.parse(e.expiresAt) === exp4));
     await ctx4.close();
@@ -446,8 +483,9 @@ async function main() {
     check('L12 only the latest due checkpoint, and a late visit never overstates: between T5 and T1, 1 day + 5 s left, the 5-day reminder says "within 2 days"', Date.now() < T1 && ((await txt(L, 'session-reminder-text')) || '').includes('expires within 2 days.'));
     await L.getByTestId('session-reminder-later').click({ timeout: 8000 }).catch(() => {});
     await L.getByTestId('nav-pipeline').click({ timeout: 8000 }).catch(() => {});
-    await sleep(300);
-    check('L14 storage unavailable: the dismissal is kept in memory (no re-show on navigation)', !(await shown(L, 'session-reminder')));
+    const navL = await until(async () => (await txt(L, 'route')) === '/ws/pipeline', 20000);
+    const decidedL = await reminderDecided(L);
+    check('L14 storage unavailable: the dismissal is kept in memory (no re-show on navigation)', navL && decidedL && !(await shown(L, 'session-reminder')), { navL, decidedL });
     await L.getByTestId('draft').click({ timeout: 8000 }).catch(() => {});
     await L.getByTestId('draft').fill('typed before the 1-day reminder', { timeout: 8000 }).catch(() => {});
     await until(() => shown(L, 'session-reminder'), 10000);
@@ -461,7 +499,9 @@ async function main() {
       await shown(L, 'one-login-sign-in') && await shown(L, 'one-login-cancel') && (await mounts(L)) === 1 && (await draftValue(L)) === 'typed before the 1-day reminder');
     await shot(L, 'overlay-log-in-again-1440x900.png');
     { const n = log.length; const sid = jarSid();
-      await L.getByTestId('one-login-cancel').click({ timeout: 8000 }).catch(() => {}); await sleep(300);
+      await L.getByTestId('one-login-cancel').click({ timeout: 8000 }).catch(() => {});
+      await until(async () => !(await shown(L, 'one-login-relogin')) && (await activeTestId(L)) === 'draft', 10000);
+      await settled(L);
       check('L15 Cancel closes the overlay without touching the session (no request, same sid); focus back in the draft',
         !(await shown(L, 'one-login-relogin')) && !(await rootInert(L)) && log.length === n && jarSid() === sid && (await activeTestId(L)) === 'draft'); }
     await ctx5.close();
@@ -483,7 +523,8 @@ async function main() {
     const beforeLogIn = Date.now();
     await signInViaPopup(ctx6, G);
     await until(async () => !(await shown(G, 'one-login-relogin')));
-    await sleep(150);
+    await until(async () => jarSid() !== oldSid6 && await shown(G, 'read-access-signed-in') && (await activeTestId(G)) === 'draft', 20000);
+    await reminderDecided(G);
     const st6 = await serverStatus();
     const newExp = Date.parse(st6.expiresAt);
     check('L15 Log In Again: a NEW session (new sid) whose server expiresAt is 30 days out (not the old one, not extended in place)',
@@ -569,8 +610,12 @@ async function main() {
       await signInViaPopup(ctx9, Q);
       await until(async () => !(await shown(Q, 'one-login-relogin')) && await shown(Q, 'read-access-signed-in'));
       const newSid = jarSid();
+      const ansMint = await answers(Q, 'app-write-token'); const ansStatus = await answers(Q, 'app-read-session');
       mintHold.release(); statusHold.release();
-      await sleep(700);
+      // The delayed OLD answers have actually reached the page (route fulfilled AND counted by the page), then settle.
+      await until(async () => mintHold.fulfilled && statusHold.fulfilled &&
+        (await answers(Q, 'app-write-token')) > ansMint && (await answers(Q, 'app-read-session')) > ansStatus, 20000);
+      await settled(Q); await settled(Q);
       check('L19 A->A Log In Again: a NEW session; the same page (not remounted) keeps the unsaved draft; no account-changed notice',
         newSid !== oldSid && (await draftValue(Q)) === 'A-to-A unsaved seller notes' && (await mounts(Q)) === 1 && !(await shown(Q, 'one-login-account-changed')) &&
         await shown(Q, 'read-access-signed-in'), { oldSid, newSid, mounts: await mounts(Q) });
@@ -578,8 +623,8 @@ async function main() {
         await shown(Q, 'read-access-signed-in') && !(await shown(Q, 'read-access-recovery')));
       const n = log.filter((e) => e.tab === 'Q' && e.fn === 'ghl-write').length;
       await Q.getByTestId('save').click({ timeout: 8000 }).catch(() => {});
-      await until(async () => log.filter((e) => e.tab === 'Q' && e.fn === 'ghl-write').length === n + 1);
-      await sleep(200);
+      // The write's log entry exists before its status is recorded: wait for the STATUS, not just the entry.
+      await until(async () => { const a = log.filter((e) => e.tab === 'Q' && e.fn === 'ghl-write').slice(n); return a.length === 1 && a[0].status !== undefined; });
       const after = log.filter((e) => e.tab === 'Q' && e.fn === 'ghl-write').slice(n);
       check('L19 the PENDING old-session mint answered after the replacement is never used: the next save carries a token freshly minted under the NEW session',
         after.length === 1 && after[0].status === 200 && heldMint && heldMint.token && tokSid(heldMint.token) === oldSid &&
@@ -657,8 +702,11 @@ async function main() {
         w.__l22o = new MutationObserver(probe);
         w.__l22o.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
       });
+      const ansLate = await answers(V, 'app-read-session');
       late.release();
-      await sleep(800);
+      // The late answer has reached the page and been processed (observer still recording every DOM change).
+      await until(async () => late.fulfilled && (await answers(V, 'app-read-session')) > ansLate, 20000);
+      await settled(V); await settled(V); await settled(V);
       const l22 = await V.evaluate(() => { const w = window; w.__l22o.disconnect(); return w.__l22; });
       check('L22 delayed status: an OLDER "signed in" answer delivered after a NEWER "revoked" one is discarded -- the overlay stays, no signed-in status line repaints (not even transiently)',
         lateEntry && lateEntry.state === 'signed_in' && overlayFirst && await shown(V, 'read-access-recovery') && !(await shown(V, 'read-access-signed-in')) &&
@@ -669,6 +717,7 @@ async function main() {
 
     check('L0 nothing left the machine: no outbound request other than the stubbed Google script', outbound.length === 0, outbound);
     if (checks < 65) { failures += 1; console.error(`FAIL  check floor -- ${checks} checks ran, the floor is 65`); }
+    if (failedNames.length) console.error(`FAILED CHECKS (${failedNames.length}): ${failedNames.map((n) => JSON.stringify(n)).join(' | ')}`);
     console.log(`B15-29 login experience (real page): ${checks - failures}/${checks} checks passed`);
     await exit(failures ? 1 : 0);
   } catch (e) {
