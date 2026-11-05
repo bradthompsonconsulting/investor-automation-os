@@ -438,19 +438,25 @@ async function main() {
     await shot(R, 'reminder-5-day-1440x900.png');
     const before = log.length; const cookiesBefore = setCookies.length; const statusBeforeLater = await serverStatus();
     await R.getByTestId('session-reminder-later').click({ timeout: 8000 }).catch(() => {});
-    await until(async () => !(await shown(R, 'session-reminder')), 10000);
-    await settled(R);
-    // Positive barrier (not a fixed sleep): ask the page for one status check and wait for it to be answered. Anything
-    // Remind Me Later had sent would already be in the log before this barrier; the ONLY new request may be that check.
+    const closedLater = await until(async () => !(await shown(R, 'session-reminder')), 10000);
+    const settledLater = (await settled(R)) && (await settled(R));
+    // Bones P2-2 (280a974): count EXACTLY. (1) Up to the barrier the dismissal has added NO request. (2) The barrier is
+    // ONE explicit status check this test triggers; after it is answered the only new request is that check -- so an
+    // extra status GET caused by the dismissal (control N48) or any other request (control U2) fails the check.
+    const preBarrier = log.slice(before);
     const barrierAt = statusAnswersFor('R');
     await R.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await until(() => statusAnswersFor('R') > barrierAt, 20000);
+    const barrierAnswered = await until(() => statusAnswersFor('R') > barrierAt, 20000);
+    const settledBarrier = (await settled(R)) && (await settled(R));
     const statusAfterLater = await serverStatus();
     const sinceLater = log.slice(before);
     check('L13 Remind Me Later sends no request and changes no cookie; the server expiresAt is unchanged',
-      sinceLater.length >= 1 && sinceLater.every((e) => e.tab === 'R' && e.fn === 'app-read-session' && e.method === 'GET') &&
+      closedLater && settledLater && barrierAnswered && settledBarrier &&
+      preBarrier.length === 0 && sinceLater.length === 1 &&
+      sinceLater[0].tab === 'R' && sinceLater[0].fn === 'app-read-session' && sinceLater[0].method === 'GET' &&
       setCookies.length === cookiesBefore && statusAfterLater.expiresAt === statusBeforeLater.expiresAt && Date.parse(statusAfterLater.expiresAt) === exp4,
-      { requests: sinceLater.map((e) => `${e.tab} ${e.method} ${e.fn}`), before: statusBeforeLater.expiresAt, after: statusAfterLater.expiresAt });
+      { closedLater, settledLater, barrierAnswered, settledBarrier, preBarrier: preBarrier.map((e) => `${e.tab} ${e.method} ${e.fn}`),
+        requests: sinceLater.map((e) => `${e.tab} ${e.method} ${e.fn}`), before: statusBeforeLater.expiresAt, after: statusAfterLater.expiresAt });
     check('L13 Remind Me Later closes the reminder; the app is interactive again', !(await shown(R, 'session-reminder')) && !(await rootInert(R)));
     await R.getByTestId('nav-pipeline').click({ timeout: 8000 }).catch(() => {});
     await until(async () => (await txt(R, 'route')) === '/ws/pipeline');
@@ -613,14 +619,19 @@ async function main() {
       const ansMint = await answers(Q, 'app-write-token'); const ansStatus = await answers(Q, 'app-read-session');
       mintHold.release(); statusHold.release();
       // The delayed OLD answers have actually reached the page (route fulfilled AND counted by the page), then settle.
-      await until(async () => mintHold.fulfilled && statusHold.fulfilled &&
+      // Bones P2-1 (280a974): the delivery wait's result is CONSUMED -- a missing or late-past-deadline answer fails here
+      // (and the stale-answer check below), never passes on an unchanged screen.
+      const delivered19 = await until(async () => mintHold.fulfilled && statusHold.fulfilled &&
         (await answers(Q, 'app-write-token')) > ansMint && (await answers(Q, 'app-read-session')) > ansStatus, 20000);
-      await settled(Q); await settled(Q);
+      const settled19 = (await settled(Q)) && (await settled(Q));
+      check('L19 prerequisite: the delayed OLD mint and status answers were delivered to the page and processed',
+        delivered19 && settled19 && !!mintHold.fulfilled && !!statusHold.fulfilled,
+        { delivered19, settled19, mintFulfilled: !!mintHold.fulfilled, statusFulfilled: !!statusHold.fulfilled, answers: { mint: await answers(Q, 'app-write-token'), status: await answers(Q, 'app-read-session'), ansMint, ansStatus } });
       check('L19 A->A Log In Again: a NEW session; the same page (not remounted) keeps the unsaved draft; no account-changed notice',
         newSid !== oldSid && (await draftValue(Q)) === 'A-to-A unsaved seller notes' && (await mounts(Q)) === 1 && !(await shown(Q, 'one-login-account-changed')) &&
         await shown(Q, 'read-access-signed-in'), { oldSid, newSid, mounts: await mounts(Q) });
       check('L19 the delayed OLD status answer delivered after the replacement is discarded (still signed in, no overlay)',
-        await shown(Q, 'read-access-signed-in') && !(await shown(Q, 'read-access-recovery')));
+        delivered19 && settled19 && await shown(Q, 'read-access-signed-in') && !(await shown(Q, 'read-access-recovery')), { delivered19, settled19 });
       const n = log.filter((e) => e.tab === 'Q' && e.fn === 'ghl-write').length;
       await Q.getByTestId('save').click({ timeout: 8000 }).catch(() => {});
       // The write's log entry exists before its status is recorded: wait for the STATUS, not just the entry.
@@ -705,18 +716,25 @@ async function main() {
       const ansLate = await answers(V, 'app-read-session');
       late.release();
       // The late answer has reached the page and been processed (observer still recording every DOM change).
-      await until(async () => late.fulfilled && (await answers(V, 'app-read-session')) > ansLate, 20000);
-      await settled(V); await settled(V); await settled(V);
+      // Bones P2-1 (280a974): delivery is a REQUIRED prerequisite (consumed, not discarded); the observer stays connected
+      // until the answer has been delivered AND processed (settled), and only then is read.
+      const delivered22 = await until(async () => late.fulfilled && (await answers(V, 'app-read-session')) > ansLate, 20000);
+      const settled22 = (await settled(V)) && (await settled(V)) && (await settled(V));
+      const answers22 = await answers(V, 'app-read-session');
       const l22 = await V.evaluate(() => { const w = window; w.__l22o.disconnect(); return w.__l22; });
+      check('L22 prerequisite: the late "signed in" answer was delivered to the page and processed while observed',
+        delivered22 && settled22 && !!late.fulfilled && answers22 > ansLate && l22 && l22.mutations >= 0,
+        { delivered22, settled22, fulfilled: !!late.fulfilled, answers22, ansLate });
       check('L22 delayed status: an OLDER "signed in" answer delivered after a NEWER "revoked" one is discarded -- the overlay stays, no signed-in status line repaints (not even transiently)',
+        delivered22 && settled22 && !!late.fulfilled && answers22 > ansLate &&
         lateEntry && lateEntry.state === 'signed_in' && overlayFirst && await shown(V, 'read-access-recovery') && !(await shown(V, 'read-access-signed-in')) &&
         !l22.sawSignedIn && !l22.overlayGone &&
-        (await msgText(V)) === "You've signed out of IAOS." && (await draftValue(V)) === 'kept under the revoked overlay', l22);
+        (await msgText(V)) === "You've signed out of IAOS." && (await draftValue(V)) === 'kept under the revoked overlay', { delivered22, settled22, l22 });
       await ctx11.close();
     }
 
     check('L0 nothing left the machine: no outbound request other than the stubbed Google script', outbound.length === 0, outbound);
-    if (checks < 65) { failures += 1; console.error(`FAIL  check floor -- ${checks} checks ran, the floor is 65`); }
+    if (checks < 67) { failures += 1; console.error(`FAIL  check floor -- ${checks} checks ran, the floor is 67`); }
     if (failedNames.length) console.error(`FAILED CHECKS (${failedNames.length}): ${failedNames.map((n) => JSON.stringify(n)).join(' | ')}`);
     console.log(`B15-29 login experience (real page): ${checks - failures}/${checks} checks passed`);
     await exit(failures ? 1 : 0);
