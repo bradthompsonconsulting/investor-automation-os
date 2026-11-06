@@ -942,7 +942,7 @@ export default function Dashboard() {
         {/* B15-19: what the two halves of the strip count, and how they relate. */}
         {!loading && coverage && (
           <p data-testid="dashboard-count-notes" style={{ fontSize: "11px", color: "#475569", margin: "6px 0 0" }}>
-            Temperature counts every loaded contact{untaggedLow > 0 ? `; Not scored is ${untaggedLow.toLocaleString()} with no temperature tag yet (the Lead Queue still lists them after Low)` : ""}.
+            Temperature counts every loaded contact{untaggedLow > 0 ? `; Not scored is ${untaggedLow.toLocaleString()} with no temperature tag yet` : ""}.
             {" "}Stages count the loaded Seller Leads deals: {dealCoverageText(coverage)}
           </p>
         )}

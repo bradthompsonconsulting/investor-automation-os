@@ -6,11 +6,13 @@
  * Offline: the REAL Dashboard and ContactWorkspace (scripts/harness/dashboard-callback-popover, unchanged), every
  * /.netlify/functions request answered here from fictional fixtures; any write is counted and refused.
  *
- *   D1  tier pills: Hot 1, Warm 1, Low 2 (tagged only), Not scored 3 (no tag, one without a phone).
- *   D2  the count note names Not scored, not "Low includes".
+ *   D1  tier pills: Hot 1, Warm 1, Low 2 (tagged only), Not scored 4 (no tag; one without a phone).
+ *   D2  the count note names Not scored, not "Low includes"; D2b r2: it makes no claim about where the Lead Queue
+ *       lists them (Bones REVISE on 35810ff: the unchanged comparator does not put untagged contacts after Low).
  *   D3  Lead Queue tier column: tagged contacts show Hot / Warm / Low; untagged ones show "Not scored", none "Low".
- *   D4  Lead Queue ORDER is exactly the previous order (tier, then score, untagged after Low) -- also checked on the
- *       negative control, where it must still pass.
+ *   D4  Lead Queue ORDER is exactly the existing comparator's order -- also checked on the negative control, where it
+ *       must still pass. r2: it includes an untagged contact with an overdue mailer, which the comparator lists
+ *       ABOVE a tagged Low contact without one (overdue mail bubbles to the top of its tier band).
  *   C1  Contact page header: an untagged contact shows "Not scored"; Hot and Low contacts show Hot and Low.
  *   W   no write is attempted; no request leaves the machine; no page errors.
  *
@@ -39,7 +41,7 @@ const before = {
 };
 
 let checks = 0, failures = 0;
-const FLOOR = 13;
+const FLOOR = 14;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
   console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail)}`}`);
@@ -54,6 +56,8 @@ const PEOPLE = [
   { id: 'fxNone1', first: 'Nia', tags: ['seller-lead'], score: null },
   { id: 'fxNone2', first: 'Ned', tags: [], score: null },
   { id: 'fxNoPhone', first: 'Pat', tags: [], score: null, phone: '' },
+  // r2: untagged, with an overdue mailer task -> the existing comparator lists it above the tagged Low contacts.
+  { id: 'fxNoneOverdue', first: 'Ola', tags: [], score: null },
 ];
 const byId = Object.fromEntries(PEOPLE.map((p) => [p.id, p]));
 /* The Contact page reads its call-log status from the real barrier module (as the original harness suite does). */
@@ -62,8 +66,11 @@ const row = (p) => ({ id: p.id, firstName: p.first, lastName: 'Example', phone: 
   city: 'Sampletown', state: 'TX', postalCode: '75000', dateAdded: '2026-09-01T00:00:00.000Z', tags: p.tags, dndSettings: {},
   motivationScore: p.score, dealScore: p.score, combinedScore: p.score, completenessScore: null, callbackDatetime: null,
   callbackDatetimePrecise: null, lastCallAttempt: null, lastCallAttemptPrecise: null, callDisposition: null, dispositionAt: null });
-const MAILERS = { weekStartCT: '2026-10-31', weekEndCT: '2026-11-06', thisWeekReady: [], thisWeekBusiness: [], overdue: [], noAddress: [],
-  totals: { ready: 0, business: 0, overdue: 0, noAddress: 0, byMailerType: {} } };
+const OVERDUE_TASK = { taskId: 'task-ola', contactId: 'fxNoneOverdue', contactName: 'Ola Example', address: '123 Example St', hasAddress: true, tier: 'low',
+  mailerType: 'Primary', touchNumber: 2, dueDate: '2026-10-20T15:00:00.000Z', dueDateCT: '2026-10-20', completed: false, hasBusinessName: false, companyName: null };
+const MAILERS = { weekStartCT: '2026-10-31', weekEndCT: '2026-11-06', thisWeekReady: [], thisWeekBusiness: [],
+  overdue: [{ key: 'overdue-low', label: 'Overdue', rows: [OVERDUE_TASK] }], noAddress: [],
+  totals: { ready: 0, business: 0, overdue: 1, noAddress: 0, byMailerType: {} } };
 function answer(u) {
   const fn = u.pathname.replace(/^.*\/\.netlify\/functions\//, '');
   if (fn === 'ghl-contacts') return PEOPLE.map(row);
@@ -120,9 +127,10 @@ async function main() {
       while (el && el.textContent.trim() !== '' && !/Deals by stage/.test(el.textContent)) { out.push(el.textContent.trim()); el = el.nextElementSibling; }
       return out;
     });
-    check('D1 tier pills count tagged contacts by their tier and untagged ones as Not scored', JSON.stringify(strip) === JSON.stringify(['Hot 1', 'Warm 1', 'Low 2', 'Not scored 3']), strip);
+    check('D1 tier pills count tagged contacts by their tier and untagged ones as Not scored', JSON.stringify(strip) === JSON.stringify(['Hot 1', 'Warm 1', 'Low 2', 'Not scored 4']), strip);
     const note = (await page.getByTestId('dashboard-count-notes').innerText()).replace(/\s+/g, ' ');
-    check('D2 the count note names Not scored (3), not "Low includes"', /Not scored is 3 with no temperature tag yet/.test(note) && !/Low includes/.test(note), note.slice(0, 160));
+    check('D2 the count note names Not scored (4), not "Low includes"', /Not scored is 4 with no temperature tag yet/.test(note) && !/Low includes/.test(note), note.slice(0, 160));
+    check('D2b r2: the note makes no claim about where the Lead Queue lists them (no "after Low")', !/after Low|lists them/i.test(note), note.slice(0, 200));
 
     // D3 / D4 -- the Lead Queue table (the one with a Tier column).
     await until(async () => (await page.evaluate(() => [...document.querySelectorAll('table')].some((t) => [...t.querySelectorAll('th')].some((h) => h.textContent.trim() === 'Tier') && t.querySelectorAll('tbody tr td').length > 8))));
@@ -134,11 +142,11 @@ async function main() {
     });
     const tierOf = (first) => (queue.find((r) => r.name.includes(first)) || {}).tier;
     check('D3 Lead Queue: Hot, Warm and both Low contacts show their tier', tierOf('Hana') === 'Hot' && tierOf('Wes') === 'Warm' && tierOf('Lou') === 'Low' && tierOf('Lia') === 'Low', queue);
-    check('D3 Lead Queue: the untagged contacts show "Not scored"', tierOf('Nia') === 'Not scored' && tierOf('Ned') === 'Not scored', queue);
-    check('D3 Lead Queue: no untagged contact is labelled Low', !queue.some((r) => (r.name.includes('Nia') || r.name.includes('Ned')) && r.tier === 'Low'));
+    check('D3 Lead Queue: the untagged contacts show "Not scored"', tierOf('Nia') === 'Not scored' && tierOf('Ned') === 'Not scored' && tierOf('Ola') === 'Not scored', queue);
+    check('D3 Lead Queue: no untagged contact is labelled Low', !queue.some((r) => (r.name.includes('Nia') || r.name.includes('Ned') || r.name.includes('Ola')) && r.tier === 'Low'));
     check('D3 Lead Queue: the contact without a phone is not listed (filter unchanged)', !queue.some((r) => r.name.includes('Pat')));
     const order = queue.map((r) => r.name.split(' ')[0]);
-    check('D4 Lead Queue order unchanged: Hot, Warm, Low by score, then untagged with the Low tier (stable)', JSON.stringify(order) === JSON.stringify(['Hana', 'Wes', 'Lou', 'Lia', 'Nia', 'Ned']), order);
+    check('D4 Lead Queue order is the existing comparator\'s: Hot, Warm, then the Low band with its overdue-mailer contact first (untagged Ola above tagged Lou/Lia), then by score (stable)', JSON.stringify(order) === JSON.stringify(['Hana', 'Wes', 'Ola', 'Lou', 'Lia', 'Nia', 'Ned']), order);
 
     // C1 -- the Contact page header badge.
     const headerTier = async (id) => {
