@@ -46,14 +46,21 @@ const LABELS: Record<string, { kind: MessageStatusKind; label: string }> = {
 
 const MAX_DETAIL = 300;
 
+/* r2 (Bones REVISE on 6261dc4): a status is recognised only as an OWN key of LABELS. A plain-object index would also
+   find inherited names ("constructor", "__proto__", "toString", ...), whose values are truthy but carry no kind or
+   label, so the bubble showed no status at all. Anything not an own key is unknown. */
+function knownStatus(raw: string): { kind: MessageStatusKind; label: string } | null {
+  return Object.prototype.hasOwnProperty.call(LABELS, raw) ? LABELS[raw] : null;
+}
+
 /** The status IAOS shows for one message. Accepts any row; reads only direction, status and error. */
 export function messageStatus(m: { direction?: unknown; status?: unknown; error?: unknown }): MessageStatus {
   const raw = typeof m.status === "string" ? m.status.trim().toLowerCase() : "";
   const detail = typeof m.error === "string" ? m.error.trim().slice(0, MAX_DETAIL) : "";
   if (m.direction === "inbound") return { kind: "received", label: "Received", detail: "", raw };
+  const known = knownStatus(raw);
   // Any error text means delivery failed, whatever the status says.
-  if (detail) return { kind: "failed", label: LABELS[raw]?.kind === "failed" ? LABELS[raw].label : "Failed", detail, raw };
-  const known = LABELS[raw];
+  if (detail) return { kind: "failed", label: known?.kind === "failed" ? known.label : "Failed", detail, raw };
   if (known) return { kind: known.kind, label: known.label, detail: "", raw };
   return { kind: "unknown", label: "Status unknown", detail: "", raw };
 }

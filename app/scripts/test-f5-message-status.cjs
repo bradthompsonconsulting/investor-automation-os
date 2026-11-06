@@ -49,7 +49,7 @@ const readAuth = require('../netlify/functions/lib/app-read-auth.ts');
 const COOKIE = `${readAuth.READ_COOKIE}=${readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig()).token}`;
 
 let checks = 0, failures = 0;
-const FLOOR = 32;
+const FLOOR = 38;
 function check(name, ok, detail) { checks += 1; if (!ok) failures += 1; console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail)}`}`); }
 const tryOr = (fn, alt) => { try { return fn(); } catch { return alt; } };
 
@@ -66,12 +66,22 @@ const A_MESSAGES = [
   out('a-missing', undefined, 'A missing-status text'),
   out('a-weird', 'something_new', 'A unknown-status text'),
   out('a-err-only', 'delivered', 'A delivered-but-error text', { error: 'Bounced (fictional)' }),
+  // r2 (Bones REVISE on 6261dc4): inherited JavaScript property names are not GHL statuses.
+  out('a-ctor', 'constructor', 'A constructor-status text'),
+  out('a-proto', '__proto__', 'A proto-status text'),
+  out('a-tostr', 'toString', 'A tostring-status text'),
+  // r2: the email branch, failed with markup-shaped error text (must be shown as text), and unknown.
+  out('a-email-failed', 'failed', 'A email failed text', { channel: 'Email', messageType: 'TYPE_EMAIL', contentType: 'text/plain', error: '<b>Bounced</b> <img src=x onerror="window.__f5x=1">' }),
+  out('a-email-unknown', 'something_else', 'A email unknown text', { channel: 'Email', messageType: 'TYPE_EMAIL', contentType: 'text/plain' }),
 ];
 const B_MESSAGES = [
   { id: 'b-out', conversationId: 'conv-B', contactId: 'cB', direction: 'outbound', channel: 'SMS', messageType: 'TYPE_SMS', body: 'B delivered text', dateAdded: T(2), status: 'delivered' },
 ];
 const EXPECT = { 'A inbound hello': 'Received', 'A delivered text': 'Delivered', 'A sent text': 'Sent', 'A failed text': 'Failed', 'A undelivered text': 'Not delivered',
-  'A no-status text': 'Status unknown', 'A missing-status text': 'Status unknown', 'A unknown-status text': 'Status unknown', 'A delivered-but-error text': 'Failed' };
+  'A no-status text': 'Status unknown', 'A missing-status text': 'Status unknown', 'A unknown-status text': 'Status unknown', 'A delivered-but-error text': 'Failed',
+  'A constructor-status text': 'Status unknown', 'A proto-status text': 'Status unknown', 'A tostring-status text': 'Status unknown',
+  'A email failed text': 'Failed', 'A email unknown text': 'Status unknown' };
+const MARKUP_ERROR = 'GHL: <b>Bounced</b> <img src=x onerror="window.__f5x=1">';
 
 async function main() {
   // ───────────────────────────── U: the pure mapping ─────────────────────────────
@@ -88,6 +98,11 @@ async function main() {
   check('U8 pending / scheduled -> Pending / Scheduled; connected -> Connected', o('pending')?.label === 'Pending' && o('scheduled')?.label === 'Scheduled' && o('connected')?.label === 'Connected', [o('pending'), o('scheduled'), o('connected')]);
   check('U9 inbound -> Received, no delivery claim (even with a status)', st({ direction: 'inbound', status: 'failed' })?.kind === 'received' && st({ direction: 'inbound' })?.label === 'Received');
   check('U10 case and spaces in GHL status are normalised; error bounded to 300 characters', o(' Delivered ')?.kind === 'delivered' && o('failed', 'x'.repeat(500))?.detail.length === 300);
+  const INHERITED = ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf', 'isPrototypeOf', '__defineGetter__'];
+  check('U11 r2: inherited JavaScript names as a status are unknown -- kind "unknown", label "Status unknown" (never blank, never a success)',
+    INHERITED.every((s) => o(s)?.kind === 'unknown' && o(s).label === 'Status unknown'), INHERITED.map((s) => [s, o(s)?.kind, o(s)?.label]));
+  check('U12 r2: an inherited name with GHL error text is still Failed (error precedence kept)',
+    INHERITED.every((s) => o(s, 'Bounced')?.kind === 'failed' && o(s, 'Bounced').label === 'Failed' && o(s, 'Bounced').detail === 'Bounced'), INHERITED.map((s) => o(s, 'Bounced')?.label));
 
   // ───────────────────────────── S: the REAL ghl-contact-conversations handler ─────────────────────────────
   if (BEFORE) fs.writeFileSync(BEFORE_FN, show('netlify/functions/ghl-contact-conversations.ts'));
@@ -194,7 +209,9 @@ async function main() {
         const bubble = el.parentElement; const header = bubble && bubble.firstElementChild;
         const tag = header && (header.querySelector('[data-testid="message-status"]') || [...header.querySelectorAll('span')].find((s) => /^(Sent|Received)$/.test(s.textContent.trim())));
         const detail = bubble && bubble.querySelector('[data-testid="message-status-detail"]');
-        outx[b] = { label: tag ? tag.textContent.trim() : null, kind: tag ? tag.getAttribute('data-status-kind') : null, detail: detail ? detail.textContent.trim() : null };
+        outx[b] = { label: tag ? tag.textContent.trim() : null, kind: tag ? tag.getAttribute('data-status-kind') : null, detail: detail ? detail.textContent.trim() : null,
+          // r2: GHL's error must be text, never markup: no element inside the detail line, and the probe never ran
+          injected: detail ? (detail.querySelector('*') !== null || window.__f5x === 1) : null };
       }
       return outx;
     }, [...Object.keys(EXPECT), 'B delivered text']);
@@ -205,6 +222,13 @@ async function main() {
       check(`${prefix} a sent message is not shown as Delivered`, got['A sent text']?.label === 'Sent');
       check(`${prefix} failed messages show GHL's error text under the body`, got['A failed text']?.detail === 'GHL: Carrier rejected the message (fictional)' && got['A delivered-but-error text']?.detail === 'GHL: Bounced (fictional)', [got['A failed text'], got['A delivered-but-error text']]);
       check(`${prefix} failed messages are marked failed (not success styling)`, got['A failed text']?.kind === 'failed' && got['A undelivered text']?.kind === 'failed', [got['A failed text']?.kind, got['A undelivered text']?.kind]);
+      // r2 (Bones REVISE on 6261dc4)
+      check(`${prefix} r2: inherited names (constructor, __proto__, toString) show "Status unknown", kind unknown -- never blank or a success`,
+        ['A constructor-status text', 'A proto-status text', 'A tostring-status text'].every((b) => got[b]?.label === 'Status unknown' && got[b]?.kind === 'unknown'),
+        ['A constructor-status text', 'A proto-status text', 'A tostring-status text'].map((b) => got[b]));
+      check(`${prefix} r2: an email that failed shows Failed with GHL's markup-shaped error as literal text (no element injected); an email with an unknown status shows Status unknown`,
+        got['A email failed text']?.label === 'Failed' && got['A email failed text']?.detail === MARKUP_ERROR && got['A email failed text']?.injected === false && got['A email unknown text']?.label === 'Status unknown',
+        [got['A email failed text'], got['A email unknown text']]);
     };
 
     // RC -- Conversations page.
@@ -213,7 +237,7 @@ async function main() {
     await page.evaluate(() => window.__iaosNavigate('/conversations'));
     await page.getByText('Alma Fixture').first().waitFor({ timeout: 30000 });
     await page.locator('button', { hasText: 'Alma Fixture' }).first().click();
-    await until(async () => Object.keys(await bubbles()).length >= 9);
+    await until(async () => Object.keys(await bubbles()).length >= 14);
     judge('RC Conversations:', await bubbles());
 
     // IC -- Conversations: A's read held; select B; release A.
@@ -234,7 +258,7 @@ async function main() {
     await page.goto(`${base}/scripts/harness/dashboard-callback-popover/index.html`);
     await page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 60000 });
     await page.evaluate(() => window.__iaosNavigate('/contacts/cA'));
-    await until(async () => Object.keys(await bubbles()).length >= 9, 30000);
+    await until(async () => Object.keys(await bubbles()).length >= 14, 30000);
     judge('RW Contact page:', await bubbles());
 
     // IW -- Contact page: A's read held; navigate to B; release A.
