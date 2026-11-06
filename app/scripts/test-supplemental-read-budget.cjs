@@ -132,14 +132,83 @@ test('budget: reserves 1..ceiling with a receipt each, then refuses unsent ("exh
   await assert.rejects(b.reserve('fn', '/p4', T0), (e) => e instanceof lib.SupplementalReadRefused && e.code === 'exhausted');
   const r = await b.snapshot(); assert.equal(r.reserved, 3); assert.deepEqual(r.receipts.map((x) => [x.n, x.path]), [[1, '/p1'], [2, '/p2'], [3, '/p3']]);
 });
-test('budget: ONE shared ceiling across concurrent invocations -- 40 racing reservations on ceiling 25 give exactly 25', async () => {
-  const mk = () => new lib.SupplementalReadBudget(memStore, SCOPE, 'u2', 25, () => new Promise((r) => setTimeout(r, Math.random() * 3)));
+/* Release 15-B (Bones REVISE 47422d6, step 048). A losing racer may refuse as "exhausted" (it observed the ceiling) or,
+   having spent its bounded CAS attempts, as the library's explicit contention refusal (code "unavailable", exactly this
+   message) -- both fail closed with nothing sent. Nothing else is an acceptable loss: no generic error, no other
+   "unavailable" (unreadable record, missing record, ambiguous acknowledgement), and never fewer than ceiling winners. */
+const CONTENTION_TEXT = 'The supplemental read budget could not be reserved (contention). Nothing was sent.';
+const isAllowedLoss = (e) => e instanceof lib.SupplementalReadRefused
+  && (e.code === 'exhausted' || (e.code === 'unavailable' && e.message === CONTENTION_TEXT));
+const lossLabel = (e) => (e instanceof lib.SupplementalReadRefused ? `${e.code}: ${e.message}` : `untyped ${e?.name}: ${e?.message}`);
+/* A store whose conditional writes never apply: a deterministic stand-in for an invocation that keeps losing the CAS. */
+const neverApplies = { getWithMetadata: (...a) => memStore.getWithMetadata(...a), setJSON: async () => ({ modified: false }) };
+/* Controlled fixture scheduling for the race (Bones: stabilise with the fixture, never with sleeps, retries or a larger
+   CAS bound). All 40 FIRST attempts start together and genuinely race on the shared record; an invocation that loses
+   then waits its turn here, and the turnstile releases one waiting retry per macrotask, so each retry's read and
+   conditional write complete before the next starts. With random pauses, lock-step losers can spend all CAS_ATTEMPTS
+   before the ceiling is reached (fewer than 25 winners -- fail-closed, but a scheduling artefact). */
+const turnstile = () => {
+  const q = []; let busy = false;
+  const pump = () => { const go = q.shift(); if (!go) { busy = false; return; } go(); setImmediate(pump); };
+  return () => new Promise((r) => { q.push(r); if (!busy) { busy = true; setImmediate(pump); } });
+};
+test('budget: ONE shared ceiling across concurrent invocations -- 40 racing reservations on ceiling 25: exactly 25 unique winners, 15 typed fail-closed losers, nothing more reserved or sent', async () => {
+  const pause = turnstile();
+  const mk = () => new lib.SupplementalReadBudget(memStore, SCOPE, 'u2', 25, pause);
   const res = await Promise.allSettled(Array.from({ length: 40 }, (_, i) => mk().reserve('fn', '/c' + i, T0)));
   const won = res.filter((x) => x.status === 'fulfilled').map((x) => x.value).sort((a, b) => a - b);
   assert.deepEqual(won, Array.from({ length: 25 }, (_, i) => i + 1), 'unique, gap-free numbers');
-  assert.ok(res.filter((x) => x.status === 'rejected').every((x) => ['exhausted', 'unavailable'].includes(x.reason.code)));
-  assert.equal(res.filter((x) => x.status === 'rejected' && x.reason.code === 'exhausted').length, 15);
-  const r = record('u2') ?? data.get(lib.readBudgetKey(SCOPE, 'u2')); assert.equal(r.reserved, 25); assert.equal(r.receipts.length, 25);
+  const lost = res.filter((x) => x.status === 'rejected').map((x) => x.reason);
+  assert.equal(lost.length, 15, 'exactly 15 losers');
+  const bad = lost.filter((e) => !isAllowedLoss(e)).map(lossLabel);
+  assert.deepEqual(bad, [], 'every loser is a typed refusal: exhausted, or the explicit contention refusal');
+  const r = record('u2'); assert.ok(r, 'the record exists'); assert.equal(r.reserved, 25); assert.equal(r.receipts.length, 25);
+  // Each receipt is exactly one winner: number n for the path that was handed n; no loser left a receipt.
+  const winners = res.map((x, i) => [x, '/c' + i]).filter(([x]) => x.status === 'fulfilled').map(([x, p]) => [x.value, p]).sort((a, b) => a[0] - b[0]);
+  assert.deepEqual(r.receipts.map((x) => [x.n, x.path]), winners, 'receipts bind 1:1 to the winners');
+  // Afterwards: a fresh invocation is refused "exhausted" and changes nothing; through the metered fetch nothing is sent.
+  const before = structuredClone(r);
+  await assert.rejects(new lib.SupplementalReadBudget(memStore, SCOPE, 'u2', 25).reserve('fn', '/after', T0), (e) => e instanceof lib.SupplementalReadRefused && e.code === 'exhausted');
+  assert.deepEqual(record('u2'), before, 'the refused reservation changed nothing');
+  const cfgBefore = testCfg.supplementalReadBudget; const sentBefore = outbound.length;
+  try {
+    enable(25, 'u2');
+    await assert.rejects(lib.ghlReadFetch(ev(), 'ghl-contacts')(GHL + '/contacts/', {}), (e) => e instanceof lib.SupplementalReadRefused && e.code === 'exhausted');
+  } finally { testCfg.supplementalReadBudget = cfgBefore; }
+  assert.equal(outbound.length, sentBefore, 'nothing dispatched after the ceiling');
+  assert.deepEqual(record('u2'), before, 'still unchanged');
+});
+test('budget: controlled -- all losers exhausted: 25 then 15 concurrent latecomers, every latecomer refused "exhausted", nothing more reserved', async () => {
+  const b = new lib.SupplementalReadBudget(memStore, SCOPE, 'u2a', 25, async () => {});
+  for (let i = 1; i <= 25; i++) assert.equal(await b.reserve('fn', '/w' + i, T0), i);
+  const res = await Promise.allSettled(Array.from({ length: 15 }, (_, i) => new lib.SupplementalReadBudget(memStore, SCOPE, 'u2a', 25, async () => {}).reserve('fn', '/l' + i, T0)));
+  assert.ok(res.every((x) => x.status === 'rejected' && x.reason instanceof lib.SupplementalReadRefused && x.reason.code === 'exhausted'), JSON.stringify(res.map((x) => x.reason && lossLabel(x.reason))));
+  assert.ok(res.every((x) => isAllowedLoss(x.reason)));
+  const r = record('u2a'); assert.equal(r.reserved, 25); assert.deepEqual(r.receipts.map((x) => x.n), Array.from({ length: 25 }, (_, i) => i + 1));
+});
+test('budget: controlled -- mixed losers: an invocation that keeps losing the CAS refuses with the explicit contention refusal, others "exhausted"; the ceiling holds', async () => {
+  const b = new lib.SupplementalReadBudget(memStore, SCOPE, 'u2b', 5, async () => {});
+  for (let i = 1; i <= 4; i++) assert.equal(await b.reserve('fn', '/w' + i, T0), i);
+  const before = structuredClone(record('u2b'));
+  // Room for one more, but this invocation's conditional writes never apply: bounded attempts, then explicit contention.
+  const contended = await new lib.SupplementalReadBudget(neverApplies, SCOPE, 'u2b', 5, async () => {}).reserve('fn', '/x', T0).then(() => null, (e) => e);
+  assert.ok(contended instanceof lib.SupplementalReadRefused && contended.code === 'unavailable' && contended.message === CONTENTION_TEXT, contended && lossLabel(contended));
+  assert.ok(isAllowedLoss(contended));
+  assert.deepEqual(record('u2b'), before, 'the contended invocation reserved nothing');
+  assert.equal(await b.reserve('fn', '/w5', T0), 5);
+  const late = await Promise.allSettled(Array.from({ length: 3 }, (_, i) => new lib.SupplementalReadBudget(memStore, SCOPE, 'u2b', 5, async () => {}).reserve('fn', '/l' + i, T0)));
+  assert.ok(late.every((x) => x.status === 'rejected' && x.reason.code === 'exhausted' && isAllowedLoss(x.reason)));
+  const losses = [contended, ...late.map((x) => x.reason)];
+  assert.deepEqual(losses.map((e) => e.code).sort(), ['exhausted', 'exhausted', 'exhausted', 'unavailable'], 'a mixed, fully typed set of losses');
+  assert.equal(record('u2b').reserved, 5); assert.equal(record('u2b').receipts.length, 5);
+});
+test('budget: the loss predicate refuses anything but exhaustion or the explicit contention refusal', () => {
+  assert.equal(isAllowedLoss(new Error('boom')), false, 'a generic error');
+  assert.equal(isAllowedLoss(new lib.SupplementalReadRefused('The supplemental read budget could not be read. Nothing was sent.', 'unavailable')), false, 'an unreadable record');
+  assert.equal(isAllowedLoss(new lib.SupplementalReadRefused('The supplemental read budget record is missing after it was opened; it is never reopened. Nothing was sent.', 'unavailable')), false, 'a missing record');
+  assert.equal(isAllowedLoss(new lib.SupplementalReadRefused('A supplemental read reservation returned an ambiguous acknowledgement. Nothing was sent.', 'unavailable')), false, 'an ambiguous acknowledgement');
+  assert.equal(isAllowedLoss(new lib.SupplementalReadRefused(CONTENTION_TEXT, 'invalid')), false, 'the contention text under another code');
+  assert.equal(isAllowedLoss(undefined), false);
 });
 test('budget: no automatic reset -- a fresh instance (a new invocation) of an exhausted budget still refuses', async () => {
   const b1 = new lib.SupplementalReadBudget(memStore, SCOPE, 'u3', 1); await b1.reserve('fn', '/a', T0);
@@ -171,7 +240,9 @@ test('budget: a write that APPLIED but was not acknowledged refuses, and the uni
 });
 test('budget: contention that never resolves refuses after bounded attempts ("unavailable")', async () => {
   faults.neverModified = true;
-  await assert.rejects(new lib.SupplementalReadBudget(memStore, SCOPE, 'u8', 5, async () => {}).reserve('fn', '/a', T0), (e) => e.code === 'unavailable');
+  await assert.rejects(new lib.SupplementalReadBudget(memStore, SCOPE, 'u8', 5, async () => {}).reserve('fn', '/a', T0),
+    (e) => e instanceof lib.SupplementalReadRefused && e.code === 'unavailable' && e.message === CONTENTION_TEXT && isAllowedLoss(e));
+  assert.equal(record('u8'), null, 'bounded contention reserved nothing');
 });
 test('budget: malformed or mismatched records refuse ("unavailable") and are not overwritten', async () => {
   const key = lib.readBudgetKey(SCOPE, 'u9');
