@@ -111,7 +111,7 @@ function extraAnswer(req) {
 const json = (status, body) => ({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const watchdog = setTimeout(() => { console.error('FAIL  did not finish within 12 minutes'); process.exit(1); }, 12 * 60_000);
 
-const FLOOR = 136;
+const FLOOR = 140;   // Release 15-B step 92: the 80 px check is replaced by five compact-layout contract checks
 const TARGET = '/src/components/SellerConversation.tsx';
 const PAGE = '/src/pages/SellerCallWorkspace.tsx';
 /* [file, from, to]: each `from` must occur exactly once in its file. */
@@ -146,6 +146,17 @@ const MUTATIONS = {
   // Slice A: GHL-backed controls stop saying NOT SAVED.
   unsavedlabel: [[TARGET, '<span className="sc-ghl-unsaved">NOT SAVED</span>', '']],
   // Slice A: a Call-notes heading no longer opens its question.
+  // Release 15-B step 92 layout controls (each must fail a named SA layout check, not merely change a height):
+  // the compact strip renders with its non-compact padding.
+  layoutnoncompact: [[PAGE, 'padding: compact ? "6px 12px" : "16px 20px", background: "#0F172A"', 'padding: "16px 20px", background: "#0F172A"']],
+  // the strip is capped and clipped (a max-height with overflow hidden).
+  layoutclip: [[PAGE, 'borderRadius: "10px", marginBottom: compact ? "6px" : "16px",', 'borderRadius: "10px", marginBottom: compact ? "6px" : "16px", maxHeight: "60px", overflow: "hidden",']],
+  // a provenance note is hidden.
+  layouthidenote: [[PAGE, 'style={{ fontSize: "10px", color: "#F59E0B", maxWidth: "200px", lineHeight: 1.3 }}', 'style={{ fontSize: "10px", color: "#F59E0B", maxWidth: "200px", lineHeight: 1.3, visibility: "hidden" }}']],
+  // the content below rides up over the strip (obstruction).
+  layoutobstruct: [[PAGE, 'borderRadius: "10px", marginBottom: compact ? "6px" : "16px",', 'borderRadius: "10px", marginBottom: compact ? "-70px" : "16px",']],
+  // cells too wide: more than two rows at 1440x900.
+  layoutrows: [[PAGE, 'minWidth: compact ? "96px" : "128px"', 'minWidth: compact ? "330px" : "128px"']],
   headingnav: [[TARGET, 'aria-current={i === d.current ? "step" : undefined} onClick={() => go(i)}>\n                  {row.heading}', 'aria-current={i === d.current ? "step" : undefined} onClick={() => {}}>\n                  {row.heading}']],
 };
 const MUTATION = process.env.SC_CONV_MUTATION || '';
@@ -508,7 +519,52 @@ async function main() {
       && (await page.locator('[data-testid="seller-call-calltop"] .seller-call-mode__identity:visible').count()) === 1
       && (await page.locator('[data-testid="call-with-airdroid-mode"] .seller-call-mode__identity:visible').count()) === 1);
     check('SA layout: no idle explanation text under the calling controls', (await page.locator('[data-testid="seller-call-calltop"] .seller-call-mode__hint:visible').count()) === 0);
-    check('SA layout: the deal strip is the thin (compact) strip', (await tid(page, 'seller-call-deal-strip').getAttribute('data-compact')) === 'true' && (await box('seller-call-deal-strip')).height < 80, await box('seller-call-deal-strip'));
+    /* Release 15-B step 92 (GitHub CI ubuntu-26.04, 2026-11-06): the former check required the strip to be < 80 px tall.
+       That held only where the harness's fallback fonts are narrow (Windows); on Linux, and with the app's real web fonts
+       on BOTH platforms, the strip is two readable rows (102.89 px). Product ruling 2026-11-06 (Jess recommendation,
+       Captain): two rows at 1440x900 are accepted. The compact contract is checked instead of a pixel height: compact
+       styling, at most two rows, every figure/label/provenance note present, nothing clipped/truncated/overflowing, and
+       every part visible and uncovered -- with the calling controls and the conversation also hit-tested. */
+    const L = await page.evaluate(() => {
+      const q = (id) => document.querySelector(`[data-testid="${id}"]`);
+      const R = (el) => { const b = el.getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height, r: b.right, b: b.bottom }; };
+      const hits = (el) => { const b = el.getBoundingClientRect(); if (!b.width || !b.height) return false;
+        const h = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2); return !!h && (h === el || el.contains(h)); };
+      const strip = q('seller-call-deal-strip'); const s = R(strip); const scs = getComputedStyle(strip);
+      const cells = [...strip.children].map((c) => {
+        const parts = [...c.querySelectorAll('span')].filter((p) => p.children.length === 0 && p.textContent.trim());
+        return { y: Math.round(c.getBoundingClientRect().y), label: (c.firstElementChild?.textContent || '').trim(),
+          parts: parts.map((p) => { const b = R(p); const cs = getComputedStyle(p);
+            return { text: p.textContent.trim(), font: cs.fontFamily, size: cs.fontSize,
+              inside: b.x >= s.x - 0.5 && b.r <= s.r + 0.5 && b.y >= s.y - 0.5 && b.b <= s.b + 0.5,
+              shown: cs.visibility === 'visible' && cs.display !== 'none' && +cs.opacity > 0 && b.w > 0 && b.h > 0,
+              cut: p.scrollWidth > p.clientWidth + 1 || cs.textOverflow === 'ellipsis', uncovered: hits(p) }; }) };
+      });
+      const callControls = [...document.querySelectorAll('[data-testid="seller-call-calltop"] [data-testid$="-mode"]')]
+        .map((m) => m.querySelector('button, a')).filter(Boolean).map((el) => ({ id: el.getAttribute('data-testid') || el.textContent.trim(), uncovered: hits(el) }));
+      const card = q('sc-card'); const cb = card.getBoundingClientRect();
+      const qPoint = document.elementFromPoint(cb.x + 40, cb.y + 20);
+      return { compact: strip.getAttribute('data-compact'), padding: scs.padding, stripBox: s,
+        clip: { scrollW: strip.scrollWidth, clientW: strip.clientWidth, scrollH: strip.scrollHeight, clientH: strip.clientHeight, overflow: scs.overflow,
+          pageOverflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth },
+        rows: new Set(cells.map((c) => c.y)).size, cells, labels: cells.map((c) => c.label), text: strip.innerText,
+        callControls, conversationUncovered: !!qPoint && card.contains(qPoint), conversationBelowStrip: cb.y >= s.b - 0.5 };
+    });
+    const parts = L.cells.flatMap((c) => c.parts);
+    const values = parts.filter((p) => /Space Grotesk/.test(p.font));
+    check('SA layout: the deal strip is the compact strip (data-compact, compact padding, 13px figures)',
+      L.compact === 'true' && L.padding === '6px 12px' && values.length >= 4 && values.every((p) => p.size === '13px'), { compact: L.compact, padding: L.padding, sizes: values.map((p) => p.size) });
+    check('SA layout: at 1440x900 the compact strip uses at most two rows (product ruling 2026-11-06)', L.rows >= 1 && L.rows <= 2, { rows: L.rows, strip: L.stripBox });
+    check('SA layout: all seven deal figures keep their labels, values and provenance notes in the strip',
+      JSON.stringify(L.labels) === JSON.stringify(['ARV', 'Repairs', 'Seller Position', 'Current Offer', 'Target', 'Max', 'Spread'])
+      && ['$650,000', '$40,000', '$397,455', '$416,830', 'Not entered yet', 'None recorded', 'no Current Offer entered for this negotiation'].every((t) => L.text.includes(t))
+      && (L.text.match(/Approved/g) || []).length === 2 && (L.text.match(/Calculated now from these inputs/g) || []).length === 2, { labels: L.labels, text: L.text });
+    check('SA layout: nothing in the strip is clipped, truncated or outside it; no page overflow',
+      parts.length > 0 && parts.every((p) => p.inside && !p.cut) && L.clip.scrollW <= L.clip.clientW + 1 && L.clip.scrollH <= L.clip.clientH + 1 && !L.clip.pageOverflowX,
+      { clip: L.clip, bad: parts.filter((p) => !p.inside || p.cut).map((p) => p.text) });
+    check('SA layout: every strip label, figure and note, every calling control and the conversation are visible and uncovered',
+      parts.every((p) => p.shown && p.uncovered) && L.callControls.length === 3 && L.callControls.every((c) => c.uncovered) && L.conversationUncovered && L.conversationBelowStrip,
+      { hidden: parts.filter((p) => !p.shown || !p.uncovered).map((p) => p.text), calls: L.callControls, conversationUncovered: L.conversationUncovered, conversationBelowStrip: L.conversationBelowStrip });
     check('SA layout: "Next objective" is gone', (await page.locator('[data-testid="seller-call-next-objective"]').count()) === 0);
     const chip = await box('seller-call-readiness-chip');
     check('SA layout: readiness is one small chip in the strip (not a large badge)', !!chip && chip.height < 40, chip);
