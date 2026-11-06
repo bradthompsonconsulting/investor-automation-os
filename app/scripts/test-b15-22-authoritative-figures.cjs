@@ -38,7 +38,7 @@ const TMP = path.join(APP, '.tmp-b15-22-authoritative-test');
 const esbuild = require(path.join(APP, 'node_modules', '.pnpm', 'esbuild@0.25.12', 'node_modules', 'esbuild'));
 
 /** Literal check() call-site count in this file. */
-const FLOOR = 97;   // Board #15 integration r2: + S8a (the reviewed combined-integration delta)
+const FLOOR = 98;   // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta)
 let checks = 0; let failures = 0;
 function check(name, actual, expected) {
   checks += 1;
@@ -353,10 +353,30 @@ check('S7 the label is backed by the resolver: Opportunity ARV first, Contact on
   check('S8a the combined-integration delta is exactly the three reviewed files, each from its original pin',
     [Object.keys(COMBINED.changes || {}).sort(), deltaProblems],
     [['netlify/functions/lib/production-write-scope.ts', 'netlify/functions/lib/write-note-guard.ts', 'shared/ghl-config.ts'], []]);
+  /* Release 15-B (Jeff, Release Track): Release 15-A (Bones G1 ACCEPT; on main as 59be788, PR #159) changes three
+     protected files and adds one, none of which the combined integration touches. They are listed, with reasons, in
+     b15-22-release-15a-delta-59be788.json. A change applies ONLY from its exact original pin and never to a file the
+     combined delta already lists; an addition only for a file absent from the original manifest. */
+  const R15A = JSON.parse(fs.readFileSync(path.join(APP, 'scripts', 'fixtures', 'b15-22-release-15a-delta-59be788.json'), 'utf8'));
+  const r15aProblems = [];
+  for (const [rel, c] of Object.entries(R15A.changes || {})) {
+    if (!(rel in PINS.protected)) r15aProblems.push(`not in the original manifest: ${rel}`);
+    else if (rel in (COMBINED.changes || {})) r15aProblems.push(`also in the combined delta: ${rel}`);
+    else if (!c || c.from !== PINS.protected[rel] || typeof c.to !== 'string' || c.to === c.from) r15aProblems.push(`not a reviewed change from the original pin: ${rel}`);
+    else expected[rel] = c.to;
+  }
+  for (const [rel, a] of Object.entries(R15A.additions || {})) {
+    if (rel in PINS.protected) r15aProblems.push(`addition already in the original manifest: ${rel}`);
+    else if (!a || typeof a.to !== 'string' || !/^[0-9a-f]{64}$/.test(a.to)) r15aProblems.push(`not a reviewed addition: ${rel}`);
+    else expected[rel] = a.to;
+  }
+  check('S8b the Release 15-A delta is exactly its three reviewed changes and one addition, each from its original pin',
+    [Object.keys(R15A.changes || {}).sort(), Object.keys(R15A.additions || {}).sort(), r15aProblems],
+    [['netlify/functions/ghl-contact-conversations.ts', 'netlify/functions/ghl-conversations.ts', 'src/lib/ghl.ts'], ['shared/inbound-message.ts'], []]);
   const drift = [];
   for (const rel of seen) { if (!(rel in expected)) drift.push(`added ${rel}`); else if (hashOf(rel) !== expected[rel]) drift.push(`changed ${rel}`); }
   for (const rel of Object.keys(expected)) if (!seen.includes(rel)) drift.push(`removed ${rel}`);
-  check('S8 write paths, engines, ledger formats, functions and config unchanged vs base, except the reviewed combined-integration delta (SHA-256 manifest of every protected file)',
+  check('S8 write paths, engines, ledger formats, functions and config unchanged vs base, except the reviewed combined-integration and Release 15-A deltas (SHA-256 manifest of every protected file)',
     Object.keys(PINS.protected).length > 50 ? drift : 'manifest too small', []);
 }
 
