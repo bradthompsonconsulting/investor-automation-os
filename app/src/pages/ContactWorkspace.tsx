@@ -8,10 +8,11 @@ import { Link, useParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
 import {
   ArrowLeft, Phone, PhoneCall, MapPin, StickyNote, AlertCircle, Loader2, BellOff,
-  Flame, Sun, Snowflake, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
+  Flame, Sun, Snowflake, CircleDashed, CalendarClock, ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight,
   Calculator, Copy, ExternalLink, Headphones, FileText,
 } from "lucide-react";
-import { explicitCallbackClient, ghl, getBucketTag, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, CONTACT_ASKING_PRICE_ID, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type BucketTag, type ConvMessageRow, type OpportunityRow, type PipelineStage } from "../lib/ghl";
+import { explicitCallbackClient, ghl, ghlContactDetailUrl, PROPERTY_NOTES_ID, ARV_ID, ESTIMATED_REPAIRS_ID, OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS, CONTACT_ASKING_PRICE_ID, type OccupancyStatus, type ContactRow, type ContactDetail, type CustomFieldDef, type ConvMessageRow, type OpportunityRow, type PipelineStage } from "../lib/ghl";
+import { displayTier, type DisplayTier } from "../lib/display-tier";   // B15-16
 /* Board 15 / Pass 1 F38 — deal stage only; contract status lives in the Contract Workspace. */
 import { contactDealStatus } from "../lib/contact-deal-status";
 /* Board #5 S2d — the rail's logic lives in ../lib/rail, a module with no React
@@ -104,8 +105,10 @@ const RAIL_IDS: RailIds = {
 // ── Presentational helpers (replicated from Dashboard; purely visual, no
 //    coupling — Dashboard.tsx is intentionally untouched this phase) ──────────
 
-const TIER_COLOR: Record<BucketTag, string> = { hot: "#EF4444", warm: "#F59E0B", low: "#64748B" };
-const TIER_ICON: Record<BucketTag, typeof Flame> = { hot: Flame, warm: Sun, low: Snowflake };
+const TIER_COLOR: Record<DisplayTier, string> = { hot: "#EF4444", warm: "#F59E0B", low: "#64748B", unscored: "#475569" };
+const TIER_ICON: Record<DisplayTier, typeof Flame> = { hot: Flame, warm: Sun, low: Snowflake, unscored: CircleDashed };
+/* B15-16: a contact without a temperature tag has not been scored -- labelled so, never "Low". */
+const TIER_LABEL: Record<DisplayTier, string> = { hot: "Hot", warm: "Warm", low: "Low", unscored: "Not scored" };
 
 /* ── Board #5 D1 — THE EDITOR GATE ─────────────────────────────────────────
    Return revalidation must never redraw an editor underneath the operator,
@@ -143,7 +146,7 @@ function formatAddress(c: ContactRow): string {
   return [c.address1, cityStateZip].filter(Boolean).join(", ") || "—";
 }
 
-function TierBadge({ tier }: { tier: BucketTag }) {
+function TierBadge({ tier }: { tier: DisplayTier }) {
   const color = TIER_COLOR[tier];
   const Icon = TIER_ICON[tier];
   return (
@@ -152,7 +155,7 @@ function TierBadge({ tier }: { tier: BucketTag }) {
       padding: "4px 10px", borderRadius: "999px", whiteSpace: "nowrap",
       background: `${color}1A`, border: `1px solid ${color}44`, color,
     }}>
-      <Icon size={12} /> {tier[0].toUpperCase()}{tier.slice(1)}
+      <Icon size={12} /> {TIER_LABEL[tier]}
     </span>
   );
 }
@@ -1826,7 +1829,7 @@ export default function ContactWorkspace() {
     );
   }
 
-  const tier: BucketTag = contact ? getBucketTag(contact) : "low";
+  const tier: DisplayTier = contact ? displayTier(contact) : "unscored";
 
   return (
     /* D1 — the provider is per-page, so the gate set cannot outlive or be

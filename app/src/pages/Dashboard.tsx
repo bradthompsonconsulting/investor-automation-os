@@ -4,13 +4,14 @@ import { useReadRecovered } from "../components/access-status";
 import { Link } from "react-router-dom";
 import {
   AlertCircle, Clock, FileCheck, Mail as MailIcon, Inbox, CalendarClock,
-  ChevronDown, Flame, Sun, Snowflake, PhoneCall, StickyNote, ExternalLink, PartyPopper, Headphones,
+  ChevronDown, Flame, Sun, Snowflake, CircleDashed, PhoneCall, StickyNote, ExternalLink, PartyPopper, Headphones,
 } from "lucide-react";
 import { explicitCallbackClient,
   ghl, getBucketTag, ghlContactDetailUrl,
   type ContactRow, type MailerDigest, type PipelineData, type BucketTag,
   type UnansweredInboundRow,
 } from "../lib/ghl";
+import { displayTier, type DisplayTier } from "../lib/display-tier";   // B15-16
 import { getRuntimeConfig } from "../../shared/ghl-config";
 import { CallbackPopover } from "../components/CallbackPopover";
 import { AnchoredPopover } from "../components/AnchoredPopover";
@@ -126,8 +127,10 @@ const LAST_VISIT_KEY = "iaos_dashboard_last_visit";
 // ── Shared bits ────────────────────────────────────────────────────────────
 
 const TIER_ORDER: BucketTag[] = ["hot", "warm", "low"];
-const TIER_COLOR: Record<BucketTag, string> = { hot: "#EF4444", warm: "#F59E0B", low: "#64748B" };
-const TIER_ICON: Record<BucketTag, typeof Flame> = { hot: Flame, warm: Sun, low: Snowflake };
+const TIER_COLOR: Record<DisplayTier, string> = { hot: "#EF4444", warm: "#F59E0B", low: "#64748B", unscored: "#475569" };
+const TIER_ICON: Record<DisplayTier, typeof Flame> = { hot: Flame, warm: Sun, low: Snowflake, unscored: CircleDashed };
+/* B15-16: the label each displayed tier carries. */
+const TIER_LABEL: Record<DisplayTier, string> = { hot: "Hot", warm: "Warm", low: "Low", unscored: "Not scored" };
 
 const STAGE_COLOR: Record<string, string> = {
   "New Lead - Seller":     "#475569",
@@ -163,7 +166,7 @@ function relativeTime(iso: string): string {
 
 // formatCallbackTime is the shared formatter, imported from ../lib/callbackWrite.
 
-function TierBadge({ tier }: { tier: BucketTag }) {
+function TierBadge({ tier }: { tier: DisplayTier }) {
   const color = TIER_COLOR[tier];
   const Icon = TIER_ICON[tier];
   return (
@@ -172,7 +175,7 @@ function TierBadge({ tier }: { tier: BucketTag }) {
       padding: "3px 8px", borderRadius: "999px", whiteSpace: "nowrap",
       background: `${color}1A`, border: `1px solid ${color}44`, color,
     }}>
-      <Icon size={11} /> {tier[0].toUpperCase()}{tier.slice(1)}
+      <Icon size={11} /> {TIER_LABEL[tier]}
     </span>
   );
 }
@@ -804,8 +807,9 @@ export default function Dashboard() {
   );
 
   const bucketCounts = useMemo(() => {
-    const counts: Record<BucketTag, number> = { hot: 0, warm: 0, low: 0 };
-    (contacts ?? []).forEach((c) => counts[getBucketTag(c)]++);
+    /* B15-16: every contact is still counted; one without a temperature tag is counted as Not scored, not Low. */
+    const counts: Record<DisplayTier, number> = { hot: 0, warm: 0, low: 0, unscored: 0 };
+    (contacts ?? []).forEach((c) => counts[displayTier(c)]++);
     return counts;
   }, [contacts]);
 
@@ -903,13 +907,13 @@ export default function Dashboard() {
           background: "#0D1B3E", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "10px 14px",
         }}>
           <span style={{ fontSize: "11px", color: "#64748B" }}>Contacts by temperature</span>
-          {(Object.keys(bucketCounts) as BucketTag[]).map((tier) => (
-            <span key={tier} style={{
+          {(Object.keys(bucketCounts) as DisplayTier[]).filter((tier) => tier !== "unscored" || bucketCounts.unscored > 0).map((tier) => (
+            <span key={tier} data-testid={`dashboard-tier-count-${tier}`} style={{
               display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "11px", fontWeight: 600,
               padding: "4px 10px", borderRadius: "999px",
               background: `${TIER_COLOR[tier]}1A`, border: `1px solid ${TIER_COLOR[tier]}44`, color: TIER_COLOR[tier],
             }}>
-              {tier[0].toUpperCase()}{tier.slice(1)} {loading ? "…" : bucketCounts[tier]}
+              {TIER_LABEL[tier]} {loading ? "…" : bucketCounts[tier]}
             </span>
           ))}
           <span style={{ width: "1px", height: "16px", background: "rgba(255,255,255,0.1)", margin: "0 4px" }} />
@@ -938,7 +942,7 @@ export default function Dashboard() {
         {/* B15-19: what the two halves of the strip count, and how they relate. */}
         {!loading && coverage && (
           <p data-testid="dashboard-count-notes" style={{ fontSize: "11px", color: "#475569", margin: "6px 0 0" }}>
-            Temperature counts every loaded contact{untaggedLow > 0 ? `; Low includes ${untaggedLow.toLocaleString()} with no temperature tag` : ""}.
+            Temperature counts every loaded contact{untaggedLow > 0 ? `; Not scored is ${untaggedLow.toLocaleString()} with no temperature tag yet (the Lead Queue still lists them after Low)` : ""}.
             {" "}Stages count the loaded Seller Leads deals: {dealCoverageText(coverage)}
           </p>
         )}
@@ -1007,7 +1011,7 @@ export default function Dashboard() {
                 <div key={c.id} style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "12px" }}>
                   <span style={{ color: "#F1F5F9", fontWeight: 500, minWidth: "140px" }}>{contactName(c)}</span>
                   <span style={{ color: "#64748B" }}>{formatAddress(c)}</span>
-                  <TierBadge tier={getBucketTag(c)} />
+                  <TierBadge tier={displayTier(c)} />
                 </div>
               ))}
             </div>
@@ -1372,7 +1376,7 @@ export default function Dashboard() {
                         </div>
                       </td>
                       <td style={{ padding: "9px 10px", color: "#94A3B8", fontSize: "13px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{formatPhone(c.phone) || "—"}</td>
-                      <td style={{ padding: "9px 10px", overflow: "hidden" }}><TierBadge tier={tier} /></td>
+                      <td style={{ padding: "9px 10px", overflow: "hidden" }}><TierBadge tier={displayTier(c)} /></td>
                       <td style={{ padding: "9px 10px", overflow: "hidden" }}><ScoreChip score={c.combinedScore} /></td>
                       <td style={{ padding: "9px 10px", color: "#94A3B8", fontSize: "13px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{formatAddress(c)}</td>
                       <td style={{ padding: "9px 10px", color: attempt ? (greyed ? "#475569" : "#F59E0B") : "#334155", fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
