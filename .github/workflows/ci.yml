@@ -391,6 +391,8 @@ jobs:
         run: node app/scripts/test-conversation-property-styled.cjs
       - name: /map and /settings redirect to the Dashboard inside the read gate, real App (B15-18)
         run: node app/scripts/test-b15-18-map-settings-redirect.cjs
+      - name: A contact with no deal shows "No deal yet" and the GHL next step on all four deal pages, incl. Contract Workspace, real App (INV-109, B15-10) — 9 checks
+        run: node app/scripts/test-b15-10-no-deal.cjs
       - name: Deal Calculator itemized repairs, both Clears and transfer-once, real page (INV-100, B15-01)
         run: node app/scripts/test-deal-calculator-interaction.cjs
       - name: Deal Calculator browser drafts -- per operator and deal, blanks kept, no derived value stored (B15-25 Phase 1, INV-133)
