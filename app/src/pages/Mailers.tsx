@@ -3,6 +3,7 @@ import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { AlertCircle, Mail, CheckSquare, Square, MapPinOff, Loader2 } from "lucide-react";
 import { ghl, type MailerDigest, type MailerGroup, type MailerTaskRow } from "../lib/ghl";
+import { WEEK_RECHECK_MS, weekEnded } from "../lib/mailer-week";
 
 // ── Small pieces ─────────────────────────────────────────────────────────────
 
@@ -180,6 +181,21 @@ export default function Mailers() {
   const firstLoad = useRef(true);
   useEffect(() => { load(!firstLoad.current); firstLoad.current = false; }, [readRecovered]);
 
+  /* B15-12 (INV-110): a page left open past Friday 23:59 Central (or a computer waking from sleep) must never keep
+     calling the previous week "This Week". Re-evaluated every minute and on focus / visibility -- pure computation,
+     no request; the operator reloads (no automatic re-read, so no read loop and no extra GHL traffic). */
+  const [clockTick, setClockTick] = useState(() => Date.now());
+  useEffect(() => {
+    const tick = () => setClockTick(Date.now());
+    const timer = setInterval(tick, WEEK_RECHECK_MS);
+    const onVisible = () => { if (document.visibilityState === "visible") tick(); };
+    window.addEventListener("focus", tick);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(timer); window.removeEventListener("focus", tick); document.removeEventListener("visibilitychange", onVisible); };
+  }, []);
+  const ended = digest !== null && weekEnded(digest.weekEndCT, new Date(clockTick));
+  const weekName = digest ? (ended ? `Week of ${digest.weekStartCT} – ${digest.weekEndCT} (ended)` : "This Week") : "This Week";
+
   // Flat lookup of every actionable row (ready + business + overdue) by taskId,
   // so completing a checked task can find its contactId.
   const rowByTaskId = useMemo(() => {
@@ -263,7 +279,7 @@ export default function Mailers() {
           </h1>
           {digest && (
             <span style={{ fontSize: "12px", fontWeight: 500, padding: "2px 8px", borderRadius: "999px", background: "#1B2433", color: "#64748B" }}>
-              week of {digest.weekStartCT} – {digest.weekEndCT}
+              week of {digest.weekStartCT} – {digest.weekEndCT}{ended ? " (ended)" : ""}
             </span>
           )}
         </div>
@@ -295,6 +311,17 @@ export default function Mailers() {
         </div>
       )}
 
+      {/* B15-12: the window on screen is a previous week -- say so, and offer the current one. */}
+      {!loading && ended && digest ? (
+        <div data-testid="mailers-week-ended" role="status" style={{ marginBottom: "16px", padding: "10px 14px", borderRadius: "8px", border: "1px solid rgba(245,158,11,0.35)", background: "rgba(245,158,11,0.08)", color: "#F59E0B", fontSize: "12px", display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          <span>This week ended on Friday {digest.weekEndCT}. The lists below are for that week, not the current one.</span>
+          <button data-testid="mailers-week-reload" type="button" onClick={() => load(true)}
+            style={{ fontSize: "12px", fontWeight: 600, color: "#F59E0B", background: "transparent", border: "1px solid rgba(245,158,11,0.5)", borderRadius: "8px", padding: "3px 10px", cursor: "pointer" }}>
+            Show the current week
+          </button>
+        </div>
+      ) : null}
+
       {loading ? (
         <>
           <SkeletonBlock />
@@ -303,25 +330,25 @@ export default function Mailers() {
       ) : digest ? (
         <>
           <Section
-            title="This Week — Ready to Mail"
+            title={`${weekName} — Ready to Mail`}
             subtitle="Due this week, has an address, no business name."
             groups={digest.thisWeekReady}
             checked={checked}
             onToggleRow={toggleRow}
             onToggleGroup={toggleGroup}
-            emptyLabel="Nothing due this week."
+            emptyLabel={ended ? "Nothing was due that week." : "Nothing due this week."}
           />
           <Section
-            title="This Week — Business-Flagged"
+            title={`${weekName} — Business-Flagged`}
             subtitle="Same week, but the contact has a business name on file — send/skip is a judgment call."
             groups={digest.thisWeekBusiness}
             checked={checked}
             onToggleRow={toggleRow}
             onToggleGroup={toggleGroup}
-            emptyLabel="No business-flagged contacts due this week."
+            emptyLabel={ended ? "No business-flagged contacts were due that week." : "No business-flagged contacts due this week."}
           />
           <Section
-            title="Overdue"
+            title={ended && digest ? `Overdue (due before ${digest.weekStartCT})` : "Overdue"}
             subtitle="Due before this week's window and still incomplete in GHL."
             groups={digest.overdue}
             checked={checked}

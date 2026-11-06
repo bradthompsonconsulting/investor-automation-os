@@ -370,8 +370,12 @@ jobs:
         run: node app/scripts/test-pipeline-requests.cjs
       - name: Mailers No Address empty state on the real page (INV-110, B15-12)
         run: node app/scripts/test-mailers-empty-state.cjs
+      - name: Mailers never labels a previous Saturday-Friday week as This Week (open page past Friday midnight Central, sleep, DST, year end), real page (INV-110, B15-12) — 11 checks
+        run: node app/scripts/test-b15-12-mailer-week-ended.cjs
       - name: Dashboard callback popover is visible where it opens and usable by keyboard -- Lead Queue (short and long queue, first, last and edge row), Callbacks Overdue and Contact page, two viewports; a save error stays visible; Tab/Shift+Tab/focus return; real pages, fictional data — 59 checks
         run: node app/scripts/test-dashboard-callback-popover.cjs
+      - name: Latest inbound seller message shown from the thread source with honest states, Dashboard + Conversations, real App (INV-107, B15-08) — 38 checks
+        run: node app/scripts/test-b15-08-inbound-visibility.cjs
       - name: Shell labels on the real page -- no Phase A badge, Conversations heading (INV-126, B15-17)
         run: node app/scripts/test-b15-shell-labels.cjs
       - name: /map and /settings redirect to the Dashboard inside the read gate, real App (B15-18)
@@ -380,6 +384,8 @@ jobs:
         run: node app/scripts/test-deal-calculator-interaction.cjs
       - name: Incomplete repairs read as provisional, never a green Meets; numbers unchanged, real page (INV-134 B15-26, INV-100 B15-01) — 55 checks
         run: node app/scripts/test-b15-26-provisional-repairs.cjs
+      - name: Calendar reliability -- unavailable is never empty, each failure named, last good read kept and labelled, GHL Calendars one click away, real App (INV-106, B15-07) — 27 checks
+        run: node app/scripts/test-b15-07-calendar-reliability.cjs
       - name: Get Comps stays on one line and its reason wraps below at 640/480px; wide layout unchanged, real App (Pass 1 F44) — 26 checks
         run: node app/scripts/test-b15-44-get-comps-layout.cjs
       - name: Offer Readiness decision panel starting state, loading lockout and per-deal choice, real Seller Call page (Pass 1 F33) — 31 checks, floor 24
