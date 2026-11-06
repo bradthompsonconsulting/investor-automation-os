@@ -54,6 +54,8 @@ export interface ConvMessageRow {
   channel:        string;           // friendly label (SMS / Email / Call / …)
   messageType:    string;           // raw GHL enum, for reference
   body:           string;
+  /** B15-08 (r2): GHL's own body format (e.g. HTML for an email), so a preview converts HTML only where it is established. */
+  contentType:    string;
   dateAdded:      string;           // ISO
 }
 
@@ -137,6 +139,7 @@ export const handler = async (event: any) => {
           channel:        channelOf(m.messageType ?? m.type),
           messageType:    String(m.messageType ?? m.type ?? ""),
           body:           String(m.body ?? "").trim(),
+          contentType:    String(m.contentType ?? ""),
           dateAdded:      m.dateAdded ?? "",
         });
       }

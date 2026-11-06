@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { READ_SESSION_ENDPOINT, READ_SESSION_LOST_EVENT } from "../lib/read-session";
 import { ReadRecovered, ReadViewReport } from "./access-status";
 
@@ -32,7 +32,10 @@ export default function ReadAccess({ children }: { children: ReactNode }) {
      flight and their warnings survive (Bones, PR #131). */
   const [epoch, setEpoch] = useState(0);
   const lapsed = useRef(false);
-  useEffect(() => {
+  /* B15-07 r2 (Bones P2): a LAYOUT effect, so the recovery epoch advances in the same commit that un-hides the page,
+     before the browser can paint it. Pages that bind retained data to the epoch (Calendars) then never paint the
+     previous session's data for even one frame (a passive effect left that frame paintable; observed). */
+  useLayoutEffect(() => {
     if (status.kind === "signed_in") { if (lapsed.current) { lapsed.current = false; setEpoch((e) => e + 1); } }
     else if (wasSignedIn && status.kind !== "checking") lapsed.current = true;
   }, [status.kind, wasSignedIn]);

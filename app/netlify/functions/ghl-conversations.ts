@@ -12,7 +12,8 @@
 
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
-import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
+import { ghlReadFetch, supplementalReadRefusal, SupplementalReadRefused } from "./lib/supplemental-read-budget";
+import { latestInboundFrom, latestInboundFromSummary, type LatestInbound } from "../../shared/inbound-message";
 
 const GHL_BASE    = "https://services.leadconnectorhq.com";
 // PB-D51 — location id resolved once at module scope from the shared config.
@@ -27,6 +28,73 @@ function headers(token: string) {
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/* B15-08 (INV-107): the Dashboard row's latest inbound message comes from the SAME read the thread uses
+   (GET /conversations/{id}/messages, newest first), not only the search summary, which is empty for calls and
+   activities. One small page per shown row, a few at a time, bounded; read-only. A row past the cap, or whose read
+   fails, falls back to the summary text when it has any, else says the text is unavailable.
+   Bones P2-1 (r2): the enrichment is OPTIONAL and can never hold the seller queue. It has a total elapsed-time
+   limit: every read is aborted at the limit, and the response is built at the limit even if a read ignores its abort.
+   A rate-limited answer (429) or a read-budget refusal stops it: no further optional reads are spent. Every base row
+   is always returned, with an honest fallback. */
+export const LATEST_INBOUND_CAP = 25;
+export const LATEST_INBOUND_DEADLINE_MS = 4_000;
+const LATEST_INBOUND_PAGE = 10;
+const LATEST_INBOUND_CONCURRENCY = 3;
+
+type ReadOutcome = { kind: "ok"; value: LatestInbound } | { kind: "failed" } | { kind: "stop"; reason: "rate_limited" | "read_failed" };
+
+async function latestInboundRead(token: string, conversationId: string, contactId: string, ghlFetch: typeof fetch, signal: AbortSignal): Promise<ReadOutcome> {
+  try {
+    const params = new URLSearchParams({ limit: String(LATEST_INBOUND_PAGE) });
+    const res = await ghlFetch(`${GHL_BASE}/conversations/${encodeURIComponent(conversationId)}/messages?${params}`, { headers: headers(token), signal });
+    if (res.status === 429) return { kind: "stop", reason: "rate_limited" };
+    if (!res.ok) return { kind: "failed" };
+    const body = await res.json();
+    const page = body?.messages?.messages ?? (Array.isArray(body?.messages) ? body.messages : null);
+    return Array.isArray(page) ? { kind: "ok", value: latestInboundFrom(page, { conversationId, contactId }) } : { kind: "failed" };
+  } catch (e) {
+    // A read-budget refusal is sent nowhere and every later one would be refused too: stop spending.
+    if (e instanceof SupplementalReadRefused) return { kind: "stop", reason: "read_failed" };
+    return { kind: "failed" };   // a failed, aborted or unreadable read: the row says so (never "no message")
+  }
+}
+
+async function withLatestInbound<T extends { conversationId: string; contactId: string; preview: string; lastMessageDate: number }>(
+  rows: T[], token: string, ghlFetch: typeof fetch,
+): Promise<(T & { latestInbound: LatestInbound })[]> {
+  const out: LatestInbound[] = rows.map((r) => latestInboundFromSummary(r.preview, r.lastMessageDate, "not_loaded"));
+  const limit = Math.min(rows.length, LATEST_INBOUND_CAP);
+  const done = new Array<boolean>(rows.length).fill(false);
+  const controllers = new Set<AbortController>();
+  let next = 0; let stopped: "rate_limited" | "read_failed" | null = null; let sealed = false;
+  const settle = (i: number, value: LatestInbound) => { if (!sealed) { out[i] = value; done[i] = true; } };
+  const worker = async () => {
+    while (!sealed && !stopped && next < limit) {
+      const i = next++;
+      const r = rows[i];
+      const ac = new AbortController(); controllers.add(ac);
+      const read = await latestInboundRead(token, r.conversationId, r.contactId, ghlFetch, ac.signal);
+      controllers.delete(ac);
+      if (read.kind === "stop") { stopped = stopped ?? read.reason; settle(i, latestInboundFromSummary(r.preview, r.lastMessageDate, read.reason)); }
+      else if (read.kind === "failed") settle(i, latestInboundFromSummary(r.preview, r.lastMessageDate, "read_failed"));
+      else if (read.value.state === "unavailable" && r.preview) settle(i, latestInboundFromSummary(r.preview, r.lastMessageDate, "read_failed"));
+      else settle(i, read.value);
+    }
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), LATEST_INBOUND_DEADLINE_MS); });
+  const finished = await Promise.race([Promise.all(Array.from({ length: LATEST_INBOUND_CONCURRENCY }, worker)).then(() => "done" as const), deadline]);
+  clearTimeout(timer);
+  sealed = true;
+  for (const ac of controllers) ac.abort();
+  for (let i = 0; i < limit; i++) {
+    if (done[i]) continue;
+    const r = rows[i];
+    out[i] = latestInboundFromSummary(r.preview, r.lastMessageDate, finished === "timeout" ? "timed_out" : stopped ?? "not_loaded");
+  }
+  return rows.map((r, i) => ({ ...r, latestInbound: out[i] }));
+}
 
 async function fetchAllConversations(token: string, ghlFetch: typeof fetch): Promise<any[]> {
   const all: any[] = [];
@@ -64,6 +132,8 @@ export interface UnansweredInboundRow {
   lastMessageDate: number;
   preview:        string;
   unreadCount:    number;
+  /** B15-08: the latest inbound message, classified from this conversation's own messages (the thread's source). */
+  latestInbound:  LatestInbound;
 }
 
 // Full thread-list row (?scope=all). Superset of the unanswered row + the last
@@ -95,7 +165,8 @@ export const handler = async (event: any) => {
   }
 
   try {
-    const all = await fetchAllConversations(token, ghlReadFetch(event, "ghl-conversations"));
+    const ghlFetch = ghlReadFetch(event, "ghl-conversations");
+    const all = await fetchAllConversations(token, ghlFetch);
 
     // ?scope=all — full thread list (every conversation, newest first), the
     // Conversations inbox source. Opt-in only; the DEFAULT (no param) stays the
@@ -124,7 +195,7 @@ export const handler = async (event: any) => {
 
     // Last message direction "inbound" = the contact spoke last with no
     // outbound reply since — exactly the spec's "unanswered inbound" definition.
-    const rows: UnansweredInboundRow[] = all
+    const unanswered = all
       .filter((c) => c.lastMessageDirection === "inbound" && !c.isLastMessageInternalComment)
       .map((c) => ({
         conversationId:  c.id,
@@ -139,6 +210,7 @@ export const handler = async (event: any) => {
       // Oldest unanswered first — the seller ignored longest is closest to
       // giving up, not the most recent (spec §2.1 rationale).
       .sort((a, b) => a.lastMessageDate - b.lastMessageDate);
+    const rows: UnansweredInboundRow[] = await withLatestInbound(unanswered, token, ghlFetch);
 
     return {
       statusCode: 200,

@@ -15,6 +15,7 @@ import { isReadAuthRefusal, readFetch, ReadUnavailableError } from "./read-sessi
  */
 
 import { getRuntimeConfig, CURRENT_OFFER_NOT_PROVISIONED } from "../../shared/ghl-config";
+import type { LatestInbound } from "../../shared/inbound-message";
 /* Board item #2C. The three option LABELS are declared once, in resolver-types,
    and this module reads them rather than retyping them. Retyping would create a
    second list that could drift from the one the resolver parses against, and a
@@ -23,6 +24,7 @@ import { getRuntimeConfig, CURRENT_OFFER_NOT_PROVISIONED } from "../../shared/gh
    under lib/underwriting imports this module. */
 import { ASSIGNMENT_MODE_OPTIONS } from "./underwriting/resolver-types";
 import { type ContractVersionIdentity } from "./board9-contract-model";
+import { readAuthCode } from "./calendar-read-state";
 import {
   classifyStageTransitionResponse, resolveUncertainStageTransition, STAGE_TRANSITION_UNCERTAIN_MESSAGE,
   type FreshStageReadResolution, type StageTransitionResult,
@@ -325,6 +327,8 @@ export interface UnansweredInboundRow {
   lastMessageDate: number;
   preview:         string;
   unreadCount:     number;
+  /** B15-08: the latest inbound message from this conversation's own messages (absent from an older function). */
+  latestInbound?:  LatestInbound;
 }
 
 // Conversations phase — full thread-list row (read-only). Mirrors the
@@ -353,6 +357,8 @@ export interface ConvMessageRow {
   channel:        string; // friendly label (SMS / Email / Call / …)
   messageType:    string; // raw GHL enum
   body:           string;
+  /** B15-08 (r2): GHL's own body format, when the function supplies it. */
+  contentType?:   string;
   dateAdded:      string; // ISO
 }
 export interface ContactConversations {
@@ -1299,6 +1305,8 @@ export const ghl = {
         // explain a GHL permission refusal instead of printing raw JSON.
         let code: string | null = null;
         try { code = typeof JSON.parse(text)?.code === "string" ? JSON.parse(text).code : null; } catch { /* not JSON */ }
+        // B15-07: an IAOS read sign-in refusal is named as such (by the boundary's own marker), never blamed on GHL.
+        if (code === null) { try { code = readAuthCode(res.status, JSON.parse(text)?.by); } catch { /* not JSON */ } }
         throw Object.assign(new Error(`ghl-calendar-events → ${res.status}: ${text}`), { code });
       }
       return res.json() as Promise<CalendarEventsResult>;
