@@ -19,7 +19,7 @@ const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\
 const WRITES = /\.(set|save|create|update|delete)[A-Z]\w*\(|notes\.create\(|writeCommand\(|method:\s*"(POST|PUT|PATCH|DELETE)"/;
 
 /** Literal call-site count taken from the finished file, never back-filled from a passing run. */
-const FLOOR = 13;
+const FLOOR = 14;   // Integration 15-C: + "the unavailable card is found (R3 link-only card)"
 let checks = 0;
 let failures = 0;
 function check(name, actual, expected) {
@@ -35,14 +35,21 @@ check('LOCATION_ID is the runtime config location', /const CONFIG\s+= getRuntime
 // -- B15-07 Calendars ------------------------------------------------------
 {
   const cal = code(read('src/pages/Calendars.tsx'));
-  const card = (cal.match(/<div data-testid="calendar-unavailable"[\s\S]*?<\/details>/) || [''])[0];
+  /* Integration 15-C: R3 (Captain decision 2026-11-06, Bones ACCEPT under that ruling) reduced the unavailable card to
+     the one GHL link, so the card no longer ends with the technical-detail <details>. It is the calendar-unavailable
+     div up to its own closing tag, before the next branch of the error ? ... : data === null ? ... chain. */
+  const card = (cal.match(/<div data-testid="calendar-unavailable"[\s\S]*?<\/div>\s*\)\s*:\s*data === null \?/) || [''])[0];
+  check('the unavailable card is found (R3 link-only card)', card.length > 0 && card.includes('data-testid="calendar-unavailable"'), true);
   check('ghlCalendarsUrl builds /calendars/view for this location',
     /export function ghlCalendarsUrl\(\): string \{\s*return `https:\/\/app\.gohighlevel\.com\/v2\/location\/\$\{LOCATION_ID\}\/calendars\/view`;\s*\}/.test(ghlTs), true);
   check('Calendars imports the helper', /import \{ ghl, ghlCalendarsUrl, type CalendarEventRow, type CalendarEventsResult \} from "\.\.\/lib\/ghl";/.test(cal), true);
   check('the unavailable card links to it, in a new tab with no opener or referrer',
     /<a\s+data-testid="calendar-open-in-ghl"\s+href=\{ghlCalendarsUrl\(\)\}\s+target="_blank"\s+rel="noopener noreferrer"[\s\S]*?Open Calendars in GHL\s*<\/a>/.test(card), true);
-  check('the access-denied explanation and the technical detail are kept',
-    /GHL refused IAOS access to calendars for this account\./.test(card) && /Technical detail[\s\S]*\{error\.detail\}/.test(card), true);
+  /* R3 replaces "the access-denied explanation and the technical detail are kept": the failure stays classified on the
+     card (data-kind) while its presentation is only the link -- no explanation, technical detail, Try again or list. */
+  check('R3: the unavailable card keeps the classified failure (data-kind) and shows only the GHL link',
+    card.includes('data-kind={error.kind}') && (card.match(/<a\b/g) || []).length === 1
+      && !/GHL refused IAOS access|Technical detail|\{error\.detail\}|Try again|<details|<ul|\.map\(/.test(card), true);
   check('the shortcut appears only in the unavailable card (not on a loaded or empty calendar)', (cal.match(/calendar-open-in-ghl/g) || []).length === 1 && card.includes('calendar-open-in-ghl'), true);
   check('denied access is still not presented as an empty calendar', /\) : data\.events\.length === 0 \? \(/.test(cal) && !/No upcoming appointments/.test(card), true);
   check('Calendars writes nothing and opens no window by script', WRITES.test(cal) || /window\.open/.test(cal), false);
