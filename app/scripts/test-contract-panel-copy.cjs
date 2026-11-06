@@ -59,6 +59,18 @@ check('no old string remains', leftOld.length === 0, leftOld);
 
 // ── 2. Copy only: undoing the table reproduces the base file exactly ────────
 let undone = src;
+/* B15-22 / INV-131 (later, separate change): the disposition preview's two
+   frozen-snapshot lines were relabelled "ARV / Repairs at acceptance". Undo
+   exactly that first, each expected once, so this proof still isolates the
+   copy table; anything else changed in the file still fails it. */
+const B15_22_UNDO = [
+  ['import { DISPOSITION_ARV_LABEL, DISPOSITION_REPAIRS_LABEL } from "../lib/authoritative-figures";\n', ''],
+  ['                            {/* B15-22 / INV-131: these are the frozen snapshot captured at Agreement Reached\n'
+    + '                                (screen.economics.economics), so they are labelled as the banner labels them. */}\n'
+    + '                            <li data-testid="disposition-handoff-preview-arv">{DISPOSITION_ARV_LABEL}: ', '                            <li>Approved ARV: '],
+  ['<li data-testid="disposition-handoff-preview-repairs">{DISPOSITION_REPAIRS_LABEL}: ', '<li>Approved repairs: '],
+];
+for (const [now, before] of B15_22_UNDO) if (count(undone, now) === 1) undone = undone.split(now).join(before);
 for (const p of [...FX.pairs].reverse()) undone = undone.split(p.new).join(p.old);
 check('undoing the table reproduces the 2c07d75 file byte-for-byte (LF-normalized sha256)', sha(undone) === BASE_SHA256, sha(undone));
 const idPattern = /data-testid|testId|\bon[A-Z][a-zA-Z]+=|disabled=|setUnderContractWriteState|setDispositionWriteState|kind:/;

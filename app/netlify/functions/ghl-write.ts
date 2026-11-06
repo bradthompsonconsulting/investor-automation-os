@@ -2,7 +2,8 @@ import { connectLambda, getStore } from "@netlify/blobs";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { validateLedgerNote } from "./lib/write-note-guard";
 import { verifyUnderContractStageTransitionReady } from "./lib/write-derived-note";
-import { getConfig } from "../../shared/ghl-config";
+import { getConfig, sellerConversationSaveEnabled } from "../../shared/ghl-config";
+import { isSellerConversationNoteText, parseSellerConversationNote } from "../../src/lib/seller-conversation-note";
 import { repairApprovalActiveFor } from "../../shared/repair-approval-config";
 import { requireAppWriter } from "./lib/app-write-auth";
 import { exact, identifier, planWrite, dispositions, routings } from "./lib/write-contracts";
@@ -114,6 +115,13 @@ export const handler = async (event: any) => {
   // two-slot operation). Here they are refused before any Blob or GHL access, in every environment.
   if (request.operation === "opportunity.sellerReason" || request.operation === "opportunity.propertyAddress" || (request.operation === "note.create" && isHistoryNoteText(request.args?.body))) {
     return json(409, { outcome: "not_sent", error: "Property answers are saved only through the property-answer operation" });
+  }
+  // B15-03 slice C: the structured seller conversation note. While `sellerConversationSave` is disabled (both environments
+  // in this slice) it is refused before any Blob or GHL access; when enabled, only an exact, well-formed v1 note (exact header,
+  // strict positional parse, size limit) goes on to the ledger guard (operator, opportunity owned by this contact, call-id binding).
+  if (request.operation === "note.create" && isSellerConversationNoteText(request.args?.body)) {
+    if (!sellerConversationSaveEnabled(config)) return json(403, { outcome: "not_sent", error: "Seller conversation note not enabled" });
+    if (!parseSellerConversationNote(request.args.body)) return json(400, { outcome: "not_sent", error: "Malformed seller conversation note" });
   }
   let release: (() => Promise<void>) | undefined;
   /* Board 15 / PR #126 stacked server PR -- the durable Current Offer barrier

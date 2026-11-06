@@ -121,6 +121,26 @@ function factCell(key: string, label: string, value: number | null, waitingText:
   };
 }
 
+/**
+ * Board #15 B15-22 / INV-131 (F42, W2). The deal bar's ARV and Repairs are
+ * the figures on file; whether each is APPROVED is already known on this page
+ * (repairsSourceIsApprovalGated; the ARV ledger match), and the bar now says
+ * so through the existing `note` line. Target and Max are B8-03's live output
+ * from those inputs -- working figures, not a recorded offer. Labels
+ * (DEAL_BAR_LABELS) and every number are unchanged.
+ *
+ * Wording reuses the Seller Call provenance cards' own strings.
+ */
+export type DealBarApprovalState = "approved" | "unverified" | "ledger_mismatch";
+
+export const DEAL_BAR_APPROVAL_NOTE: Record<DealBarApprovalState, string> = {
+  approved: "Approved",
+  unverified: "On file, not verified as operator-approved",
+  ledger_mismatch: "On file — approval ledger does not match this amount",
+};
+export const DEAL_BAR_ARV_NO_LEDGER_NOTE = "On file, no approval ledger entry found";
+export const DEAL_BAR_CALCULATED_NOTE = "Calculated now from these inputs";
+
 export type DealBarInput = {
   arv: number | null;
   repairs: number | null;
@@ -139,7 +159,15 @@ export type DealBarInput = {
   board8: Board8Economics | null;
   /** B8-03's own output, computed with referenceKind "current_offer". Null only before an opportunity is selected. */
   expectedSpread: ExpectedSpread | null;
+  /** B15-22: the ARV's approval state ("unverified" = no ledger entry). Omitted: no note (prior behaviour). */
+  arvApproval?: DealBarApprovalState;
+  /** B15-22: the Repairs' approval state. Omitted: no note (prior behaviour). */
+  repairsApproval?: Exclude<DealBarApprovalState, "ledger_mismatch">;
 };
+
+function withNote(cell: DealBarCell, note: string | null): DealBarCell {
+  return cell.value.kind === "value" && note !== null ? { ...cell, value: { ...cell.value, note } } : cell;
+}
 
 /**
  * Builds the seven deal-bar cells, in the exact required order. Every
@@ -175,9 +203,13 @@ export function buildDealBarCells(input: DealBarInput): DealBarCell[] {
             : "Not yet calculated",
         };
 
+  const arvNote = input.arvApproval === undefined ? null
+    : input.arvApproval === "unverified" ? DEAL_BAR_ARV_NO_LEDGER_NOTE : DEAL_BAR_APPROVAL_NOTE[input.arvApproval];
+  const repairsNote = input.repairsApproval === undefined ? null : DEAL_BAR_APPROVAL_NOTE[input.repairsApproval];
+
   return [
-    factCell("arv", "ARV", input.arv, "Not yet established"),
-    factCell("repairs", "Repairs", input.repairs, "Not yet established"),
+    withNote(factCell("arv", "ARV", input.arv, "Not yet established"), arvNote),
+    withNote(factCell("repairs", "Repairs", input.repairs, "Not yet established"), repairsNote),
     factCell("seller_position", "Seller Position", input.sellerPosition, SELLER_POSITION_WAITING),
     (() => {
       const cell = factCell("current_offer", "Current Offer", input.currentOffer, CURRENT_OFFER_WAITING);
@@ -185,8 +217,8 @@ export function buildDealBarCells(input: DealBarInput): DealBarCell[] {
         ? { ...cell, value: { ...cell.value, note: currentOfferNote(input.board8, input.currentOfferStatus) } }
         : cell;
     })(),
-    { key: "target", label: "Target", value: target },
-    { key: "max", label: "Max", value: max },
+    withNote({ key: "target", label: "Target", value: target }, DEAL_BAR_CALCULATED_NOTE),
+    withNote({ key: "max", label: "Max", value: max }, DEAL_BAR_CALCULATED_NOTE),
     { key: "spread", label: "Spread", value: spread },
   ];
 }

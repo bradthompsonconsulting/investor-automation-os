@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useReadRecovered } from "../components/access-status";
 import { Link, useSearchParams } from "react-router-dom";
 import {
@@ -28,8 +28,16 @@ import {
 } from "../lib/repair-estimation/operator-model";
 import { MiscRepairRow, RepairEstimateSummary } from "../components/RepairEstimateSummary";
 import { NetProceedsPanel } from "../components/NetProceedsPanel";
+import { DealCalculationSavePanel, type CalculatorFigures } from "../components/DealCalculationSavePanel";
 import { computeRepairEstimate } from "../lib/repair-estimation/compute";
 import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
+import { appWriteIdentity, subscribeAppWriteSession } from "../lib/app-write-session";
+import type { OpportunityRow } from "../lib/ghl";
+import {
+  FIELDS as DRAFT_FIELDS, NO_GHL, assess, canResolve, keepMine, openStore, parseRepairItems, recordEdit,
+  seedEvidence, serializeRepairItems, useGhl as discardForGhl, withoutField,
+  type Draft, type DraftField, type DraftIdentity, type FieldState, type GhlNow,
+} from "../lib/calculator-drafts";
 
 /**
  * Standalone Deal Calculator -- B8-09 / INV-52.
@@ -107,8 +115,25 @@ import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
  * page instead links to the real Underwriting workspace for BOTH figures,
  * exactly as Seller Call (B8-07) already does for ARV.
  *
- * READ ONLY. This page performs no GHL write of any kind. Its only
- * network calls are reads (contact detail, investor policy).
+ * READ ONLY, WITH ONE NAMED EXCEPTION (B15-25 Phase 2, Jess RULING 2026-10-30;
+ * Captain approved P2-1..P2-5). This page itself performs no GHL write; its
+ * network calls are reads (contact detail, investor policy, and -- B15-25 --
+ * the existing pipeline read, to find a linked contact's deals). The one write
+ * surface is the linked-contact `DealCalculationSavePanel`: an explicit "Save
+ * Calculation to Deal" button that appends ONE `IAOS DEAL CALCULATION` note --
+ * a working calculation, never an approval, never ARV, Repairs or Current
+ * Offer (docs/INV95_WRITE_BOUNDARIES.md; refused in Production). It saves for
+ * the deal chosen HERE (integration ruling I1).
+ *
+ * B15-25 (INV-133) PHASE 1 -- LOCAL AUTOSAVE. The figures and modes are kept
+ * in THIS BROWSER (lib/calculator-drafts.ts), never sent to GHL, never an
+ * approval. Unlinked work is a scratch draft (per GHL location and
+ * operator); a linked contact's work is kept only once a deal is chosen, per
+ * location, operator, contact, property (the deal: one property per deal in
+ * V1) and deal. A contact seed is GHL evidence, not a draft: only a value
+ * different from it is kept, and a seed that changed under a kept value
+ * shows both until the operator chooses. Saves and removals are confirmed;
+ * a failure is said plainly.
  */
 
 const CONFIG = getRuntimeConfig();
@@ -188,6 +213,21 @@ function BarCellView({ cell, valueColor }: { cell: DealCalcBarCell; valueColor?:
 const CONDITION_LABEL: Record<OperatorCondition, string> = {
   not_asked: "Not asked", good: "Good", repair: "Repair", severe: "",
 };
+
+/* B15-25: what each draft field shows when nothing is kept for it. ARV and quick repairs take the linked
+   contact's seed instead, when there is one (see baselineFor in the component). */
+const DRAFT_DEFAULTS: Record<DraftField, string> = {
+  arv: "", repairsQuick: "", testPrice: "", assignmentMode: DEFAULT_ASSIGNMENT_MODE, manualAmount: "",
+  repairsMode: "quick", repairItems: serializeRepairItems({}, EMPTY_MISC),
+};
+const DRAFT_STATUS_STYLE: React.CSSProperties = { fontSize: "10px", color: "#F59E0B", marginTop: "4px" };
+/** The operator a draft belongs to: the write-session operator, else the last one seen, else this browser. */
+function draftOperator(): string {
+  const w = appWriteIdentity();
+  return w.operator ?? w.lastOperator ?? "this-browser";
+}
+const scratchIdentity = (): DraftIdentity => ({ kind: "scratch", env: CONFIG.locationId, operator: draftOperator() });
+const ghlText = (g: FieldState["ghl"]) => (g.kind === "value" ? g.value : g.kind === "none" ? "nothing recorded" : "could not be read");
 
 export default function DealCalculator() {
   const [searchParams] = useSearchParams();
@@ -379,40 +419,324 @@ export default function DealCalculator() {
   const [linkBusy, setLinkBusy] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
 
+  /* ── B15-25: local drafts ─────────────────────────────────────────────
+     `context` is where the figures on screen are kept: the scratch draft,
+     a chosen deal's draft, or nowhere (null, with `notKept` saying why). */
+  const [store] = useState(() => openStore(() => window.localStorage));
+  const [context, setContext] = useState<DraftIdentity | null>(null);
+  const [notKept, setNotKept] = useState<string | null>(linkParam ? "Linking the contact -- figures here are not kept until a deal is chosen." : null);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [ghlNow, setGhlNow] = useState<GhlNow>(NO_GHL);
+  const [persist, setPersist] = useState<null | "save-failed" | "remove-failed">(null);
+  const [restoreNote, setRestoreNote] = useState<string | null>(null);
+  const [deals, setDeals] = useState<OpportunityRow[] | null>(null);
+  const [selectedDealId, setSelectedDealId] = useState<string | null>(null);
+  const [contactGhl, setContactGhl] = useState<GhlNow>(NO_GHL);
+
+  const snapshot = (): Record<DraftField, string> => ({
+    arv: arvInput, repairsQuick: repairsQuickInput, testPrice: testPriceInput, assignmentMode, manualAmount: manualAmountInput,
+    repairsMode, repairItems: serializeRepairItems(repairAnswers, repairMisc),
+  });
+  /* Bones Phase 1 finding 3: the figures on screen NOW, read after an await (never a render-time copy). */
+  const latest = useRef<Record<DraftField, string> | null>(null);
+  latest.current = snapshot();
+  const linkGeneration = useRef(0);
+  /* Bones Phase 1 r2 finding 2: the fields the operator TOUCHED while a link was pending -- any change, even
+     one later undone (typed, then cleared). Ownership follows the touch, not the final value. null = no
+     link pending. `linkOperator` is the operator those touches belong to. */
+  const linkTouched = useRef<Set<DraftField> | null>(null);
+  const linkOperator = useRef<string | null>(null);
+  const previousScreen = useRef<Record<DraftField, string> | null>(null);
+  /* r2 finding 1: the operator the figures on a not-kept screen belong to. */
+  const notKeptOwner = useRef<string | null>(null);
+  useEffect(() => {
+    const snap = latest.current ?? snapshot();
+    const prev = previousScreen.current;
+    if (linkTouched.current && prev) for (const f of DRAFT_FIELDS) if (snap[f] !== prev[f]) linkTouched.current.add(f);
+    previousScreen.current = snap;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arvInput, repairsQuickInput, testPriceInput, assignmentMode, manualAmountInput, repairsMode, repairAnswers, repairMisc]);
+  /** What a field shows when nothing is kept for it: the contact's seed (ARV, quick repairs) or the default. */
+  const baselineFor = (field: DraftField, ghl: GhlNow): string => {
+    const g = ghl.kind === "ok" ? ghl.values[field] : undefined;
+    return g && g.kind === "value" ? g.value : DRAFT_DEFAULTS[field];
+  };
+  /** Puts a full set of field values on screen. */
+  function applyValues(v: Record<DraftField, string>) {
+    setArvInput(v.arv);
+    setRepairsQuickInput(v.repairsQuick);
+    setTestPriceInput(v.testPrice);
+    setAssignmentMode((["standard", "profit_share", "manual"] as string[]).includes(v.assignmentMode) ? v.assignmentMode as AssignmentModeName : DEFAULT_ASSIGNMENT_MODE);
+    setManualAmountInput(v.manualAmount);
+    setRepairsMode(v.repairsMode === "detailed" ? "detailed" : "quick");
+    const items = parseRepairItems(v.repairItems) ?? { answers: {}, misc: EMPTY_MISC };
+    setRepairAnswers(items.answers);
+    setRepairMisc(items.misc);
+    setRepairTransferNote(null);
+    bumpRepairRevision();
+  }
+  /** Saves (or, for no draft, removes) and reports the outcome; never assumes either worked. */
+  function commitDraft(next: Draft | null, where: DraftIdentity | null = context) {
+    setDraft(next);
+    if (!where) return;
+    if (next) setPersist(store.save(next) ? null : "save-failed");
+    else setPersist(store.remove(where) ? null : "remove-failed");
+  }
+  /**
+   * Moves the screen to a draft context. A kept draft there is restored exactly (fields it does not hold
+   * show their baseline). With none: figures carry over ONLY from scratch or not-kept work (typing before
+   * linking survives linking, as before); leaving a deal never carries its figures into another deal or
+   * into scratch work -- the target starts from its baseline. `overrides` (figures the operator edited
+   * while a link was pending) win over both. Returns the values on screen and the fields that are
+   * the operator's (restored or overridden) -- a seed never fills those, even when blank.
+   */
+  function enterContext(
+    id: DraftIdentity, ghl: GhlNow, label: string, screen: Record<DraftField, string>,
+    opts: { carry?: boolean; overrides?: Partial<Record<DraftField, string>> } = {},
+  ): { values: Record<DraftField, string>; kept: Set<DraftField> } {
+    const loaded = store.load(id);
+    const carry = opts.carry ?? (!context || context.kind === "scratch");
+    const overrides = opts.overrides ?? {};
+    const kept = new Set(Object.keys(overrides) as DraftField[]);
+    setContext(id);
+    setNotKept(null);
+    setGhlNow(ghl);
+    setPersist(null);
+    const baseline = Object.fromEntries(DRAFT_FIELDS.map((f) => [f, baselineFor(f, ghl)])) as Record<DraftField, string>;
+    if (loaded.ok && loaded.draft) {
+      const stored = loaded.draft;
+      for (const f of Object.keys(stored.fields) as DraftField[]) kept.add(f);
+      const values = { ...Object.fromEntries(DRAFT_FIELDS.map((f) => [f, stored.fields[f]?.value ?? baseline[f]])), ...overrides } as Record<DraftField, string>;
+      setDraft(stored);
+      applyValues(values);
+      setRestoreNote(`Restored the figures kept in this browser for ${label}.`);
+      return { values, kept };
+    }
+    setDraft(null);
+    setRestoreNote(loaded.ok ? null : `A kept draft for ${label} could not be read, so it was not used. Editing here replaces it.`);
+    if (carry) return { values: { ...screen, ...overrides }, kept };
+    const values = { ...baseline, ...overrides };
+    applyValues(values);
+    return { values, kept };
+  }
+  function leaveContext(reason: string) {
+    setContext(null);
+    setDraft(null);
+    setGhlNow(NO_GHL);
+    setPersist(null);
+    setRestoreNote(null);
+    setNotKept(reason);
+    notKeptOwner.current = draftOperator();
+  }
+  function chooseDeal(deal: OpportunityRow, contactId: string, ghl: GhlNow, screen: Record<DraftField, string>, overrides?: Partial<Record<DraftField, string>>) {
+    setSelectedDealId(deal.id);
+    const id: DraftIdentity = { kind: "deal", env: CONFIG.locationId, operator: draftOperator(), contactId, propertyId: deal.id, opportunityId: deal.id };
+    return enterContext(id, ghl, "this deal", screen, { overrides });
+  }
+
+  /* Bones Phase 1 finding 1: the draft belongs to the operator signed in NOW. When the write-session
+     operator changes, the same deal (or scratch work) is re-keyed to the new operator, with no carry-over:
+     operator B sees B's own kept figures or the baseline, never A's, and B's edits are never kept under A.
+     A's draft stays kept for A. (Sign-out or expiry keeps the last operator, as app-write-session does.) */
+  function rebindOperator(): boolean {
+    if (!context) return clearNotKeptForNewOperator();
+    const operator = draftOperator();
+    if (context.operator === operator) return false;
+    enterContext({ ...context, operator }, ghlNow, context.kind === "deal" ? "this deal" : "unlinked scratch work", latest.current ?? snapshot(), { carry: false });
+    setRestoreNote("The signed-in operator changed, so the figures shown are the ones kept for the current operator. The previous operator's figures stay kept for them.");
+    return true;
+  }
+  /* Bones Phase 1 r2 finding 1: figures on a screen where nothing is kept (a link pending, a deal not yet
+     chosen) belong to the operator who typed them. When the operator changes there, they are cleared, so they
+     can never carry into the new operator's deal; touches made during a pending link restart under the new
+     operator (the new operator's own edits still win over the link's reads). */
+  function clearNotKeptForNewOperator(): boolean {
+    const operator = draftOperator();
+    if (notKeptOwner.current === null || notKeptOwner.current === operator) return false;
+    const defaults = { ...DRAFT_DEFAULTS };
+    previousScreen.current = defaults;   // the reset itself is not a touch
+    applyValues(defaults);
+    notKeptOwner.current = operator;
+    if (linkTouched.current) { linkTouched.current = new Set(); linkOperator.current = operator; }
+    setRestoreNote("The signed-in operator changed, so the previous operator's figures, which were not kept, were cleared from the screen.");
+    return true;
+  }
+  const [operatorTick, setOperatorTick] = useState(0);
+  useEffect(() => subscribeAppWriteSession(() => setOperatorTick((t) => t + 1)), []);
+  useEffect(() => { if (operatorTick > 0) rebindOperator(); }, [operatorTick]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Keeps every change to a figure or mode: a field is kept once it differs from its baseline (a seed is
+     never kept as a draft), and a kept field follows every later edit. One place for every edit path --
+     typing, mode toggles, the quick-to-itemized transfer, Clear repairs. */
+  useEffect(() => {
+    if (!context) return;
+    /* Never keep an edit under an operator who is no longer signed in: re-key first (finding 1). */
+    if (context.operator !== draftOperator()) { rebindOperator(); return; }
+    const snap = snapshot();
+    let next = draft;
+    let changed = false;
+    for (const f of DRAFT_FIELDS) {
+      const kept = next ? next.fields[f] : undefined;
+      if (kept && kept.value === snap[f]) continue;
+      const atBaseline = snap[f] === baselineFor(f, ghlNow);
+      if (!kept && atBaseline) continue;
+      /* Back at the seed or default: nothing left to keep for this field (a GHL value is never labelled a draft). */
+      next = atBaseline ? withoutField(next, f) : recordEdit(next, context, f, snap[f], ghlNow, new Date().toISOString());
+      changed = true;
+    }
+    if (changed) commitDraft(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arvInput, repairsQuickInput, testPriceInput, assignmentMode, manualAmountInput, repairsMode, repairAnswers, repairMisc, context, ghlNow]);
+
+  const fieldStates = useMemo(() => assess(draft, ghlNow), [draft, ghlNow]);
+  function handleKeepMine(field: DraftField) { commitDraft(keepMine(draft, field, ghlNow, new Date().toISOString())); }
+  function handleUseGhl(field: DraftField) {
+    if (!canResolve(ghlNow, field)) return;
+    const value = baselineFor(field, ghlNow);
+    commitDraft(discardForGhl(draft, field, ghlNow));
+    if (field === "arv") setArvInput(value);
+    if (field === "repairsQuick") setRepairsQuickInput(value);
+  }
+  /** The per-field line: Not saved to GHL, a conflict with both versions, or unchecked with disabled choices. */
+  function draftStatus(field: DraftField) {
+    const s = fieldStates[field];
+    if (!context || !s) return null;
+    if (s.state === "ghl") return <div data-testid={`deal-calc-draft-${field}`} style={{ ...DRAFT_STATUS_STYLE, color: "#64748B" }}>From the linked contact in GHL</div>;
+    if (s.state === "draft") return <div data-testid={`deal-calc-draft-${field}`} style={DRAFT_STATUS_STYLE}>Draft -- Not saved to GHL</div>;
+    if (s.state !== "conflict" && s.state !== "unchecked") return null;
+    const allowed = canResolve(ghlNow, field);
+    return (
+      <div data-testid={`deal-calc-draft-${field}`} role="group" style={{ ...DRAFT_STATUS_STYLE, border: "1px solid rgba(245,158,11,0.4)", borderRadius: "6px", padding: "6px" }}>
+        {s.state === "conflict" ? (
+          <>
+            <div data-testid={`deal-calc-draft-${field}-ghl`}>GHL now: {ghlText(s.ghl)} (changed since your draft)</div>
+            <div data-testid={`deal-calc-draft-${field}-mine`}>Your draft: {s.draft} -- Not saved to GHL</div>
+          </>
+        ) : (
+          <div>Draft -- Not saved to GHL (the GHL value could not be checked)</div>
+        )}
+        <div style={{ display: "flex", gap: "6px", marginTop: "4px" }}>
+          <button data-testid={`deal-calc-draft-${field}-keep`} disabled={!allowed} onClick={() => handleKeepMine(field)} style={{ ...COMPACT_BUTTON_STYLE, fontSize: "10px", padding: "3px 7px", opacity: allowed ? 1 : 0.45 }}>Keep My Draft</button>
+          <button data-testid={`deal-calc-draft-${field}-use-ghl`} disabled={!allowed} onClick={() => handleUseGhl(field)} style={{ ...COMPACT_BUTTON_STYLE, fontSize: "10px", padding: "3px 7px", opacity: allowed ? 1 : 0.45 }}>Use GHL</button>
+        </div>
+        {!allowed ? <div style={{ color: "#94A3B8" }}>Choices are available once GHL can be read.</div> : null}
+      </div>
+    );
+  }
+
+  /* Bones Phase 1 finding 3: while the contact and deal reads are pending, figures are not kept anywhere
+     (not in scratch work), and every figure the operator edits during the wait wins over the reads -- over
+     a restored draft and over a seed. A response from an older link is ignored. */
   async function performLink(contactId: string) {
     if (contactId.trim() === "") return;
+    const generation = ++linkGeneration.current;
+    const start = latest.current ?? snapshot();
+    /* r2 finding 2: every field touched during the wait, with its value now (typed-then-cleared included). */
+    const editedSinceStart = (): Partial<Record<DraftField, string>> => {
+      const now = latest.current ?? start;
+      return Object.fromEntries([...(linkTouched.current ?? [])].map((f) => [f, now[f]]));
+    };
+    linkTouched.current = new Set();
+    linkOperator.current = draftOperator();
+    previousScreen.current = start;
     setLinkBusy(true);
     setLinkError(null);
+    leaveContext("Linking the contact -- figures here are not kept until a deal is chosen.");
     try {
       const contact = await ghl.contacts.getDetail(contactId.trim());
       const seeds = parseContactSeeds(contact.customFields, CONTACT_IDS);
-      // Prepopulate ONLY fields still empty -- linking is a one-time
-      // convenience (PB-D55), never a silent overwrite of a typed value.
-      if (arvInput.trim() === "" && seeds.arv !== null) setArvInput(String(seeds.arv));
-      if (repairsQuickInput.trim() === "" && seeds.repairs !== null) setRepairsQuickInput(String(seeds.repairs));
+      const seedGhl: GhlNow = { kind: "ok", values: {
+        arv: seedEvidence(contact.customFields, CONTACT_IDS.arv),
+        repairsQuick: seedEvidence(contact.customFields, CONTACT_IDS.repairs),
+      } };
+      /* B15-25: the contact's deals, from the existing pipeline read. One deal is chosen for the operator;
+         several need a choice (no first-deal guess); none, or an unreadable read, keeps nothing. */
+      let mine: OpportunityRow[] | null;
+      try { mine = (await ghl.opportunities.listPipeline()).opportunities.filter((o) => o.contactId === contact.id); } catch { mine = null; }
+      if (generation !== linkGeneration.current) return;
+      /* r2 finding 1 (backstop): if the operator changed during the wait without the reset above, nothing
+         from the screen carries into the new operator's deal. */
+      const operatorChanged = draftOperator() !== linkOperator.current;
+      const edited = operatorChanged ? {} : editedSinceStart();
+      linkTouched.current = null;
+      if (operatorChanged) {
+        const defaults = { ...DRAFT_DEFAULTS };
+        previousScreen.current = defaults;
+        applyValues(defaults);
+        latest.current = defaults;
+      }
       setLinkedContactId(contact.id);
       setLinkedContactName([contact.firstName, contact.lastName].filter(Boolean).join(" ") || contact.id);
+      setDeals(mine);
+      setSelectedDealId(null);
+      setContactGhl(seedGhl);
+      let screen = latest.current ?? start;
+      let kept = new Set(Object.keys(edited) as DraftField[]);
+      if (mine && mine.length === 1) ({ values: screen, kept } = chooseDeal(mine[0], contact.id, seedGhl, screen, edited));
+      else leaveContext(mine === null ? "This contact's deals could not be loaded, so figures here are not kept."
+        : mine.length === 0 ? "This contact has no deal, so figures here are not kept."
+        : "Choose a deal below to keep these figures. Until then they are not kept.");
+      // Prepopulate ONLY fields still empty -- linking is a one-time
+      // convenience (PB-D55), never a silent overwrite of a typed value.
+      // B15-25 (finding 2): nor of a value the operator owns -- a kept or
+      // just-edited field, even one deliberately left blank.
+      if (!kept.has("arv") && screen.arv.trim() === "" && seeds.arv !== null) setArvInput(String(seeds.arv));
+      if (!kept.has("repairsQuick") && screen.repairsQuick.trim() === "" && seeds.repairs !== null) setRepairsQuickInput(String(seeds.repairs));
     } catch (e: any) {
+      if (generation !== linkGeneration.current) return;
       setLinkError(e?.message ?? "Could not load that contact.");
+      const sameOperator = draftOperator() === linkOperator.current;
+      const overrides = sameOperator ? editedSinceStart() : {};
+      linkTouched.current = null;
+      if (!linkedContactId) enterContext(scratchIdentity(), NO_GHL, "unlinked scratch work", latest.current ?? start, { overrides, carry: sameOperator ? undefined : false });
     } finally {
-      setLinkBusy(false);
+      if (generation === linkGeneration.current) { setLinkBusy(false); linkTouched.current = null; }
     }
   }
 
   useEffect(() => {
     if (linkParam) void performLink(linkParam);
+    else enterContext(scratchIdentity(), NO_GHL, "unlinked scratch work", snapshot());
     // Intentionally runs once, off the URL param only -- re-linking after
     // that is an explicit operator action via the Link button.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  function handleChooseDeal(dealId: string) {
+    const deal = deals?.find((d) => d.id === dealId);
+    if (deal && linkedContactId) chooseDeal(deal, linkedContactId, contactGhl, snapshot());
+  }
+
   function handleUnlink() {
     setLinkedContactId(null);
     setLinkedContactName(null);
     setLinkError(null);
+    setDeals(null);
+    setSelectedDealId(null);
+    setContactGhl(NO_GHL);
+    /* B15-25: back to the scratch draft; the deal's draft stays kept for when it is linked again. */
+    enterContext(scratchIdentity(), NO_GHL, "unlinked scratch work", snapshot());
   }
 
   const [netPanelRevision, setNetPanelRevision] = useState(0);
+
+  /* B15-25 Phase 2: the figures and modes the Save/Load panel works with -- figures only; itemized
+     repair rows, Miscellaneous and the net-proceeds inputs are not saved in this phase. Loading a
+     saved calculation replaces exactly these (the panel asks first when there are unsaved changes).
+     Integration ruling I3: the setters below are ordinary edits, so Phase 1's keep-every-change effect
+     keeps the loaded figures as THIS deal's browser draft (its existing preservation path), and the
+     restore line says they came from GHL -- never "restored from this browser". */
+  const calculatorFigures: CalculatorFigures = { arvInput, repairsQuickInput, testPriceInput, assignmentMode, manualAmountInput, repairsMode };
+  function handleLoadCalculation(next: CalculatorFigures, savedAt: string) {
+    setArvInput(next.arvInput);
+    setRepairsMode(next.repairsMode);
+    setRepairsQuickInput(next.repairsQuickInput);
+    bumpRepairRevision();
+    setTestPriceInput(next.testPriceInput);
+    setAssignmentMode(next.assignmentMode);
+    setManualAmountInput(next.manualAmountInput);
+    setRestoreNote(`Loaded the calculation saved in GHL on ${new Date(savedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}. It is now kept in this browser as this deal's draft.`);
+  }
 
   function handleClear() {
     setArvInput("");
@@ -432,6 +756,10 @@ export default function DealCalculator() {
     // Clear does not unlink -- clearing the scratchpad and severing the
     // link are two different bounded actions, matching this issue's own
     // "Clear/Reset" bullet, distinct from "optional linking."
+    /* B15-25: Clear also discards this context's kept draft; a removal that
+       fails is said plainly (the draft could come back). */
+    setRestoreNote(null);
+    commitDraft(null);
   }
 
   return (
@@ -442,9 +770,24 @@ export default function DealCalculator() {
             <Calculator size={20} style={{ color: "#1EC8FF" }} /> Deal Calculator
           </h1>
           <div style={{ fontSize: "12px", color: "#64748B", marginTop: "4px" }}>
-            <span data-testid="deal-calc-scratchpad-notice" style={{ color: "#F59E0B", fontWeight: 600 }}>Scratchpad -- nothing here is saved.</span>{" "}
+            <span data-testid="deal-calc-scratchpad-notice" style={{ color: "#F59E0B", fontWeight: 600 }}>Scratchpad -- nothing here is saved to GHL.</span>{" "}
             No contact or opportunity required -- type what you know.
           </div>
+          {/* B15-25: exactly one line on where these figures are kept. "Kept" is said only after a save is confirmed. */}
+          <div data-testid="deal-calc-draft-status" role="status" style={{ fontSize: "11px", marginTop: "4px", color: persist || !store.available ? "#F87171" : "#94A3B8" }}>
+            {!store.available
+              ? "This browser's storage is unavailable, so figures here are not kept: they are lost if you leave or reload. Not saved to GHL."
+              : persist === "save-failed"
+              ? "These figures could NOT be kept in this browser: storage refused them. They exist only on this screen and are lost if you leave or reload. Not saved to GHL."
+              : persist === "remove-failed"
+              ? "The cleared draft could not be removed from this browser, so it may come back after a reload."
+              : notKept
+              ? notKept
+              : draft
+              ? `Kept in this browser only${context?.kind === "deal" ? ", for this deal" : ", as unlinked scratch work"}. Not saved to GHL, and never an approval.`
+              : "Figures you change here are kept in this browser only. Not saved to GHL."}
+          </div>
+          {restoreNote ? <div data-testid="deal-calc-draft-restored" style={{ fontSize: "11px", color: "#94A3B8", marginTop: "2px" }}>{restoreNote}</div> : null}
         </div>
         <button data-testid="deal-calc-clear" onClick={handleClear} style={{ ...COMPACT_BUTTON_STYLE }}>
           <RotateCcw size={12} /> Clear
@@ -495,6 +838,7 @@ export default function DealCalculator() {
           {arvParsed.kind === "invalid" ? (
             <div data-testid="deal-calc-arv-error" style={{ color: "#EF4444", fontSize: "10px", marginTop: "4px" }}>{arvParsed.reason}</div>
           ) : null}
+          {draftStatus("arv")}
         </div>
 
         <div style={PANEL_STYLE}>
@@ -520,6 +864,7 @@ export default function DealCalculator() {
               {repairsQuickParsed.kind === "invalid" ? (
                 <div data-testid="deal-calc-repairs-error" style={{ color: "#EF4444", fontSize: "10px", marginTop: "4px" }}>{repairsQuickParsed.reason}</div>
               ) : null}
+              {draftStatus("repairsQuick")}
             </>
           ) : (
             <div data-testid="deal-calc-repairs-detailed" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
@@ -592,8 +937,10 @@ export default function DealCalculator() {
               <div style={{ fontSize: "10px", color: "#475569" }}>
                 Clear repairs returns to the known-only $0 and keeps ARV, Test Price and the Miscellaneous description.
               </div>
+              {draftStatus("repairItems")}
             </div>
           )}
+          {draftStatus("repairsMode")}
         </div>
 
         <div style={PANEL_STYLE}>
@@ -608,6 +955,7 @@ export default function DealCalculator() {
           {testPriceParsed.kind === "invalid" ? (
             <div data-testid="deal-calc-test-price-error" style={{ color: "#EF4444", fontSize: "10px", marginTop: "4px" }}>{testPriceParsed.reason}</div>
           ) : null}
+          {draftStatus("testPrice")}
           <div style={{ fontSize: "10px", color: "#475569", marginTop: "6px" }}>
             Operator-entered only -- IAOS never sets or defaults this.
           </div>
@@ -637,6 +985,18 @@ export default function DealCalculator() {
             <div style={{ fontSize: "10px", color: "#475569" }}>
               Neither ARV nor Repairs is saved from here -- approve them in the Underwriting workspace (ARV with real comp evidence; Repairs against the linked Opportunity).
             </div>
+            {/* B15-25: which deal these figures are kept for. Several deals need a choice; no first-deal guess. */}
+            {deals && deals.length > 1 ? (
+              <label style={{ ...LABEL_STYLE, flexDirection: "row", alignItems: "center", gap: "6px" }}>
+                Keep figures for deal:
+                <select data-testid="deal-calc-deal-select" value={selectedDealId ?? ""} onChange={(e) => handleChooseDeal(e.target.value)} style={{ ...INPUT_STYLE, width: "auto" }}>
+                  <option value="" disabled>Choose a deal</option>
+                  {deals.map((d) => <option key={d.id} value={d.id}>{d.opportunityName || d.id}</option>)}
+                </select>
+              </label>
+            ) : deals && deals.length === 1 ? (
+              <span data-testid="deal-calc-deal-name" style={{ fontSize: "11px", color: "#94A3B8" }}>Deal: {deals[0].opportunityName || deals[0].id}</span>
+            ) : null}
           </div>
         ) : (
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
@@ -659,6 +1019,22 @@ export default function DealCalculator() {
         )}
         {linkError ? <div data-testid="deal-calc-link-error" style={{ color: "#EF4444", fontSize: "11px", marginTop: "8px" }}>{linkError}</div> : null}
       </div>
+
+      {/* B15-25 Phase 2: Save Calculation to Deal / Load Saved Calculation -- linked contact only.
+          I1: the panel saves for the deal chosen here. I4: remounted when the contact or the signed-in operator
+          changes, so no deal-specific state, unconfirmed save or late result crosses operators. */}
+      {linkedContactId ? (
+        <DealCalculationSavePanel
+          key={`${linkedContactId}|${draftOperator()}`}
+          contactId={linkedContactId}
+          opportunityId={context && context.kind === "deal" && context.contactId === linkedContactId ? context.opportunityId : null}
+          dealName={context && context.kind === "deal" ? (deals?.find((d) => d.id === context.opportunityId)?.opportunityName || null) : null}
+          figures={calculatorFigures}
+          /* r4 P2-2: a kept browser draft (typed or restored) is unsaved work: Load asks before replacing it. */
+          hasUnsavedWork={draft !== null}
+          onLoad={handleLoadCalculation}
+        />
+      ) : null}
 
       {/* More Detail -- Assignment Mode + the eleven Investor Policy assumptions. */}
       <div style={{ marginTop: "16px" }}>
@@ -693,6 +1069,8 @@ export default function DealCalculator() {
                 style={{ ...INPUT_STYLE, marginBottom: "10px" }}
               />
             ) : null}
+            {draftStatus("assignmentMode")}
+            {assignmentMode === "manual" ? draftStatus("manualAmount") : null}
 
             <div style={{ fontSize: "12px", fontWeight: 700, color: "#94A3B8", margin: "14px 0 10px" }}>
               Investor Policy (read-only{policyError ? " -- could not load; using IAOS Starter defaults" : ""})

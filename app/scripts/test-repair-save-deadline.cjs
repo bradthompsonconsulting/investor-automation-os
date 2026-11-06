@@ -91,7 +91,9 @@ Object.assign(process.env, {
 });
 const OPERATOR = 'operator@example.invalid';
 const EDGE = 'https://edge.example.invalid'; const EDGE_SITE = 'edge-site'; const SIGNED = 'https://signed.example.invalid';
-let vOffset = 0; const realNow = Date.now; Date.now = () => realNow() + vOffset;
+// realFrozen (B15-26 DL4d reliability): when set, the real-time part of the virtual clock stops, so a boundary check sees
+// exactly the scripted virtual latency (epsilon = 0) instead of depending on how much real time happens to elapse.
+let vOffset = 0; let realFrozen = null; const realNow = Date.now; Date.now = () => (realFrozen === null ? realNow() : realFrozen) + vOffset;
 
 // ----------------------------------------------------------------- fake ---
 /** Rule: { cls, method?, kind?, nth?, body?(regex), status?, etag?:false, v?(virtual ms), delay?(real ms), hang?:'headers'|'body', hide? } */
@@ -296,8 +298,11 @@ async function main() {
     { fake.reset(); const fx = fixture(); fake.rule({ cls: 'ghl', kind: 'oppGet', v: 4_900 }, { cls: 'ghl', kind: 'contactGet', v: 4_900 }); const tm = timerMark(); const m = mark(); const { r, b } = await run(fx, 60_000);
       const stage = timersSince(tm).filter((x) => /repair-approval-integration/.test(x.top)).map((x) => x.ms);
       check('DL4c accounting: the Opportunity stage makes 2 GETs, each with its own 5 000 ms timer; a ~9.8 s stage still clears the admission floor -> verified', stage.length === 2 && stage.every((ms) => ms === 5_000) && cls(m, 'ghl', 'GET').length >= 2 && r.statusCode === 200 && b.outcome === 'verified', [stage, b.outcome]); }
-    { fake.reset(); const fx = fixture(); fake.rule({ cls: 'edge', v: 4_000 }); const m = mark(); const { r, b } = await run(fx, 60_000);
-      check('DL4d the read floor counts both GETs (46 s): a 4 s claim (simulated overrun) leaves ~46 s - ε -> 503 deadline_before_start; 0 GHL requests', r.statusCode === 503 && b.code === 'deadline_before_start' && cls(m, 'ghl').length === 0 && cls(m, 'edge').length === 1, b); }
+    // DL4d was zero-margin: a 4 000 ms claim left 46 000 - ε against `left() < 46 000`, so it passed only if >= 1 ms of real
+    // time elapsed (failed CI run 41480962275). Now the claim overruns the boundary by exactly 1 ms with real time frozen:
+    // 50 000 - 4 001 = 45 999 < 46 000, deterministically, and a read floor weakened by even 1 ms is still caught.
+    { fake.reset(); const fx = fixture(); fake.rule({ cls: 'edge', v: 4_001 }); const m = mark(); realFrozen = realNow(); let out; try { out = await run(fx, 60_000); } finally { realFrozen = null; } const { r, b } = out;
+      check('DL4d the read floor counts both GETs (46 s): a 4 001 ms claim (simulated overrun, real time frozen) leaves exactly 45 999 ms < 46 000 -> 503 deadline_before_start; 0 GHL requests', r.statusCode === 503 && b.code === 'deadline_before_start' && cls(m, 'ghl').length === 0 && cls(m, 'edge').length === 1, b); }
     useR();
     useV({ floorsMs: { admission: 52_000 } });
     { fake.reset(); const fx = fixture(); const m = mark(); const { r, b } = await run(fx, 60_000);
@@ -369,9 +374,11 @@ async function main() {
       check('DL11a verified, then 11.5 s < 12 s left (a2 simulated overrun) -> blocked deadline_before_close; 0 CLOSE requests; never verified', a.r.statusCode === 409 && a.b.code === 'deadline_before_close' && !fake.log.slice(m.l).some((x) => /COMPLETED/.test(x.body)) && authorityState(fx) === 'ADMITTED', a.b);
       fake.reset(); const fx2 = fixture(); fake.rule({ cls: 'signed', method: 'GET', nth: 6, v: 3_000 }); const m2 = mark(); const c = await run(fx2, 60_000);
       check('DL11c control: the same 3 s CLOSE read with time to spare -> 200 verified only after the CLOSE CAS committed (COMPLETED stored)', c.r.statusCode === 200 && c.b.outcome === 'verified' && authorityState(fx2) === 'COMPLETED' && fake.log.slice(m2.l).some((x) => /COMPLETED/.test(x.body)), c.b);
-      // CLOSE starts with ~13 s left; its read (the 6th signed GET) takes 3 s, so the CAS (10 s) no longer fits.
-      fake.reset(); const fx3 = fixture(); fake.rule({ cls: 'ghl', kind: 'noteGet', v: 37_000 }, { cls: 'signed', method: 'GET', nth: 6, v: 3_000 }); const m3 = mark(); const d = await run(fx3, 60_000);
-      check('DL11b CLOSE read sent, then < 10 s left -> the CAS is not sent -> blocked close_not_sent; never verified', d.r.statusCode === 409 && d.b.code === 'close_not_sent' && !fake.log.slice(m3.l).some((x) => /COMPLETED/.test(x.body)) && authorityState(fx3) === 'ADMITTED', d.b);
+      // CLOSE starts with 13 s left; its read (the 6th signed GET) takes 3 001 ms, so the CAS (a write: 2 x 5 000 ms cap) no longer fits.
+      // Was zero-margin (B15-26 DL11b reliability, as DL4d): a 3 000 ms read left exactly 10 000 - e against `left >= 10 000`, so the
+      // CAS was withheld only if >= 1 ms of real time elapsed. Now 1 ms past the boundary with real time frozen: 9 999 < 10 000, every run.
+      fake.reset(); const fx3 = fixture(); fake.rule({ cls: 'ghl', kind: 'noteGet', v: 37_000 }, { cls: 'signed', method: 'GET', nth: 6, v: 3_001 }); const m3 = mark(); realFrozen = realNow(); let d; try { d = await run(fx3, 60_000); } finally { realFrozen = null; }
+      check('DL11b CLOSE read sent, then 9 999 ms < 10 000 left (3 001 ms read, real time frozen) -> the CAS is not sent -> blocked close_not_sent; never verified', d.r.statusCode === 409 && d.b.code === 'close_not_sent' && !fake.log.slice(m3.l).some((x) => /COMPLETED/.test(x.body)) && authorityState(fx3) === 'ADMITTED', d.b);
       useR();
       const closeCase = async (label, rule, want, state) => { fake.reset(); const f = fixture(); fake.rule(rule); const x = await within(4000, run(f, 600));
         check(`DL11${label}`, (want === 'verified' ? x.r.statusCode === 200 && x.b.outcome === 'verified' : x.b.code === want) && authorityState(f) === state, [x.b, authorityState(f)]); };

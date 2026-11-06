@@ -71,6 +71,9 @@ import { parseContactSeeds, parseOpportunityValues } from "./underwriting/resolv
 /* Board 15 / Pass 1 F31: the SAME reader Seller Call and the Dashboard use for
    the opportunity's Current Offer carrier, so the two screens cannot disagree. */
 import { readCurrentOfferFromOpportunity } from "./current-offer-carrier";
+/* B15-22 / INV-131: the Seller MAO here is the RECORDED approved underwriting
+   value, and its provenance says so -- worded once, beside Underwriting's. */
+import { railSellerMaoProvenance } from "./authoritative-figures";
 import {
   opportunityCandidates,
   readOpportunityNumber,
@@ -444,7 +447,7 @@ export function railCells(deal: RailDeal): RailCellView[] {
             };
       mao = deal.mao === null
         ? waiting("not yet approved — run Underwriting")
-        : { primary: RAIL_MONEY(deal.mao), provenance: `Opportunity · ${deal.opportunityName}`, tone: "value", route: null, editor: null, authorityNote: null };
+        : { primary: RAIL_MONEY(deal.mao), provenance: railSellerMaoProvenance(deal.opportunityName), tone: "value", route: null, editor: null, authorityNote: null };
       break;
   }
 

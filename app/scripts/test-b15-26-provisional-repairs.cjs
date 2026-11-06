@@ -160,8 +160,12 @@ async function partB() {
     });
     const T = (id) => page.getByTestId(id);
     const settle = () => page.waitForTimeout(250);
+    /* B15-25: a reload now restores the calculator's kept draft, so a fresh scenario also removes the
+       calculator's draft keys (and only those) before loading again. */
     const fresh = async () => {
       await page.goto(`${base}/scripts/harness/deal-calculator/index.html`);
+      await page.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('iaos-calculator-draft:')) localStorage.removeItem(k); });
+      await page.reload();
       await T('deal-calc-repairs-mode-toggle').waitFor({ timeout: 60000 });
     };
     /** Raw label text (CSS uppercases it on screen; textContent is the source text) and the six values. */

@@ -291,8 +291,17 @@ const FIELD_ID = 'opp-field-under-test';
   check('the soft-warning, non-blocking freeze-write-failure path is REMOVED (no currentOfferWriteState "error" write inside the accept branch\'s old catch)',
     /Agreement Reached was recorded, but freezing Current Offer failed/.test(pageSrc),
     false);
-  check('a Note failure (thrown after the Current Offer already succeeded) is surfaced via the SAME outcomeActionError path every other outcome failure already uses -- no special-cased swallow',
-    /\} catch \(e: any\) \{\s*setOutcomeActionError\(e\?\.message \?\? "Couldn't record this outcome\."\);\s*\} finally \{/.test(pageSrc),
+  /* Board #15 integration r2 (Bones REVISE dea207e, FAILURE 1): the outcome catch now carries the ACCEPTED B15-27
+     contact guard and the B15-27b P2 draft mark before the SAME setter. The original pin (catch -> setter -> finally,
+     nothing between) predates them. This asserts the exact accepted sequence, once: a definite failure marks this
+     outcome's draft; the error is withheld only when another contact is shown; otherwise the same setOutcomeActionError
+     path every other outcome failure uses runs. Removing or swallowing the setter, removing the guard, or adding any
+     other statement fails it. Same-contact display and no cross-contact leak are proven by the rendered suites
+     (test-b15-27b-seller-call.cjs P3/R*, test-b15-27b-r2.cjs). */
+  const OUTCOME_CATCH = /\} catch \(e: any\) \{\s*if \(!isUncertainFailure\(e\)\) outcomeDraft\.markFailed\(outcomeDraftId, e\?\.message \?\? "Couldn't record this outcome\."\);[ \t]*(?:\/\/[^\n]*)?\s*if \(!shown\(\)\) return;[ \t]*(?:\/\/[^\n]*)?\s*setOutcomeActionError\(e\?\.message \?\? "Couldn't record this outcome\."\);\s*\} finally \{/g;
+  check('a Note failure (thrown after the Current Offer already succeeded) is surfaced via the SAME outcomeActionError path every other outcome failure already uses -- no special-cased swallow (behind only the accepted contact guard and draft mark)',
+    (pageSrc.match(OUTCOME_CATCH) || []).length === 1
+      && /async function handleRecordOutcome\([\s\S]*?const forContact = contactId;\s*const shown = \(\) => contactIdRef\.current === forContact;/.test(pageSrc),
     true);
 }
 {

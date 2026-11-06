@@ -266,6 +266,9 @@ async function main() {
     if (fn === 'ghl-proxy') {
       const p = u.searchParams.get('path') || ''; const m = p.match(/^\/contacts\/([^/?]+)$/);
       if (m && ghl.contacts.has(m[1])) return fulfill(200, { contact: ghl.contacts.get(m[1]) });
+      // B15-22: the ARV workspace's approved-ARV-on-record line reads the contact's notes (GET, read-only).
+      const nl = p.match(/^\/contacts\/([^/?]+)\/notes$/);
+      if (nl && ghl.contacts.has(nl[1]) && req.method() === 'GET') return fulfill(200, { notes: (ghl.notes.get(nl[1]) || []).map((x) => ({ id: x.id, body: x.body, dateAdded: x.dateAdded || '' })) });
       if (/^\/locations\/[^/]+\/customFields$/.test(p)) return fulfill(200, { customFields: [] }); // field definitions (labels only)
       const o = p.match(/^\/opportunities\/([^/?]+)$/); // the legacy save's readback
       if (o && ghl.opps.has(o[1])) return fulfill(200, { opportunity: JSON.parse(JSON.stringify(ghl.opps.get(o[1]))) });

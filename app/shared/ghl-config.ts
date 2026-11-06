@@ -206,6 +206,22 @@ export interface GhlConfig {
    * Enabling is its own reviewed config-only commit, never a runtime toggle.
    */
   productionSellerCallNegotiation: string;
+  /**
+   * B15-03 / INV-103 slice C -- Seller Call "Save at Summary" (Captain
+   * 2026-11-03: one structured conversation note per call, plus the canonical
+   * updates the draft changes). Only `SELLER_CONVERSATION_SAVE_ENABLED` opens it,
+   * and BOTH objects carry `SELLER_CONVERSATION_SAVE_DISABLED` in this slice.
+   * While disabled:
+   *   - ghl-write refuses any "IAOS SELLER CONVERSATION" note (403, not_sent)
+   *     before any Blob or GHL access;
+   *   - the browser projection says disabled, so the Seller Call page shows the
+   *     save plan, makes ZERO write requests, and its Board 14-13 autosaved
+   *     sections keep autosaving exactly as before.
+   * The browser projection (`sellerConversationSave.enabled`) can only be true on a
+   * Test deployment. Production also refuses the carrier unconditionally in
+   * production-write-scope.ts. Enabling is its own reviewed config-only commit.
+   */
+  sellerConversationSave: string;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -381,6 +397,14 @@ export interface GhlConfig {
    * `SUPPLEMENTAL_READ_BUDGET_DISABLED`. Enabling, the ceiling and a new id are reviewed config-only commits.
    */
   supplementalReadBudget: { enabled: string; budgetId: string; ceiling: number };
+  /**
+   * B15-25 Phase 2 "Save Calculation to Deal" (Jess RULING 2026-10-30; Captain approved P2-1..P2-5). The
+   * server refuses every IAOS DEAL CALCULATION note unless `enabled` is exactly `DEAL_CALCULATION_SAVE_ENABLED`
+   * (write-note-guard.ts). Server-only: not projected to the browser. Both environments carry
+   * `DEAL_CALCULATION_SAVE_DISABLED` at merge; enabling Test is a reviewed config-only commit made only after
+   * the Test workflow-trigger inventory. Production also refuses the note in production-write-scope.ts.
+   */
+  dealCalculationSave: { enabled: string };
 }
 
 /** GATE 2 / B9-08 -- the literal placeholder value for an unconfigured `senderUserId`. Exported so ghl-proxy.ts can refuse a send while it is in effect, without hardcoding the sentinel a second time. */
@@ -426,6 +450,10 @@ export const PROPERTY_ANSWER_EVALUATION_DISABLED = "PROPERTY_ANSWER_EVALUATION_D
 export const SUPPLEMENTAL_READ_BUDGET_ENABLED = "SUPPLEMENTAL_READ_BUDGET_ENABLED" as const;
 /** B15-04 -- the value PRODUCTION carries (and TEST until a reviewed config commit): reads are not metered. */
 export const SUPPLEMENTAL_READ_BUDGET_DISABLED = "SUPPLEMENTAL_READ_BUDGET_DISABLED" as const;
+/** B15-25 Phase 2 -- the ONE value that lets the server accept a Deal Calculation note (see `dealCalculationSave`). */
+export const DEAL_CALCULATION_SAVE_ENABLED = "DEAL_CALCULATION_SAVE_ENABLED" as const;
+/** B15-25 Phase 2 -- the value both environments carry until a reviewed config commit: Deal Calculation notes are refused. */
+export const DEAL_CALCULATION_SAVE_DISABLED = "DEAL_CALCULATION_SAVE_DISABLED" as const;
 
 /** B14-12 — the ONE value that opens the Production call-log permission class. */
 export const PRODUCTION_CALL_LOG_ENABLED = "PRODUCTION_CALL_LOG_ENABLED" as const;
@@ -441,6 +469,15 @@ export const PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED = "PRODUCTION_SELLER_CALL_
 export const PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED = "PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED" as const;
 /** B14-13 — the value PRODUCTION carries until the enable commit; TEST carries it as documentation only. */
 export const PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED = "PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED" as const;
+
+/** B15-03 slice C -- the ONE value that opens Seller Call "Save at Summary" (see `sellerConversationSave`). */
+export const SELLER_CONVERSATION_SAVE_ENABLED = "SELLER_CONVERSATION_SAVE_ENABLED" as const;
+/** B15-03 slice C -- the value BOTH environments carry until a reviewed enabling commit. */
+export const SELLER_CONVERSATION_SAVE_DISABLED = "SELLER_CONVERSATION_SAVE_DISABLED" as const;
+/** True only for the exact enabling sentinel (server-side decision; never a truthy value). */
+export function sellerConversationSaveEnabled(config: Pick<GhlConfig, "sellerConversationSave">): boolean {
+  return config.sellerConversationSave === SELLER_CONVERSATION_SAVE_ENABLED;
+}
 
 /**
  * INV-67 / B9-12 -- the literal placeholder value for a not-yet-provisioned
@@ -794,6 +831,8 @@ const PRODUCTION: GhlConfig = {
   productionSellerCallAutosave: PRODUCTION_SELLER_CALL_AUTOSAVE_ENABLED,
   // B14-13: ENABLED — Brad's working Seller Call setup in Production (Seller price position, Current Offer, Accept/Pass/Follow-Up; deliberate readiness override, its invalidation, above-Max acknowledgement; Brad, 2026-10-11). Disable: publish the prior deploy (lock kept), then revert this commit.
   productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED,
+  // B15-03 slice C: DISABLED. Production also refuses the carrier unconditionally (production-write-scope.ts).
+  sellerConversationSave: SELLER_CONVERSATION_SAVE_DISABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -850,6 +889,7 @@ const PRODUCTION: GhlConfig = {
     recoveryPairs: [],
   },
   supplementalReadBudget: { enabled: SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: "not-applicable-in-production", ceiling: 0 },
+  dealCalculationSave: { enabled: DEAL_CALCULATION_SAVE_DISABLED },
 };
 
 // TEST identifiers are captured from the GHL Test Environment, never hand-typed.
@@ -1182,6 +1222,8 @@ const TEST: GhlConfig = {
   productionSellerCallAutosave: PRODUCTION_SELLER_CALL_AUTOSAVE_DISABLED,
   // B14-13: documentation-only in TEST; Test writes are never scoped.
   productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED,
+  // B15-03 slice C: DISABLED pending the Captain's review and a separate enabling commit.
+  sellerConversationSave: SELLER_CONVERSATION_SAVE_DISABLED,
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },
@@ -1276,6 +1318,9 @@ const TEST: GhlConfig = {
   // as it is, never reset or reused; the placeholder id below is not an evaluation budget. Deactivation does not
   // prove quiescence: work already in flight may still finish.
   supplementalReadBudget: { enabled: SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: "b15-04-eval-reads-closed", ceiling: 0 },
+  // B15-25 Phase 2: DISABLED at merge. Enabling is its own reviewed config-only commit, after the Test
+  // workflow-trigger inventory (Note Added / Note Changed / Contact Changed) is recorded and ruled on.
+  dealCalculationSave: { enabled: DEAL_CALCULATION_SAVE_DISABLED },
 };
 
 export function getConfig(selector: string | undefined): GhlConfig {
@@ -1338,6 +1383,8 @@ export function getConfig(selector: string | undefined): GhlConfig {
     ),
     ["propertyAnswerEvaluation.enabled", config.propertyAnswerEvaluation.enabled],
     ["supplementalReadBudget.enabled", config.supplementalReadBudget.enabled],
+    ["sellerConversationSave", config.sellerConversationSave],
+    ["dealCalculationSave.enabled", config.dealCalculationSave.enabled],
   ];
 
   const missing = firstIncompleteKey(entries);
@@ -1515,10 +1562,52 @@ export interface RuntimeConfig {
    * and recovery on its own config; this projection only tells the page what to offer.
    */
   propertyAnswerRecovery: RecoveryProjection;
+  /**
+   * B15-03 slice C: whether Seller Call "Save at Summary" may write. Projected true ONLY on a Test
+   * deployment whose `sellerConversationSave` is exactly ENABLED. Absent reads as disabled (fail closed);
+   * present, it must be exactly `{ enabled: <boolean> }` or the browser refuses the payload. The server
+   * refuses the carrier on its own config regardless of what the browser was told.
+   */
+  sellerConversationSave?: { enabled: boolean };
+  /**
+   * B15-25 Phase 2 (r2, Bones finding 4): ONLY whether this deployment accepts Deal Calculation saves -- true
+   * only on a Test deployment whose `dealCalculationSave` sentinel is exactly ENABLED. ABSENT reads as disabled
+   * (the page then offers no Save). The server decides every save on its own config; this only tells the page
+   * whether to offer it.
+   */
+  dealCalculationSave?: DealCalculationSaveProjection;
+}
+
+/** The projection for one deployment: true only for "test" with the exact enabling sentinel. */
+export function projectSellerConversationSave(config: GhlConfig, environment: string | undefined): { enabled: boolean } {
+  return { enabled: environment === "test" && sellerConversationSaveEnabled(config) };
+}
+
+function invalidSellerConversationSave(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "sellerConversationSave";
+  const v = value as Record<string, unknown>;
+  if (Object.keys(v).join(",") !== "enabled" || typeof v.enabled !== "boolean") return "sellerConversationSave";
+  return null;
 }
 
 export type RecoveryPair = { contactId: string; opportunityId: string };
 export type RecoveryProjection = { enabled: boolean; pairs: RecoveryPair[] };
+
+/** B15-25 Phase 2 (r2) -- see `RuntimeConfig.dealCalculationSave`. */
+export type DealCalculationSaveProjection = { enabled: boolean };
+/** `environment` is the server's IAOS_ENV; anything but "test", or a sentinel other than ENABLED, projects disabled. */
+export function projectDealCalculationSave(config: GhlConfig, environment: string | undefined): DealCalculationSaveProjection {
+  return { enabled: environment === "test" && config.dealCalculationSave.enabled === DEAL_CALCULATION_SAVE_ENABLED };
+}
+/** Absent is accepted (= disabled). Present must be exactly { enabled: boolean } -- never a truthy sentinel. */
+function invalidDealCalculationSave(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "dealCalculationSave";
+  const v = value as Record<string, unknown>;
+  if (Object.keys(v).join(",") !== "enabled" || typeof v.enabled !== "boolean") return "dealCalculationSave";
+  return null;
+}
 const RECOVERY_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** The close/recovery projection for one deployment. `environment` is the server's IAOS_ENV; anything but "test" projects disabled. */
@@ -1554,7 +1643,7 @@ function invalidRecovery(value: unknown): string | null {
 
 /**
  * Server side: project a full config down to what the browser consumes.
- * `environment` (the server's IAOS_ENV) is used ONLY for `propertyAnswerRecovery`; omitted, it projects disabled.
+ * `environment` (the server's IAOS_ENV) is used ONLY for `propertyAnswerRecovery` and `dealCalculationSave`; omitted, both project disabled.
  */
 export function projectRuntimeConfig(config: GhlConfig, environment?: string): RuntimeConfig {
   const out: Record<string, unknown> = {
@@ -1562,6 +1651,8 @@ export function projectRuntimeConfig(config: GhlConfig, environment?: string): R
     contractDraftRequest: config.contractDraftRequest,
     contractSellerCountField: config.contractSellerCountField,
     propertyAnswerRecovery: projectRecovery(config, environment),
+    sellerConversationSave: projectSellerConversationSave(config, environment),
+    dealCalculationSave: projectDealCalculationSave(config, environment),
   };
   for (const [group, keys] of Object.entries(RUNTIME_GROUPS)) {
     const source = config[group as keyof GhlConfig] as Record<string, string>;
@@ -1599,7 +1690,9 @@ let RUNTIME: RuntimeConfig | null = null;
  * incomplete, which is what keeps main.tsx from importing App.
  */
 export function setRuntimeConfig(payload: unknown): RuntimeConfig {
-  const missing = firstIncompleteKey(runtimeEntries(payload)) ?? invalidRecovery((payload as Record<string, unknown> | null)?.propertyAnswerRecovery);
+  const missing = firstIncompleteKey(runtimeEntries(payload)) ?? invalidRecovery((payload as Record<string, unknown> | null)?.propertyAnswerRecovery)
+    ?? invalidSellerConversationSave((payload as Record<string, unknown> | null)?.sellerConversationSave)
+    ?? invalidDealCalculationSave((payload as Record<string, unknown> | null)?.dealCalculationSave);
   if (missing !== null) {
     throw new Error(
       `[ghl-config] runtime configuration is incomplete: ${missing} is ` +
