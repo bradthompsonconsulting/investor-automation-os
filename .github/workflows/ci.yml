@@ -397,6 +397,10 @@ jobs:
         run: node app/scripts/test-deal-calculation.cjs
       - name: Save Calculation to Deal / Load Saved Calculation, real page -- explicit save only, one note.create, stale save blocked, Load asks first, OFF branch, unchanged/double-click/unconfirmed guards, cross-deal isolation (B15-25 Phase 2 r2) — 38 checks
         run: node app/scripts/test-deal-calculation-save.cjs
+      # B15-25 r4 (INV-133, Bones ACCEPT 2026-11-05): no stale save after the visit ends; restored or typed figures stay
+      # unsaved, so Load asks; confirmed or reconciled saves mark only the figures sent. Real page and real panel, offline.
+      - name: Save Calculation to Deal r4 -- no stale save after an operator, deal or visit change; unsaved work stays unsaved, Load asks; real page and panel (B15-25 r4) — 25 checks
+        run: node app/scripts/test-b15-25-r4.cjs
       - name: Incomplete repairs read as provisional, never a green Meets; numbers unchanged, real page (INV-134 B15-26, INV-100 B15-01) — 55 checks
         run: node app/scripts/test-b15-26-provisional-repairs.cjs
       - name: Get Comps stays on one line and its reason wraps below at 640/480px; wide layout unchanged, real App (Pass 1 F44) — 26 checks
@@ -417,6 +421,28 @@ jobs:
       # (NB6-NB8: a live, unspent reservation for A's deal is refused on B, then writes A once; 23770f6).
       - name: Contact isolation and Production write scope, real pages (B14-12, B14-13) — 105 checks
         run: node app/scripts/test-contact-isolation.cjs
+
+      # B15-27 / B15-27b (Bones ACCEPT through r4 fedbd21 and the two-deal tests 677b364, 2026-11-05): a delayed result
+      # for one contact, deal or operator never lands on another; drafts are kept per record; an uncertain save stays
+      # uncertain. Real Contact and Seller Call pages, offline (scripts/harness/b15-27b, b15-27-cross-contact).
+      - name: Contact drafts store -- identity-keyed records, notices, storage failure (B15-27b P2) — 22 checks
+        run: node app/scripts/test-contact-drafts.cjs
+      - name: Cross-contact isolation, real pages -- a delayed result for contact A never changes contact B (B15-27) — 49 checks
+        run: node app/scripts/test-b15-27-cross-contact.cjs
+      - name: Per-contact saving state, real pages (B15-27b P1) — 25 checks
+        run: node app/scripts/test-b15-27b-pending.cjs
+      - name: Draft preservation per contact, deal and operator, real pages (B15-27b P2) — 50 checks
+        run: node app/scripts/test-b15-27b-drafts.cjs
+      - name: Seller Call -- recovery and note appends bound to their contact (B15-27b P3, P4) — 34 checks
+        run: node app/scripts/test-b15-27b-seller-call.cjs
+      - name: Notice isolation and deal-bound outcomes (B15-27b r2) — 23 checks
+        run: node app/scripts/test-b15-27b-r2.cjs
+      - name: Reconciliation bound to the exact contact; call-log operator bound before the reservation (B15-27b r3) — 13 checks
+        run: node app/scripts/test-b15-27b-r3.cjs
+      - name: No reconciliation of an uncertain note by an identical note (B15-27b r4) — 15 checks
+        run: node app/scripts/test-b15-27b-r4.cjs
+      - name: Same-contact two-deal isolation -- above-Max override and readiness retry (B15-27b) — 27 checks
+        run: node app/scripts/test-b15-27b-two-deal.cjs
 
       # B15-04 C1-C4 r4: draft recovery, stored operation authority, wording and fresh-load non-bypass (real handler, offline).
       - name: Property answers recovery and authority, server (B15-04 C1-C4) - 21 cases
