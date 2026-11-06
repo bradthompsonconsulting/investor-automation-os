@@ -164,6 +164,19 @@ function relativeTime(iso: string): string {
 
 // formatCallbackTime is the shared formatter, imported from ../lib/callbackWrite.
 
+/* R1 (Captain walkthrough): in every Dashboard list an IDENTIFIABLE contact's name opens that contact's
+   workspace -- the same pure navigation as the Lead Queue name link (writes nothing; stopPropagation so a row's
+   own control never fires). A row with no contact id keeps the plain name: nothing is guessed. */
+function ContactLink({ id, children }: { id: string | null | undefined; children: React.ReactNode }) {
+  if (!id) return <>{children}</>;
+  return (
+    <Link to={`/contacts/${encodeURIComponent(id)}`} onClick={(e) => e.stopPropagation()} title="Open workspace"
+      data-testid="dashboard-contact-link" data-contact-id={id} style={{ color: "inherit", textDecoration: "none" }}>
+      {children}
+    </Link>
+  );
+}
+
 function TierBadge({ tier }: { tier: BucketTag }) {
   const color = TIER_COLOR[tier];
   const Icon = TIER_ICON[tier];
@@ -984,7 +997,7 @@ export default function Dashboard() {
             <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
               {tasksDueToday.map((r) => (
                 <div key={r.taskId} style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "12px" }}>
-                  <span style={{ color: "#F1F5F9", fontWeight: 500, minWidth: "140px" }}>{r.contactName || UNNAMED_CONTACT}</span>
+                  <span style={{ color: "#F1F5F9", fontWeight: 500, minWidth: "140px" }}><ContactLink id={r.contactId}>{r.contactName || UNNAMED_CONTACT}</ContactLink></span>
                   <span style={{ color: "#64748B" }}>{r.address || "—"}</span>
                   <span style={{ marginLeft: "auto", color: "#475569" }}>{r.tier[0].toUpperCase()}{r.tier.slice(1)} · {r.mailerType} · Touch {r.touchNumber}</span>
                 </div>
@@ -1006,7 +1019,7 @@ export default function Dashboard() {
             <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
               {offersToReview.map((c) => (
                 <div key={c.id} style={{ display: "flex", alignItems: "center", gap: "10px", fontSize: "12px" }}>
-                  <span style={{ color: "#F1F5F9", fontWeight: 500, minWidth: "140px" }}>{contactName(c)}</span>
+                  <span style={{ color: "#F1F5F9", fontWeight: 500, minWidth: "140px" }}><ContactLink id={c.id}>{contactName(c)}</ContactLink></span>
                   <span style={{ color: "#64748B" }}>{formatAddress(c)}</span>
                   <TierBadge tier={getBucketTag(c)} />
                 </div>
@@ -1041,7 +1054,7 @@ export default function Dashboard() {
                 <Card key={r.conversationId} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
                   <Inbox size={15} style={{ color: "#F59E0B", flexShrink: 0 }} />
                   <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>
-                    {displayContactName(r.contactName)}
+                    <ContactLink id={r.contactId}>{displayContactName(r.contactName)}</ContactLink>
                   </span>
                   <span style={{ fontSize: "12px", color: "#64748B", whiteSpace: "nowrap" }}>
                     {formatPhone(r.phone) || r.email || "—"}
@@ -1075,7 +1088,7 @@ export default function Dashboard() {
             {callbacks.overdue.map(({ contact: c, cb }) => (
               <Card key={c.id} tone="warn" style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
                 <CalendarClock size={15} style={{ color: "#F87171", flexShrink: 0 }} />
-                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>{contactName(c)}</span>
+                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}><ContactLink id={c.id}>{contactName(c)}</ContactLink></span>
                 <span style={{ fontSize: "12px", color: "#64748B" }}>{formatPhone(c.phone) || "—"}</span>
                 <span style={{
                   fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
@@ -1107,7 +1120,7 @@ export default function Dashboard() {
             {callbacks.dueToday.map(({ contact: c, cb }) => (
               <Card key={c.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
                 <CalendarClock size={15} style={{ color: "#1EC8FF", flexShrink: 0 }} />
-                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>{contactName(c)}</span>
+                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}><ContactLink id={c.id}>{contactName(c)}</ContactLink></span>
                 <span style={{ fontSize: "12px", color: "#64748B" }}>{formatPhone(c.phone) || "—"}</span>
                 <span style={{
                   fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
@@ -1155,7 +1168,7 @@ export default function Dashboard() {
             {needsNextStepRows.map(({ contact: c, result, attempt }) => (
               <Card key={c.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
                 <PhoneCall size={15} style={{ color: "#FBBF24", flexShrink: 0 }} />
-                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>{contactName(c)}</span>
+                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}><ContactLink id={c.id}>{contactName(c)}</ContactLink></span>
                 <span style={{ fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px", background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", color: "#FBBF24" }}>{result}</span>
                 <span style={{ fontSize: "12px", color: "#64748B" }}>{attempt ? `Last touch ${relativeTime(attempt)}` : "No touch recorded"}</span>
                 <Link to={`/contacts/${c.id}`} title="Set a callback or log the next call"
@@ -1186,7 +1199,7 @@ export default function Dashboard() {
             {followUpRows.map(({ contact: c, attempt }) => (
               <Card key={c.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
                 <PhoneCall size={15} style={{ color: "#1EC8FF", flexShrink: 0 }} />
-                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}>{contactName(c)}</span>
+                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "150px" }}><ContactLink id={c.id}>{contactName(c)}</ContactLink></span>
                 <span style={{ fontSize: "12px", color: "#64748B" }}>{formatPhone(c.phone) || "—"}</span>
                 <span style={{ fontSize: "12px", color: attempt ? "#F59E0B" : "#334155" }}>
                   {attempt ? `Attempted ${relativeTime(attempt)}` : "Not yet contacted"}
@@ -1249,7 +1262,7 @@ export default function Dashboard() {
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
             {offersAwaiting.map(({ opportunity, contact }) => (
               <Card key={opportunity.id} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "10px 16px" }}>
-                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "160px" }}>{contactName(contact)}</span>
+                <span style={{ fontSize: "13px", fontWeight: 500, color: "#F1F5F9", minWidth: "160px" }}><ContactLink id={contact.id}>{contactName(contact)}</ContactLink></span>
                 <span style={{ fontSize: "12px", color: "#64748B" }}>{formatAddress(contact)}</span>
                 <span style={{
                   marginLeft: "auto", fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
