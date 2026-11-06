@@ -10,6 +10,7 @@ import { InboundPreview } from "../components/InboundPreview";
 import { latestInboundFrom } from "../../shared/inbound-message";
 import { splitMessageLinks } from "../lib/message-links";
 import { NoteBody } from "../components/NoteBody";
+import { MessageStatusTag, MessageFailureDetail } from "../components/MessageStatusTag";
 import { conversationPropertyLine, type ConversationContactRead } from "../lib/conversation-property";
 
 /**
@@ -134,7 +135,7 @@ function MessageBubble({ m }: { m: ConvMessageRow }) {
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: "#475569", marginBottom: "4px" }}>
         {isSms ? <MessageSquare size={11} /> : <Mail size={11} />}
-        <span style={{ fontWeight: 600, color: outbound ? "#1EC8FF" : "#94A3B8" }}>{outbound ? "Sent" : "Received"}</span>
+        <MessageStatusTag m={m} />   {/* F5: GHL's own delivery status; direction alone proves nothing */}
         <span>· {m.channel}</span>
         <span>· {formatDate(m.dateAdded)}</span>
       </div>
@@ -143,6 +144,7 @@ function MessageBubble({ m }: { m: ConvMessageRow }) {
           ? (isSms ? m.body : <EmailBody body={m.body} />)
           : <span style={{ color: "#475569", fontStyle: "italic" }}>({m.channel.toLowerCase()}, no text)</span>}
       </div>
+      <MessageFailureDetail m={m} />
       {collapsible && overflowing && (
         <button
           onClick={() => setExpanded((v) => !v)}

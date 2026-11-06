@@ -44,6 +44,7 @@ import { getRuntimeConfig } from "../../shared/ghl-config";
 import { CONTACT_ARV_SEED_NOTE } from "../lib/authoritative-figures";
 import { draftOperator, isUncertainFailure, useRecordDraft } from "../lib/contact-drafts";
 import { DraftNotice } from "../components/DraftNotice";
+import { MessageStatusTag, MessageFailureDetail } from "../components/MessageStatusTag";
 
 /**
  * Contact Workspace — docs/CONTACT_WORKSPACE_SPEC_v2.md §8 steps 1-3.
@@ -1152,13 +1153,14 @@ function ConversationBubble({ m }: { m: ConvMessageRow }) {
     >
       <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: "#475569", marginBottom: "4px" }}>
         {outbound ? <ArrowUpRight size={11} style={{ color: "#1EC8FF" }} /> : <ArrowDownLeft size={11} style={{ color: "#64748B" }} />}
-        <span style={{ fontWeight: 600, color: outbound ? "#1EC8FF" : "#94A3B8" }}>{outbound ? "Sent" : "Received"}</span>
+        <MessageStatusTag m={m} />   {/* F5: GHL's own delivery status; direction alone proves nothing */}
         <span>· {m.channel}</span>
         <span>· {formatNoteDate(m.dateAdded)}</span>
       </div>
       <div ref={bodyRef} style={bodyStyle}>
         {m.body || <span style={{ color: "#475569", fontStyle: "italic" }}>({m.channel.toLowerCase()}, no text)</span>}
       </div>
+      <MessageFailureDetail m={m} />
       {collapsible && overflowing && (
         <button
           onClick={() => setExpanded((v) => !v)}
