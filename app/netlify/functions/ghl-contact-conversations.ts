@@ -56,6 +56,10 @@ export interface ConvMessageRow {
   body:           string;
   /** B15-08 (r2): GHL's own body format (e.g. HTML for an email), so a preview converts HTML only where it is established. */
   contentType:    string;
+  /** F5: GHL's own delivery status (lower-cased; "" when GHL sent none -- never assumed). */
+  status:         string;
+  /** F5: GHL's "Error message if message delivery failed" (trimmed, at most 300 characters; "" when none). */
+  error:          string;
   dateAdded:      string;           // ISO
 }
 
@@ -140,6 +144,8 @@ export const handler = async (event: any) => {
           messageType:    String(m.messageType ?? m.type ?? ""),
           body:           String(m.body ?? "").trim(),
           contentType:    String(m.contentType ?? ""),
+          status:         typeof m.status === "string" ? m.status.trim().toLowerCase() : "",
+          error:          typeof m.error === "string" ? m.error.trim().slice(0, 300) : "",
           dateAdded:      m.dateAdded ?? "",
         });
       }
