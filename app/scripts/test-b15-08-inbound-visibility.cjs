@@ -325,7 +325,7 @@ async function main() {
   const fn = src('netlify/functions/ghl-conversations.ts'); const dash = src('src/pages/Dashboard.tsx'); const cv = src('src/pages/Conversations.tsx');
   check('X1 one shared classifier (server + thread) and one display (Dashboard + thread); the F51 fallback literal is kept',
     /from "\.\.\/\.\.\/shared\/inbound-message"/.test(fn) && /latestInboundFrom\(messages, \{ contactId: selected\.contactId, conversationId: selected\.conversationId \}\)/.test(cv) &&
-    /<InboundPreview li=\{r\.latestInbound\}/.test(dash) && /<InboundPreview li=\{latestInboundFrom/.test(cv) && /\{r\.preview \|\| <em[^>]*>\{NO_MESSAGE_TEXT\}<\/em>\}/.test(dash));
+    /<InboundPreview li=\{r\.latestInbound\}/.test(dash) && (/<InboundPreview li=\{latestInboundFrom/.test(cv) || (/const li = latestInboundFrom\(messages, \{ contactId: selected\.contactId, conversationId: selected\.conversationId \}\);/.test(cv) && /<InboundPreview li=\{li\}/.test(cv))) && /\{r\.preview \|\| <em[^>]*>\{NO_MESSAGE_TEXT\}<\/em>\}/.test(dash));
   check('X2 ghl-conversations stays read-only and keeps its rule: no write method, no search type field, same inbound filter and oldest-first sort',
     /c\.lastMessageDirection === "inbound" && !c\.isLastMessageInternalComment/.test(fn) && /\.sort\(\(a, b\) => a\.lastMessageDate - b\.lastMessageDate\)/.test(fn) &&
     !/method:\s*"(POST|PUT|PATCH|DELETE)"/.test(fn) && !/lastMessageType/.test(fn) && /LATEST_INBOUND_CAP = 25/.test(fn));

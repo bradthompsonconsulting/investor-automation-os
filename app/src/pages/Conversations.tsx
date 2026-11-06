@@ -449,12 +449,22 @@ export default function Conversations() {
                 {/* B15-08: the same "latest inbound" the Dashboard shows, from this contact's full transcript (calls included),
                     so a call or an email without text is named here too. Only once the messages loaded without error.
                     Bones P2-3 (r2): scoped to the SELECTED conversation as well as the contact, as the Dashboard row is. */}
-                {messages !== null && !messagesError ? (
-                  <div data-testid="thread-latest-inbound" style={{ fontSize: "12px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
-                    <span style={{ color: "#64748B", whiteSpace: "nowrap" }}>Latest from seller:</span>
-                    <InboundPreview li={latestInboundFrom(messages, { contactId: selected.contactId, conversationId: selected.conversationId })} testId="thread-latest-inbound-preview" />
-                  </div>
-                ) : null}
+                {/* F1 (Captain walkthrough): three states, never confused. Loading and a failed read are shown as such;
+                    once the messages loaded, the strip appears only when this thread holds an inbound message (a
+                    thread with none -- reason "not_found" -- shows no "Latest from seller" at all). */}
+                {(() => {
+                  const strip = (state: string, preview: React.ReactNode) => (
+                    <div data-testid="thread-latest-inbound" data-state={state} style={{ fontSize: "12px", color: "#94A3B8", display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
+                      <span style={{ color: "#64748B", whiteSpace: "nowrap" }}>Latest from seller:</span>
+                      {preview}
+                    </div>
+                  );
+                  if (messagesError) return strip("read-failed", <InboundPreview li={{ state: "unavailable", reason: "read_failed", channel: null, at: null }} testId="thread-latest-inbound-preview" />);
+                  if (messages === null) return strip("loading", <em data-testid="thread-latest-inbound-loading" style={{ color: "#64748B" }}>Loading…</em>);
+                  const li = latestInboundFrom(messages, { contactId: selected.contactId, conversationId: selected.conversationId });
+                  if (li.state === "unavailable" && li.reason === "not_found") return null;
+                  return strip("loaded", <InboundPreview li={li} testId="thread-latest-inbound-preview" />);
+                })()}
                 {/* Top row — Notes (left) | Text (right), §8.2. §8.3: 60% pane height (Email fills the rest). */}
                 <div style={{ display: "flex", gap: "12px", flex: "0 0 60%", minHeight: 0 }}>
                   <ThreadSection
