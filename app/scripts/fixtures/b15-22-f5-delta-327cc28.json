@@ -1,0 +1,13 @@
+{
+  "_comment": "B15-22 S8 F5 R2 amendment (test-only). The ORIGINAL manifest and the combined-integration and Release 15-A amendments are kept unchanged. This file lists ONLY the one protected adapter F5 R2 changes; S8 applies it only when its `from` is exactly the Release 15-A amendment's `to`, and S8c pins this list.",
+  "candidate": "327cc2847089bb56c849fe1896387bb5d10e081c",
+  "chainedFrom": "b15-22-release-15a-delta-59be788.json",
+  "review": "Bones ACCEPT F5 R2 2026-11-06 (audit-evidence/targeted-r2-review-20261106/00_F5_R2_ACCEPT.txt; INTEGRATION: add a narrowly reviewed F5 manifest amendment from the accepted Release 15-A hash to the corrected adapter bytes; walkthrough-review-20261106/60_COMPATIBILITY.txt item 3)",
+  "changes": {
+    "netlify/functions/ghl-contact-conversations.ts": {
+      "from": "7e6c4624cc82f9c806cf151b91f6ee9c45481873a161ec94939f5c8a95e6ba92",
+      "to": "8c48aaf74f4c63b6e45b12e2d73ebbfecea0ba6b22ff04f9283c9e2c8ef4070e",
+      "reason": "F5 R2 327cc28 (Bones ACCEPT): the per-contact conversation read projects each message's delivery status/error fields for the truthful outbound status label (read endpoint; no write)."
+    }
+  }
+}
