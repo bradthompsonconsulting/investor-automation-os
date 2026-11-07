@@ -38,7 +38,7 @@ const TMP = path.join(APP, '.tmp-b15-22-authoritative-test');
 const esbuild = require(path.join(APP, 'node_modules', '.pnpm', 'esbuild@0.25.12', 'node_modules', 'esbuild'));
 
 /** Literal check() call-site count in this file. */
-const FLOOR = 98;   // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta)
+const FLOOR = 99;   // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta)
 let checks = 0; let failures = 0;
 function check(name, actual, expected) {
   checks += 1;
@@ -373,10 +373,25 @@ check('S7 the label is backed by the resolver: Opportunity ARV first, Contact on
   check('S8b the Release 15-A delta is exactly its three reviewed changes and one addition, each from its original pin',
     [Object.keys(R15A.changes || {}).sort(), Object.keys(R15A.additions || {}).sort(), r15aProblems],
     [['netlify/functions/ghl-contact-conversations.ts', 'netlify/functions/ghl-conversations.ts', 'src/lib/ghl.ts'], ['shared/inbound-message.ts'], []]);
+  /* Integration 15-C (Jeff, Release Track): F5 R2 (Bones ACCEPT 2026-11-06) changes ONE protected adapter further,
+     netlify/functions/ghl-contact-conversations.ts. Listed, with its reason, in b15-22-f5-delta-327cc28.json. The
+     entry is CHAINED: it applies only when its `from` is exactly the Release 15-A amendment's `to` (never the original
+     pin, and never a file outside that amendment); the original manifest and both earlier amendments are unchanged. */
+  const F5 = JSON.parse(fs.readFileSync(path.join(APP, 'scripts', 'fixtures', 'b15-22-f5-delta-327cc28.json'), 'utf8'));
+  const f5Problems = [];
+  for (const [rel, c] of Object.entries(F5.changes || {})) {
+    const prior = (R15A.changes || {})[rel];
+    if (!prior) f5Problems.push(`not in the Release 15-A amendment: ${rel}`);
+    else if (!c || c.from !== prior.to || expected[rel] !== prior.to || typeof c.to !== 'string' || c.to === c.from) f5Problems.push(`not a reviewed change from the Release 15-A bytes: ${rel}`);
+    else expected[rel] = c.to;
+  }
+  check('S8c the F5 R2 delta is exactly its one reviewed adapter change, chained from the Release 15-A bytes',
+    [Object.keys(F5.changes || {}).sort(), Object.keys(F5.additions || {}).length, f5Problems],
+    [['netlify/functions/ghl-contact-conversations.ts'], 0, []]);
   const drift = [];
   for (const rel of seen) { if (!(rel in expected)) drift.push(`added ${rel}`); else if (hashOf(rel) !== expected[rel]) drift.push(`changed ${rel}`); }
   for (const rel of Object.keys(expected)) if (!seen.includes(rel)) drift.push(`removed ${rel}`);
-  check('S8 write paths, engines, ledger formats, functions and config unchanged vs base, except the reviewed combined-integration and Release 15-A deltas (SHA-256 manifest of every protected file)',
+  check('S8 write paths, engines, ledger formats, functions and config unchanged vs base, except the reviewed combined-integration, Release 15-A and F5 R2 deltas (SHA-256 manifest of every protected file)',
     Object.keys(PINS.protected).length > 50 ? drift : 'manifest too small', []);
 }
 

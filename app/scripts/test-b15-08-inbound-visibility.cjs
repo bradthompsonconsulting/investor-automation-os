@@ -306,7 +306,14 @@ async function main() {
     await dc.close();
     const { context: cc, page: c } = await open('/conversations');
     await c.getByText('Fixture UB', { exact: false }).first().click({ timeout: 15000 }).catch(() => {});
-    const tl = await waitText(c, '[data-testid="thread-latest-inbound"]');
+    /* Release 15-C (GitHub CI 0ca4c6c, step 75): F1 (Bones ACCEPT) gave the strip an explicit loading state inside it
+       ("Latest from seller: Loading…", thread-latest-inbound-loading). waitText returns on ANY text, so R5 could sample
+       that loading state. Wait for the settled strip -- text present and no loading child -- then assert as before. */
+    let tl = null;
+    { const t0 = Date.now(); while (Date.now() - t0 < 15000) {
+      tl = await c.evaluate(() => { const e = document.querySelector('[data-testid="thread-latest-inbound"]');
+        return e && !e.querySelector('[data-testid="thread-latest-inbound-loading"]') ? e.innerText : null; }).catch(() => null);
+      if (tl) break; await c.waitForTimeout(100); } }
     check('R5 Conversations thread names the latest inbound like the Dashboard ("Inbound call — no message text"), not the older SMS, and never another contact\'s message',
       !!tl && /Latest from seller:/.test(tl) && /Inbound call — no message text/.test(tl) && !/NOT UB/.test(tl) && !/Earlier text from UB/.test(tl), tl);
     // r2 (Bones P2-3): one contact, two conversations -- the strip follows the SELECTED conversation, and a switch updates it.
@@ -325,7 +332,7 @@ async function main() {
   const fn = src('netlify/functions/ghl-conversations.ts'); const dash = src('src/pages/Dashboard.tsx'); const cv = src('src/pages/Conversations.tsx');
   check('X1 one shared classifier (server + thread) and one display (Dashboard + thread); the F51 fallback literal is kept',
     /from "\.\.\/\.\.\/shared\/inbound-message"/.test(fn) && /latestInboundFrom\(messages, \{ contactId: selected\.contactId, conversationId: selected\.conversationId \}\)/.test(cv) &&
-    /<InboundPreview li=\{r\.latestInbound\}/.test(dash) && /<InboundPreview li=\{latestInboundFrom/.test(cv) && /\{r\.preview \|\| <em[^>]*>\{NO_MESSAGE_TEXT\}<\/em>\}/.test(dash));
+    /<InboundPreview li=\{r\.latestInbound\}/.test(dash) && (/<InboundPreview li=\{latestInboundFrom/.test(cv) || (/const li = latestInboundFrom\(messages, \{ contactId: selected\.contactId, conversationId: selected\.conversationId \}\);/.test(cv) && /<InboundPreview li=\{li\}/.test(cv))) && /\{r\.preview \|\| <em[^>]*>\{NO_MESSAGE_TEXT\}<\/em>\}/.test(dash));
   check('X2 ghl-conversations stays read-only and keeps its rule: no write method, no search type field, same inbound filter and oldest-first sort',
     /c\.lastMessageDirection === "inbound" && !c\.isLastMessageInternalComment/.test(fn) && /\.sort\(\(a, b\) => a\.lastMessageDate - b\.lastMessageDate\)/.test(fn) &&
     !/method:\s*"(POST|PUT|PATCH|DELETE)"/.test(fn) && !/lastMessageType/.test(fn) && /LATEST_INBOUND_CAP = 25/.test(fn));

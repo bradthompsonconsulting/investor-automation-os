@@ -109,10 +109,12 @@ const get = () => mod.handler({ httpMethod: 'GET', queryStringParameters: { star
     /throw Object\.assign\(new Error\(`ghl-calendar-events → \$\{res\.status\}: \$\{text\}`\), \{ code \}\)/.test(client), true);
   check('page recognises the access-denied code', /e\.code === "ghl_calendar_access_denied"/.test(page), true);
   check('page no longer prints the raw error as the message', /Failed to load appointments: \{error\}/.test(page), false);
-  check('page explains a permission refusal in operator words',
-    page.includes("Appointments can't be shown here: GHL refused IAOS access to calendars for this account."), true);
-  check('page keeps the raw text only as collapsed technical detail',
-    /<summary[^>]*>Technical detail<\/summary>[\s\S]{0,200}\{error\.detail\}/.test(page), true);
+  /* R3 (Captain decision 2026-11-06): a failed read shows only "Open Calendars in GHL"; the access-denied code is still
+     recognised above (classification), but no headline or raw text is shown on the page. */
+  check('R3 the failure card is only the GHL link (no permission headline on the page)',
+    page.includes('data-testid="calendar-open-in-ghl"') && !page.includes("GHL refused IAOS access to calendars for this account."), true);
+  check('R3 no raw GHL text or "Technical detail" disclosure on the page',
+    /Technical detail/.test(page) || /\{error\.detail\}/.test(page), false);
 
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log(`\nB15-07 calendar unavailable state: ${checks - failures}/${checks} checks passed`);

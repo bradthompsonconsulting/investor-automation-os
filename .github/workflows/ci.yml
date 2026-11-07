@@ -391,6 +391,8 @@ jobs:
         run: node app/scripts/test-conversation-property-styled.cjs
       - name: /map and /settings redirect to the Dashboard inside the read gate, real App (B15-18)
         run: node app/scripts/test-b15-18-map-settings-redirect.cjs
+      - name: A contact with no deal shows "No deal yet" and the GHL next step on all four deal pages, incl. Contract Workspace, real App (INV-109, B15-10) — 9 checks
+        run: node app/scripts/test-b15-10-no-deal.cjs
       - name: Deal Calculator itemized repairs, both Clears and transfer-once, real page (INV-100, B15-01)
         run: node app/scripts/test-deal-calculator-interaction.cjs
       - name: Deal Calculator browser drafts -- per operator and deal, blanks kept, no derived value stored (B15-25 Phase 1, INV-133)
@@ -453,6 +455,18 @@ jobs:
         run: node app/scripts/test-b15-27b-r4.cjs
       - name: Same-contact two-deal isolation -- above-Max override and readiness retry (B15-27b) — 27 checks
         run: node app/scripts/test-b15-27b-two-deal.cjs
+      # Integration 15-C (Captain walkthrough 2026-11-05 corrections; each Bones ACCEPT 2026-11-06). Each suite starts its own
+      # Vite server on port 0 with its own fixture; all run after the Chromium install above.
+      - name: Truthful outbound message status in Conversations and the Contact Workspace (F5 R2) — 38 checks
+        run: node app/scripts/test-f5-message-status.cjs
+      - name: Latest from seller hidden when a thread has no inbound message (F1) — 8 checks
+        run: node app/scripts/test-f1-latest-inbound.cjs
+      - name: Every identifiable Dashboard contact opens its workspace (R1) — 12 checks
+        run: node app/scripts/test-r1-dashboard-contact-links.cjs
+      - name: Every identifiable Mailers contact opens its workspace (R2) — 7 checks
+        run: node app/scripts/test-r2-mailers-contact-links.cjs
+      - name: Unscored contacts show Not scored, counts and order unchanged (B15-16 R2) — 14 checks
+        run: node app/scripts/test-b15-16-not-scored.cjs
 
       # B15-04 C1-C4 r4: draft recovery, stored operation authority, wording and fresh-load non-bypass (real handler, offline).
       - name: Property answers recovery and authority, server (B15-04 C1-C4) - 21 cases

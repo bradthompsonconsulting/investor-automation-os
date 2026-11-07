@@ -180,14 +180,15 @@ async function main() {
     // R8: a failed REFRESH keeps the last good read, labelled, and drops "Updated"
     answers = [{ status: 500, body: { error: 'GET /calendars/events → 503: upstream' } }];
     await page.getByTestId('calendar-refresh').click().catch(() => {});
-    const stale = await text(page, '[data-testid="calendar-stale"]', /out of date/);
+    // R3 (Captain decision 2026-11-06): a failed refresh shows ONLY "Open Calendars in GHL" -- no stale list, so nothing earlier is shown as current.
+    const card8 = await text(page, '[data-testid="calendar-unavailable"]', /Open Calendars in GHL/);
     const b8 = await bodyText(page);
-    check('R8 failed refresh: the error is shown AND the last successful read stays visible, labelled "may be out of date" (not current: no "Updated")',
-      !!stale && /Showing the last successful read from .+\. It may be out of date\./.test(stale) && /Seller call — Fixture A/.test(stale) &&
-      /Appointments couldn.t be loaded from GHL right now\./.test(b8) && !(await page.getByTestId('calendar-updated').count().catch(() => 1)), stale);
+    check('R8 failed refresh (R3): only "Open Calendars in GHL" -- no last-read list, the earlier appointment is not shown, no "Updated", no header duplicate',
+      !!card8 && card8.trim() === 'Open Calendars in GHL' && !(await page.getByTestId('calendar-stale').count().catch(() => 1)) && !/Seller call — Fixture A/.test(b8) &&
+      !(await page.getByTestId('calendar-updated').count().catch(() => 1)) && !(await page.getByTestId('calendars-header-ghl').count().catch(() => 1)), [card8, b8.slice(0, 200)]);
     // R9: the handoff is navigation only (captured, not sent), from the header
     const before = handoffs.length;
-    await page.getByTestId('calendars-header-ghl').click().catch(() => {});
+    await page.getByTestId('calendar-open-in-ghl').click().catch(() => {});   // R3: on a failed read the card holds the one link
     { const t0 = Date.now(); while (handoffs.length === before && Date.now() - t0 < 8000) await page.waitForTimeout(100); }
     check('R9 handoff: "Open Calendars in GHL" opens GHL Calendars for this location in a new tab (captured, not sent)', handoffs.length > before && handoffs[handoffs.length - 1].includes(`/v2/location/${TEST_LOCATION}/calendars/view`), handoffs.slice(-1));
     await context.close();
@@ -205,26 +206,27 @@ async function main() {
     // R5 access denied (GHL scope)
     answers = [{ status: 502, body: { code: 'ghl_calendar_access_denied', error: 'GET /calendars/events → 401: {"message":"The token is not authorized for this scope."}' } }];
     ({ context, page } = await open());
-    const c5 = await text(page, '[data-testid="calendar-unavailable"]', /GHL refused/);
+    const c5 = await text(page, '[data-testid="calendar-unavailable"][data-kind="access_denied"]', /Open Calendars in GHL/);
     const b5 = await bodyText(page);
-    check('R5 GHL scope refusal: the accepted access-denied explanation + the GHL link; no "Try again", never "No upcoming appointments"',
-      !!c5 && /GHL refused IAOS access to calendars for this account\./.test(c5) && /Open Calendars in GHL/.test(c5) && !/Try again/.test(c5) && !/No upcoming appointments/.test(b5), c5);
+    check('R5 GHL scope refusal (R3): classified access_denied; the card is only "Open Calendars in GHL"; no Try again; never "No upcoming appointments"',
+      !!c5 && c5.trim() === 'Open Calendars in GHL' && !/Try again/.test(b5) && !/No upcoming appointments/.test(b5), c5);
     await context.close();
-    // R6 temporary failure, then Try again succeeds
+    // R6 temporary failure (R3: the card is only the GHL link), then the header Refresh succeeds
     answers = [{ status: 500, body: { error: 'GET /calendars/events → 429: Too many requests' } }, OK([EV('r1', 'Seller call — Retried', 1)])];
     ({ context, page } = await open());
-    const c6 = await text(page, '[data-testid="calendar-unavailable"]', /couldn.t be loaded/);
-    await page.getByTestId('calendar-retry').click().catch(() => {});
+    const c6 = await text(page, '[data-testid="calendar-unavailable"][data-kind="temporary"]', /Open Calendars in GHL/);
+    await page.getByTestId('calendar-refresh').click().catch(() => {});
     const after6 = await text(page, 'body', /Seller call — Retried/);
-    check('R6 temporary failure: "couldn\'t be loaded from GHL right now" with Try again; trying again reads afresh and shows the appointments',
-      !!c6 && /Try again/.test(c6) && !!after6 && /Seller call — Retried/.test(after6) && !(await page.getByTestId('calendar-unavailable').count().catch(() => 1)), [c6, (after6 || '').slice(0, 120)]);
+    check('R6 temporary failure (R3): classified temporary; the card is only "Open Calendars in GHL"; Refresh reads afresh and shows the appointments',
+      !!c6 && c6.trim() === 'Open Calendars in GHL' && !!after6 && /Seller call — Retried/.test(after6) && !(await page.getByTestId('calendar-unavailable').count().catch(() => 1)), [c6, (after6 || '').slice(0, 120)]);
     await context.close();
     // R7 IAOS read sign-in lapsed (the boundary's marker): named as sign-in, not blamed on GHL
     answers = [{ status: 401, body: { error: 'Read sign-in required.', by: 'iaos-app-read-auth' } }];
     ({ context, page } = await open());
-    const c7 = await text(page, '[data-testid="calendar-unavailable"]', /sign in/);
-    check('R7 IAOS read sign-in lapse: "can\'t be shown until you sign in to IAOS again" -- not "couldn\'t be loaded from GHL", not "GHL refused"',
-      !!c7 && /sign in to IAOS again/.test(c7) && !/couldn.t be loaded from GHL|GHL refused/.test(c7), c7);
+    const c7 = await text(page, '[data-testid="calendar-unavailable"][data-kind="sign_in"]', /Open Calendars in GHL/);
+    const b7 = await bodyText(page);
+    check('R7 IAOS read sign-in lapse (R3): classified sign_in (not blamed on GHL); the card is only "Open Calendars in GHL"; never "No upcoming appointments"',
+      !!c7 && c7.trim() === 'Open Calendars in GHL' && !/couldn.t be loaded from GHL|GHL refused/.test(b7) && !/No upcoming appointments/.test(b7), c7);
     await context.close();
     check('R10 reads only (GET) for every request in the rendered runs; nothing left the machine except captured GHL hand-offs; no page errors',
       methods.every((m) => m === 'GET') && foreign.length === 0 && pageErrors.length === 0, { methods: [...new Set(methods)], foreign, pageErrors });
@@ -273,13 +275,13 @@ async function main() {
     check('C1 a new read context (session B) never shows session A\'s appointments while its own read is pending',
       !!a0 && new RegExp(A_TITLE).test(a0) && !new RegExp(A_TITLE).test(pending), [a0 && a0.slice(0, 80), pending.slice(0, 160)]);
     g1.release();
-    const failed = await text(cp, '[data-testid="calendar-unavailable"]', /couldn.t be loaded/);
+    const failed = await text(cp, '[data-testid="calendar-unavailable"]', /Open Calendars in GHL/);
     const afterFail = await ctxBody();
     check('C2 when session B\'s read FAILS, session A\'s appointments are not offered as a stale list (no calendar-stale, no A title)',
       !!failed && !new RegExp(A_TITLE).test(afterFail) && !(await cp.getByTestId('calendar-stale').count().catch(() => 1)), afterFail.slice(0, 200));
     // Context 1: a Refresh whose answer is HELD; context 2 starts and reads fresh; then the old context's answer arrives late.
     ctxAnswers.push(OK([EV('b', B_TITLE, 2)]));
-    await cp.getByTestId('calendar-retry').click().catch(() => {});
+    await cp.getByTestId('calendar-refresh').click().catch(() => {});   // R3: Refresh (header) replaces the card's Try again
     await text(cp, '[data-testid="ctx-page"]', new RegExp(B_TITLE));
     const g2 = gate(); ctxAnswers.push({ ...OK([EV('late', LATE_TITLE, 3)]), hold: g2.hold });
     await cp.getByTestId('calendar-refresh').click().catch(() => {});
@@ -350,14 +352,14 @@ async function main() {
     check('RS1 real App: after session A expires and session B signs in (real popup message), NO commit or painted frame shows A\'s appointment while B\'s read is pending',
       !!ra && !!card && !!popup && leakDuringPending === 0 && !new RegExp(A_TITLE).test(pendingBody), { popup: !!popup, leakDuringPending, body: pendingBody.slice(0, 160) });
     releaseB();
-    await text(rp, '[data-testid="calendar-unavailable"]', /couldn.t be loaded/);
+    await text(rp, '[data-testid="calendar-unavailable"]', /Open Calendars in GHL/);
     await rp.waitForTimeout(300);
     const leakAfterFail = await rp.evaluate(() => window.__leak).catch(() => -1);
     const failBody = await bodyText(rp);
     check('RS2 real App: B\'s read fails -> the failure is shown and A\'s appointment is still never painted (no stale list from another session)',
       leakAfterFail === 0 && !new RegExp(A_TITLE).test(failBody) && !(await rp.getByTestId('calendar-stale').count().catch(() => 1)), { leakAfterFail, body: failBody.slice(0, 200) });
     rsAnswers.push(OK([EV('b', B_TITLE, 2)]));
-    await rp.getByTestId('calendar-retry').click().catch(() => {});
+    await rp.getByTestId('calendar-refresh').click().catch(() => {});   // R3: Refresh (header) replaces the card's Try again
     const bb = await text(rp, 'body', new RegExp(B_TITLE));
     const leakEnd = await rp.evaluate(() => { cancelAnimationFrame(window.__leakRaf); window.__leakObserver.disconnect(); return window.__leak; }).catch(() => -1);
     check('RS3 real App: B\'s own successful read replaces it (B shown, A never painted in the new session)', !!bb && new RegExp(B_TITLE).test(bb) && !new RegExp(A_TITLE).test(bb) && leakEnd === 0, { leakEnd });

@@ -138,10 +138,13 @@ const D6 = [deal('c1', 'st-new'), deal('c1', 'st-sent'), deal('c2', 'st-new'), d
   check('8 Dashboard stage pills come from stageAccounting', dash.includes('stageAccounting(pipeline.stages, pipeline.opportunities)') && dash.includes('const stageCounts = stageAcct?.stages ?? [];'), true);
   check('8 Dashboard shows the other-stage pill only when needed', /stageAcct && stageAcct\.otherStage > 0 && \(/.test(dash) && dash.includes('Other stage {stageAcct.otherStage}'), true);
   check('8 Dashboard labels the stage half of the strip', dash.includes('>Deals by stage<'), true);
-  check('8 Dashboard notes untagged Low and deal coverage', dash.includes('Low includes ${untaggedLow.toLocaleString()} with no temperature tag') && dash.includes('{dealCoverageText(coverage)}'), true);
+  /* B15-16 (Captain decision 2026-11-06): untagged contacts are DISPLAYED and counted as Not scored, not Low; the
+     Lead Queue order (getBucketTag) is unchanged. */
+  check('8 Dashboard notes the Not scored count and deal coverage', dash.includes('Not scored is ${untaggedLow.toLocaleString()} with no temperature tag yet') && dash.includes('{dealCoverageText(coverage)}'), true);
   check('8 Lead Queue accounting uses the queue exclusion set', dash.includes('coldCallAccounting(contacts ?? [], coldOutreachExcludedIds)') && dash.includes('{coldCallAccountingText(coldCall)}'), true);
   check('8 Lead Queue filter itself unchanged', /\.filter\(\(c\) => c\.phone\?\.trim\(\) && !coldOutreachExcludedIds\.has\(c\.id\)\)/.test(dash), true);
-  check('8 tier counts unchanged (every contact)', /\(contacts \?\? \[\]\)\.forEach\(\(c\) => counts\[getBucketTag\(c\)\]\+\+\);/.test(dash), true);
+  check('8 tier counts still cover every contact (untagged as Not scored, B15-16)', /\(contacts \?\? \[\]\)\.forEach\(\(c\) => counts\[displayTier\(c\)\]\+\+\);/.test(dash) && dash.includes('{ hot: 0, warm: 0, low: 0, unscored: 0 }'), true);
+  check('8 B15-16 Lead Queue order still uses getBucketTag (display-only change)', dash.includes('tier: getBucketTag(c),') && dash.includes('const tierDiff = TIER_ORDER.indexOf(a.tier) - TIER_ORDER.indexOf(b.tier);'), true);
   check('8 F8 both offer definitions shown', dash.includes('data-testid="dashboard-offers-awaiting-definition"') && dash.includes('data-testid="dashboard-offers-to-review-definition"'), true);
   check('8 F8 offer counts unchanged', dash.includes('count={offersToReview.length}') && dash.includes('<SectionHeading count={offersAwaiting.length}>Offers Awaiting Response</SectionHeading>'), true);
   check('8 Follow Up precedence and Waiting on Me untouched', dash.includes('!terminalContactIds.has(c.id) && !followUpContactIds.has(c.id) && !doNotCallIds.has(c.id))'), true);

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { AlertCircle, Mail, CheckSquare, Square, MapPinOff, Loader2 } from "lucide-react";
@@ -6,6 +7,18 @@ import { ghl, type MailerDigest, type MailerGroup, type MailerTaskRow } from "..
 import { WEEK_RECHECK_MS, weekEnded } from "../lib/mailer-week";
 
 // ── Small pieces ─────────────────────────────────────────────────────────────
+
+/* R2 (Captain walkthrough): a mailer row's contact name opens that contact's workspace -- pure navigation, writes
+   nothing; it never toggles the row's checkbox. A row with no contact id keeps the plain name. */
+function ContactLink({ id, children }: { id: string | null | undefined; children: React.ReactNode }) {
+  if (!id) return <>{children}</>;
+  return (
+    <Link to={`/contacts/${encodeURIComponent(id)}`} onClick={(e) => e.stopPropagation()} title="Open workspace"
+      data-testid="mailers-contact-link" data-contact-id={id} style={{ color: "inherit", textDecoration: "none" }}>
+      {children}
+    </Link>
+  );
+}
 
 const TIER_COLOR: Record<string, string> = {
   hot:  "#EF4444",
@@ -92,7 +105,7 @@ function GroupTable({
                   </button>
                 </td>
                 <td style={{ padding: "9px 16px", fontWeight: 500, color: "#F1F5F9", whiteSpace: "nowrap" }}>
-                  {r.contactName || <em style={{ color: "#475569" }}>{UNNAMED_CONTACT}</em>}
+                  <ContactLink id={r.contactId}>{r.contactName || <em style={{ color: "#475569" }}>{UNNAMED_CONTACT}</em>}</ContactLink>
                 </td>
                 <td style={{ padding: "9px 16px", color: "#94A3B8", fontSize: "13px" }}>
                   {r.address}
@@ -385,7 +398,7 @@ export default function Mailers() {
                   <tbody>
                     {digest.noAddress.map((r) => (
                       <tr key={r.taskId} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                        <td style={{ padding: "9px 16px", fontWeight: 500, color: "#F1F5F9" }}>{r.contactName}</td>
+                        <td style={{ padding: "9px 16px", fontWeight: 500, color: "#F1F5F9" }}><ContactLink id={r.contactId}>{r.contactName}</ContactLink></td>
                         <td style={{ padding: "9px 16px" }}><TierBadge tier={r.tier} mailerType={r.mailerType} /></td>
                         <td style={{ padding: "9px 16px", color: "#64748B", fontSize: "12px" }}>Touch {r.touchNumber}</td>
                         <td style={{ padding: "9px 16px", color: "#64748B", fontSize: "12px" }}>{r.dueDateCT}</td>

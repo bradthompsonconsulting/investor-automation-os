@@ -86,8 +86,9 @@ check('F5 full ordering rules kept, collapsed under "How this list is ordered"',
 
 // ── F7 tier pills vs Lead Queue ─────────────────────────────────────────
 check('F7 tier pills labelled as contact counts', />Contacts by temperature</.test(dashboard), true);
-check('F7 bucketCounts still counts every contact (logic unchanged)',
-  /const bucketCounts = useMemo\(\(\) => \{\n\s+const counts: Record<BucketTag, number> = \{ hot: 0, warm: 0, low: 0 \};\n\s+\(contacts \?\? \[\]\)\.forEach\(\(c\) => counts\[getBucketTag\(c\)\]\+\+\);/.test(dashboard), true);
+/* B15-16 (Captain decision 2026-11-06): still every contact; an untagged one is counted as Not scored, not Low. */
+check('F7 bucketCounts still counts every contact (untagged as Not scored, B15-16)',
+  /const bucketCounts = useMemo\(\(\) => \{\n\s+\/\*[^\n]*\*\/\n\s+const counts: Record<DisplayTier, number> = \{ hot: 0, warm: 0, low: 0, unscored: 0 \};\n\s+\(contacts \?\? \[\]\)\.forEach\(\(c\) => counts\[displayTier\(c\)\]\+\+\);/.test(dashboard), true);
 check('F7 Lead Queue hint names who is elsewhere or left out',
   /Not every contact is here\.[\s\S]{0,400}callback[\s\S]{0,200}recent call result[\s\S]{0,200}no\s+phone, a wrong number, Do Not Call/.test(dashboard), true);
 check('F7 Lead Queue filter unchanged (phone required, exclusion set)',

@@ -26,14 +26,8 @@ function fmtTime(iso: string): string {
     timeZone: "America/Chicago", hour: "numeric", minute: "2-digit",
   });
 }
-/* B15-07 (INV-106) calendar reliability: the operator's next step for each failure. The access-denied headline is the
-   accepted F47 wording (test-calendar-unavailable); the others are new and factual. */
-const FAILURE_NEXT: Record<CalendarFailureKind, string> = {
-  access_denied: "Your appointments are still in GHL — open Calendars in GHL to see them. Nothing was changed.",
-  sign_in: "Your IAOS read sign-in ended. Sign in, and the calendar reloads. Your appointments are still in GHL. Nothing was changed.",
-  unconfigured: "Your appointments are still in GHL — open Calendars in GHL to see them. Nothing was changed.",
-  temporary: "Try again in a moment. Your appointments are still in GHL. Nothing was changed.",
-};
+/* R3 (Captain walkthrough, decision 2026-11-06): a failed read shows only "Open Calendars in GHL" (the card below).
+   The failure is still classified (data-kind) and handled as before; only its presentation is reduced. */
 
 /** The agenda, grouped by CT day: for a current read, and (labelled) for the last good read after a failed refresh. */
 function AgendaList({ days }: { days: [string, CalendarEventRow[]][] }) {
@@ -152,65 +146,34 @@ export default function Calendars() {
             style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", fontWeight: 600, color: loading ? "#475569" : "#94A3B8", background: "transparent", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "8px", padding: "4px 10px", cursor: loading ? "default" : "pointer" }}>
             <RefreshCw size={12} /> {loading ? "Loading…" : "Refresh"}
           </button>
-          {/* B15-07 (Captain GO 2026-11-04): an always-visible way to GHL's own Calendars -- the same verified destination
-              (Jess 2026-10-07) as the unavailable card; navigation only, new tab, no opener. */}
-          <a data-testid="calendars-header-ghl" href={ghlCalendarsUrl()} target="_blank" rel="noopener noreferrer"
-            style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", fontWeight: 600, color: "#1EC8FF", textDecoration: "none" }}>
-            <ExternalLink size={12} /> Open Calendars in GHL
-          </a>
+          {/* B15-07 (Captain GO 2026-11-04): a way to GHL's own Calendars -- the same verified destination (Jess
+              2026-10-07) as the failure card; navigation only, new tab, no opener. R3 (decision 2026-11-06): hidden
+              while the read has failed, where the card carries the one link. */}
+          {!error ? (
+            <a data-testid="calendars-header-ghl" href={ghlCalendarsUrl()} target="_blank" rel="noopener noreferrer"
+              style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "12px", fontWeight: 600, color: "#1EC8FF", textDecoration: "none" }}>
+              <ExternalLink size={12} /> Open Calendars in GHL
+            </a>
+          ) : null}
         </span>
       </div>
 
       {error ? (
-        <>
-        {/* B15-07 / Pass 1 F47: an operator sentence first; GHL's raw text only
-            as collapsed detail for whoever diagnoses it. */}
-        <div data-testid="calendar-unavailable" data-kind={error.kind} style={{ background: "#0D1B3E", border: "1px solid rgba(248,113,113,0.3)", borderRadius: "12px", padding: "16px 18px", maxWidth: "820px" }}>
-          <div style={{ fontSize: "13px", color: "#F87171", fontWeight: 600 }}>
-            {error.accessDenied
-              ? "Appointments can't be shown here: GHL refused IAOS access to calendars for this account."
-              : error.kind === "sign_in"
-                ? "Appointments can't be shown until you sign in to IAOS again."
-                : error.kind === "unconfigured"
-                  ? "Appointments can't be shown here: IAOS read sign-in isn't set up on this site."
-                  : "Appointments couldn't be loaded from GHL right now."}
-          </div>
-          <div style={{ fontSize: "12px", color: "#94A3B8", marginTop: "6px", lineHeight: 1.5 }}>
-            {FAILURE_NEXT[error.kind]}
-          </div>
+        /* R3: only "Open Calendars in GHL". data-kind keeps the classified failure for diagnosis and tests; no
+           headline, no Try again (Refresh stays in the header), no technical detail, and no last-read list --
+           nothing on a failed read can be taken for a current or an empty calendar. */
+        <div data-testid="calendar-unavailable" data-kind={error.kind} role="status" style={{ background: "#0D1B3E", border: "1px solid rgba(248,113,113,0.3)", borderRadius: "12px", padding: "16px 18px", maxWidth: "820px" }}>
           {/* B15-07: navigation only, to this location's GHL Calendars, in a new tab with no opener. */}
           <a
             data-testid="calendar-open-in-ghl"
             href={ghlCalendarsUrl()}
             target="_blank"
             rel="noopener noreferrer"
-            style={{ display: "inline-flex", alignItems: "center", gap: "5px", marginTop: "10px", fontSize: "12px", fontWeight: 600, color: "#1EC8FF", textDecoration: "none" }}
+            style={{ display: "inline-flex", alignItems: "center", gap: "5px", fontSize: "13px", fontWeight: 600, color: "#1EC8FF", textDecoration: "none" }}
           >
-            <ExternalLink size={12} /> Open Calendars in GHL
+            <ExternalLink size={13} /> Open Calendars in GHL
           </a>
-          {error.kind === "temporary" ? (
-            <button data-testid="calendar-retry" type="button" onClick={load} disabled={loading}
-              style={{ marginLeft: "14px", fontSize: "12px", fontWeight: 600, color: "#94A3B8", background: "transparent", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "8px", padding: "3px 10px", cursor: loading ? "default" : "pointer" }}>
-              {loading ? "Trying…" : "Try again"}
-            </button>
-          ) : null}
-          <details style={{ marginTop: "8px" }}>
-            <summary style={{ fontSize: "11px", color: "#475569", cursor: "pointer" }}>Technical detail</summary>
-            <div style={{ fontSize: "11px", color: "#475569", marginTop: "4px", wordBreak: "break-word" }}>{error.detail}</div>
-          </details>
         </div>
-        {/* B15-07: a failed REFRESH keeps the last successful read visible, labelled -- never presented as current. */}
-        {data !== null && loadedAt !== null ? (
-          <div data-testid="calendar-stale" style={{ marginTop: "16px", maxWidth: "820px", opacity: 0.75 }}>
-            <div style={{ fontSize: "12px", color: "#F59E0B", marginBottom: "10px" }}>
-              Showing the last successful read from {readTime(loadedAt)}. It may be out of date.
-            </div>
-            {data.events.length === 0
-              ? <div style={{ fontSize: "12px", color: "#64748B" }}>That read had no upcoming appointments.</div>
-              : <AgendaList days={days} />}
-          </div>
-        ) : null}
-        </>
       ) : data === null ? (
         <div data-testid="calendar-loading" style={{ display: "flex", alignItems: "center", gap: "6px", color: "#334155", fontSize: "13px" }}>
           <Loader2 size={14} className="animate-spin" /> Loading appointments…

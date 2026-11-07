@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import RefreshReadError from "../components/RefreshReadError";
+import NoDealYet from "../components/NoDealYet";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT, contractTemplateDisplayName, AGREEMENT_REACHED_OPERATOR_MEANING } from "../lib/operator-display";
 import { Link, useParams } from "react-router-dom";
@@ -2776,13 +2777,13 @@ export default function ContractWorkspace() {
         <Notice testId="contract-fetch-error" tone="error" title="Could not load this contact's deal data" body={screen.message} />
       ) : null}
 
+      {/* B15-10 / Pass 1 F19 (INV-109): the same no-deal card as the Contact, Seller Call and Underwriting
+          pages, with the way to fix it: "Open this contact in GHL". Navigation only; IAOS creates no deal.
+          (F19 replaced the other pages' "Create an opportunity in GHL" notices; this one was missed.) */}
       {screen.state === "no_opportunity" ? (
-        <Notice
-          testId="contract-no-opportunity"
-          tone="info"
-          title="No opportunity on this contact"
-          body="A seller contract belongs to the deal, not the person. Create an opportunity in GHL first."
-        />
+        <div data-testid="contract-no-opportunity">
+          <NoDealYet contactId={contactId} reason="A seller contract belongs to the deal, not the person." />
+        </div>
       ) : null}
 
       {screen.state === "awaiting_selection" ? (
