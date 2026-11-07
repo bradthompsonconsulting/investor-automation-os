@@ -432,9 +432,13 @@ export default function DealCalculator() {
      Opportunity resolution happens here at all. */
   const [linkedContactId, setLinkedContactId] = useState<string | null>(null);
   const [linkedContactName, setLinkedContactName] = useState<string | null>(null);
-  /* B15-22: the source of the ARV baseline shown now, and the contact ARV the link prefilled while no deal was chosen. */
+  /* B15-22: the source of the ARV baseline shown now. */
   const [arvSource, setArvSource] = useState<ArvSource>(null);
-  const arvPrefill = useRef<string | null>(null);
+  /* B15-22 r2 (Bones REVISE P2-1, P2-2): while a linked contact awaits a deal choice, whether the operator OWNS the
+     ARV on screen -- set by their own actions (typing, Clear) or a touch while the link was pending, never inferred
+     from the value. null = not awaiting a choice. */
+  const arvAwaitingChoice = useRef<{ owned: boolean } | null>(null);
+  const ownArv = () => { if (arvAwaitingChoice.current) arvAwaitingChoice.current.owned = true; };
   const [linkInput, setLinkInput] = useState(linkParam ?? "");
   const [linkBusy, setLinkBusy] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -555,12 +559,13 @@ export default function DealCalculator() {
     /* B15-22: this deal's ARV first, the contact's only when the deal has none. */
     const forDeal = ghlForDeal(deal, ghl);
     setArvSource(forDeal.arvSource);
-    /* The contact ARV the link prefilled before a deal was chosen is not the operator's: untouched, it gives way to
-       this deal's ARV. A typed, kept or restored figure stays (enterContext never overwrites one). */
+    /* r2: an ARV the operator does not own (awaiting a choice, never typed or cleared by them) takes this deal's
+       resolved ARV -- also when the screen was blank (P2-1). One they own stays exactly as left (P2-2). A kept or
+       restored figure stays too (enterContext never overwrites one). */
     let shown = screen;
-    const prefill = arvPrefill.current;
-    arvPrefill.current = null;
-    if (prefill !== null && screen.arv === prefill && !(overrides && "arv" in overrides)) {
+    const awaiting = arvAwaitingChoice.current;
+    arvAwaitingChoice.current = null;
+    if (awaiting && !awaiting.owned && !(overrides && "arv" in overrides)) {
       shown = { ...screen, arv: baselineFor("arv", forDeal.ghl) };
       if (shown.arv !== screen.arv) setArvInput(shown.arv);
     }
@@ -591,6 +596,7 @@ export default function DealCalculator() {
     applyValues(defaults);
     notKeptOwner.current = operator;
     if (linkTouched.current) { linkTouched.current = new Set(); linkOperator.current = operator; }
+    if (arvAwaitingChoice.current) arvAwaitingChoice.current = { owned: false };   // B15-22 r2: the new operator has not touched it
     setRestoreNote("The signed-in operator changed, so the previous operator's figures, which were not kept, were cleared from the screen.");
     return true;
   }
@@ -674,7 +680,7 @@ export default function DealCalculator() {
     };
     linkTouched.current = new Set();
     linkOperator.current = draftOperator();
-    arvPrefill.current = null;
+    arvAwaitingChoice.current = null;
     previousScreen.current = start;
     setLinkBusy(true);
     setLinkError(null);
@@ -723,7 +729,8 @@ export default function DealCalculator() {
       // B15-25 (finding 2): nor of a value the operator owns -- a kept or
       // just-edited field, even one deliberately left blank.
       if (!kept.has("arv") && screen.arv.trim() === "" && seeds.arv !== null) setArvInput(String(seeds.arv));
-      if (!single && !kept.has("arv") && screen.arv.trim() === "" && seeds.arv !== null) arvPrefill.current = String(seeds.arv);
+      /* r2: no deal chosen yet -- the ARV awaits a choice, owned only if the operator touched it while the link was pending. */
+      if (!single) arvAwaitingChoice.current = { owned: kept.has("arv") };
       if (!kept.has("repairsQuick") && screen.repairsQuick.trim() === "" && seeds.repairs !== null) setRepairsQuickInput(String(seeds.repairs));
     } catch (e: any) {
       if (generation !== linkGeneration.current) return;
@@ -751,7 +758,7 @@ export default function DealCalculator() {
   }
 
   function handleUnlink() {
-    arvPrefill.current = null;
+    arvAwaitingChoice.current = null;
     setLinkedContactId(null);
     setLinkedContactName(null);
     setLinkError(null);
@@ -783,6 +790,7 @@ export default function DealCalculator() {
   }
 
   function handleClear() {
+    ownArv();   // B15-22 r2: a deliberate blank is the operator's
     setArvInput("");
     setRepairsQuickInput("");
     setTestPriceInput("");
@@ -875,7 +883,7 @@ export default function DealCalculator() {
           <input
             data-testid="deal-calc-arv-input"
             value={arvInput}
-            onChange={(e) => setArvInput(e.target.value)}
+            onChange={(e) => { ownArv(); setArvInput(e.target.value); }}
             placeholder="Not yet entered"
             style={{ ...INPUT_STYLE, width: "100%" }}
           />

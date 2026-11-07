@@ -22,7 +22,16 @@
  *   W   reads are only the contact detail, the pipeline and the policy (no new read kind, no single-opportunity read);
  *       no write; nothing left the machine; no page errors
  *
- * NEGATIVE CONTROL: --before=<rev> serves <rev>'s DealCalculator.tsx; with 9e8c8fd, A1, A2, D1 and R2 must FAIL.
+ *   P1  r2 (Bones REVISE P2-1): a contact with NO contact ARV and two deals; choosing the deal with an ARV shows
+ *       640,000 "On the deal in GHL"; switching to the other deal (no ARV anywhere) leaves it blank and back restores
+ *       it; after reload the deal shows its GHL ARV again (no blank was kept as a draft)
+ *   P2  r2 (Bones REVISE P2-2): ownership follows the operator's actions, not the final value -- 310,000 typed away to
+ *       500,000 and back to 310,000 before choosing the 640,000 deal stays 310,000 (the operator's); a deliberately
+ *       blanked ARV stays blank; after reload, choosing that deal again restores the operator's 310,000
+ *
+ * NEGATIVE CONTROLS: --before=<rev> serves <rev>'s DealCalculator.tsx; with 9e8c8fd, A1, A2, D1 and R2 must FAIL;
+ * with 1a00602 (the reviewed candidate), P1 and P2 must FAIL. Each defective branch is also restored on its own by
+ * mutation in the package (C-P1, C-P2).
  */
 'use strict';
 const path = require('node:path');
@@ -42,7 +51,7 @@ const before = { name: 'arv-source-before', enforce: 'pre', load(id) {
 const CFG = getConfig('test');
 const C_ARV = CFG.fields.arv, C_REP = CFG.fields.estimatedRepairs, O_ARV = CFG.opportunityFacts.arv, O_REP = CFG.opportunityFacts.repairs;
 
-const FLOOR = 16;   // literal count of check() calls executed on a full run; a shorter run fails
+const FLOOR = 22;   // literal count of check() calls executed on a full run; a shorter run fails (r2: +6)
 let checks = 0, failures = 0;
 function check(name, ok, detail) { checks += 1; if (!ok) failures += 1; console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail)}`}`); }
 if (BEFORE) console.log(`NEGATIVE CONTROL: DealCalculator.tsx from ${BEFORE}; this run must fail.`);
@@ -50,12 +59,15 @@ if (BEFORE) console.log(`NEGATIVE CONTROL: DealCalculator.tsx from ${BEFORE}; th
 const opp = (id, contactId, name, arv, rep) => ({ id, contactId, contactName: name, opportunityName: name, phone: '', email: '', stageId: 's1',
   customFields: [...(arv === undefined ? [] : [{ id: O_ARV, fieldValueNumber: arv }]), ...(rep === undefined ? [] : [{ id: O_REP, fieldValueNumber: rep }])] });
 const fixture = {
-  contacts: { 'c-stale': { arv: '310000', rep: '20000' }, 'c-nodeal': { arv: '310000', rep: '20000' }, 'c-none': {}, 'c-two': { arv: '310000', rep: '20000' }, 'c-type': { arv: '310000' }, 'c-keep': { arv: '310000', rep: '20000' } },
+  contacts: { 'c-noarv': {}, 'c-back': { arv: '310000' }, 'c-blank': { arv: '310000' }, 'c-stale': { arv: '310000', rep: '20000' }, 'c-nodeal': { arv: '310000', rep: '20000' }, 'c-none': {}, 'c-two': { arv: '310000', rep: '20000' }, 'c-type': { arv: '310000' }, 'c-keep': { arv: '310000', rep: '20000' } },
   opportunities: [
     opp('o-stale', 'c-stale', 'Stale -- 1 Elm', 640000, 45000), opp('o-nodeal', 'c-nodeal', 'NoDealArv -- 2 Elm'), opp('o-none', 'c-none', 'None -- 3 Elm'),
     opp('o-two-a', 'c-two', 'Two A -- 4 Elm', 640000), opp('o-two-b', 'c-two', 'Two B -- 5 Elm'),
     opp('o-type-a', 'c-type', 'Type A -- 6 Elm', 640000), opp('o-type-b', 'c-type', 'Type B -- 7 Elm'),
     opp('o-keep', 'c-keep', 'Keep -- 8 Elm', 640000),
+    opp('o-na-a', 'c-noarv', 'NoArv A -- 9 Elm', 640000), opp('o-na-b', 'c-noarv', 'NoArv B -- 10 Elm'),
+    opp('o-back-a', 'c-back', 'Back A -- 11 Elm', 640000), opp('o-back-b', 'c-back', 'Back B -- 12 Elm'),
+    opp('o-blank-a', 'c-blank', 'Blank A -- 13 Elm', 640000), opp('o-blank-b', 'c-blank', 'Blank B -- 14 Elm'),
   ],
 };
 
@@ -161,6 +173,41 @@ async function main() {
     await T('deal-calc-draft-arv-keep').click({ timeout: 3000 }).catch(() => {});
     await settle();
     check('R2 Keep My Draft keeps 655,000 (never overwritten)', (await val('deal-calc-arv-input')) === '655000' && (await txt('deal-calc-draft-arv')) === 'Draft -- Not saved to GHL');
+
+    // P1 -- no contact ARV, several deals (Bones P2-1)
+    await go('c-noarv');
+    const p1pre = await val('deal-calc-arv-input');
+    await choose('o-na-a');
+    const p1 = { pre: p1pre, arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('P1 no contact ARV, two deals: choosing the deal with an ARV shows 640,000 "On the deal in GHL" (not a kept blank)', p1.pre === '' && p1.arv === '640000' && p1.label === 'On the deal in GHL', p1);
+    await choose('o-na-b');
+    const p1b = { arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    await choose('o-na-a');
+    const p1a = { arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('P1 switching to the deal with no ARV anywhere leaves it blank; back to the first shows 640,000 again', p1b.arv === '' && p1b.label === null && p1a.arv === '640000' && p1a.label === 'On the deal in GHL', { p1b, p1a });
+    await go('c-noarv');
+    await choose('o-na-a');
+    const p1r = { arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('P1 after reload the deal shows its GHL 640,000: no blank was kept as a draft', p1r.arv === '640000' && p1r.label === 'On the deal in GHL', p1r);
+
+    // P2 -- ownership by the operator's actions, not the final value (Bones P2-2)
+    await go('c-back');
+    const p2pre = await val('deal-calc-arv-input');
+    await T('deal-calc-arv-input').fill('500000'); await settle();
+    await T('deal-calc-arv-input').fill('310000'); await settle();
+    await choose('o-back-a');
+    const p2 = { pre: p2pre, arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('P2 310,000 typed away to 500,000 and back before choosing the 640,000 deal stays 310,000 (the operator\'s, kept as a draft)',
+      p2.pre === '310000' && p2.arv === '310000' && p2.label === 'Draft -- Not saved to GHL', p2);
+    await go('c-blank');
+    await T('deal-calc-arv-input').fill(''); await settle();
+    await choose('o-blank-a');
+    const p2b = { arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('P2 a deliberately blanked ARV stays blank when the 640,000 deal is chosen', p2b.arv === '' && p2b.label !== 'On the deal in GHL', p2b);
+    await go('c-back');
+    await choose('o-back-a');
+    const p2r = { arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('P2 after reload, choosing that deal again restores the operator\'s 310,000 (its draft, with its deal)', p2r.arv === '310000' && p2r.label === 'Draft -- Not saved to GHL', p2r);
 
     // A4 -- never "Approved"
     const allLabels = await page.evaluate(() => [...document.querySelectorAll('[data-testid^="deal-calc-draft-arv"]')].map((e) => e.textContent).join(' | '));
