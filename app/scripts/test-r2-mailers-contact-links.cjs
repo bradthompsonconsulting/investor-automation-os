@@ -87,7 +87,10 @@ async function main() {
     check('M5 clicking the name opens the contact; nothing is written', hadLink && pathNow.endsWith('/contacts/cMia') && writes.length === 0, { hadLink, pathNow });
     const TILE = /<Tile icon=\{MailIcon\} label="Mailers ready this week"[^\n]*\/>/;
     const tileNow = (require('node:fs').readFileSync(path.join(APP, 'src/pages/Dashboard.tsx'), 'utf8').match(TILE) || [null])[0];
-    const tileBase = (execFileSync('git', ['show', '9e8c8fd10b32eba66d978ef6448367356c4b2bf8:app/src/pages/Dashboard.tsx'], { cwd: APP, encoding: 'utf8', maxBuffer: 64 << 20 }).match(TILE) || [null])[0];
+    /* Release 15-C (GitHub CI 312e8bb, step 110): the base line was read with `git show 9e8c8fd:...`, but 9e8c8fd is a
+       local-only commit and CI checks out depth 1, so the read failed. The accepted base line is pinned here instead --
+       byte-identical at 9e8c8fd, 19763d2 (R2), 59be788 and 67633b9 (main) -- and the check stays an exact equality. */
+    const tileBase = '<Tile icon={MailIcon} label="Mailers ready this week" count={digest?.totals.ready ?? 0} loading={loading} href="/mailers" />';
     check('M6 the Dashboard Mailers tile is untouched (its source line equals the base exactly)', !!tileNow && tileNow === tileBase, [tileNow, tileBase]);
     check('W no write; no foreign request; no page errors', writes.length === 0 && foreign.length === 0 && pageErrors.length === 0, { writes, foreign: foreign.slice(0, 3), pageErrors: pageErrors.slice(0, 3) });
   } catch (e) {
