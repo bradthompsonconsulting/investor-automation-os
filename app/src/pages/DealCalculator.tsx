@@ -438,7 +438,14 @@ export default function DealCalculator() {
      ARV on screen -- set by their own actions (typing, Clear) or a touch while the link was pending, never inferred
      from the value. null = not awaiting a choice. */
   const arvAwaitingChoice = useRef<{ owned: boolean } | null>(null);
-  const ownArv = () => { if (arvAwaitingChoice.current) arvAwaitingChoice.current.owned = true; };
+  /* B15-22 r3: whether the operator owns the ARV on a screen that is NOT a deal's (unlinked scratch work, or a contact
+     awaiting a deal choice) -- set by their own ARV actions and by entering scratch work whose kept draft holds an ARV,
+     carried into a link started from that screen, cleared when the operator changes. */
+  const arvOwnedOutsideDeal = useRef(false);
+  const ownArv = () => {
+    if (arvAwaitingChoice.current) arvAwaitingChoice.current.owned = true;
+    if (!context || context.kind !== "deal") arvOwnedOutsideDeal.current = true;
+  };
   const [linkInput, setLinkInput] = useState(linkParam ?? "");
   const [linkBusy, setLinkBusy] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -522,6 +529,12 @@ export default function DealCalculator() {
     const carry = opts.carry ?? (!context || context.kind === "scratch");
     const overrides = opts.overrides ?? {};
     const kept = new Set(Object.keys(overrides) as DraftField[]);
+    /* r3: scratch work's ARV is the operator's when its kept draft holds one, an override holds one, or an owned ARV is
+       carried in from a screen that was not a deal's. */
+    if (id.kind === "scratch") {
+      const stored = loaded.ok && loaded.draft ? loaded.draft : null;
+      arvOwnedOutsideDeal.current = !!(stored && stored.fields.arv) || kept.has("arv") || (carry && !stored && arvOwnedOutsideDeal.current);
+    }
     setContext(id);
     setNotKept(null);
     setGhlNow(ghl);
@@ -597,6 +610,7 @@ export default function DealCalculator() {
     notKeptOwner.current = operator;
     if (linkTouched.current) { linkTouched.current = new Set(); linkOperator.current = operator; }
     if (arvAwaitingChoice.current) arvAwaitingChoice.current = { owned: false };   // B15-22 r2: the new operator has not touched it
+    arvOwnedOutsideDeal.current = false;   // B15-22 r3: nor anything on this cleared screen
     setRestoreNote("The signed-in operator changed, so the previous operator's figures, which were not kept, were cleared from the screen.");
     return true;
   }
@@ -673,6 +687,8 @@ export default function DealCalculator() {
     if (contactId.trim() === "") return;
     const generation = ++linkGeneration.current;
     const start = latest.current ?? snapshot();
+    /* B15-22 r3: an ARV the operator owned on a screen that was not a deal's stays theirs through this link. */
+    const arvOwnedBefore = (!context || context.kind !== "deal") && arvOwnedOutsideDeal.current;
     /* r2 finding 2: every field touched during the wait, with its value now (typed-then-cleared included). */
     const editedSinceStart = (): Partial<Record<DraftField, string>> => {
       const now = latest.current ?? start;
@@ -730,7 +746,7 @@ export default function DealCalculator() {
       // just-edited field, even one deliberately left blank.
       if (!kept.has("arv") && screen.arv.trim() === "" && seeds.arv !== null) setArvInput(String(seeds.arv));
       /* r2: no deal chosen yet -- the ARV awaits a choice, owned only if the operator touched it while the link was pending. */
-      if (!single) arvAwaitingChoice.current = { owned: kept.has("arv") };
+      if (!single) arvAwaitingChoice.current = { owned: kept.has("arv") || (!operatorChanged && arvOwnedBefore) };
       if (!kept.has("repairsQuick") && screen.repairsQuick.trim() === "" && seeds.repairs !== null) setRepairsQuickInput(String(seeds.repairs));
     } catch (e: any) {
       if (generation !== linkGeneration.current) return;

@@ -29,7 +29,13 @@
  *       500,000 and back to 310,000 before choosing the 640,000 deal stays 310,000 (the operator's); a deliberately
  *       blanked ARV stays blank; after reload, choosing that deal again restores the operator's 310,000
  *
+ *   O   r3: ARV ownership established BEFORE linking is carried through linking and the deal choice -- O1 an ARV
+ *       typed in the unlinked calculator stays when a multi-deal contact is linked and a deal chosen; O2 one restored
+ *       from the scratch draft after reload stays too; O3 an untouched blank adopts the chosen deal's ARV; O4 linking
+ *       another contact from a deal shows that contact's chosen deal ARV (nothing carried across contacts)
+ *
  * NEGATIVE CONTROLS: --before=<rev> serves <rev>'s DealCalculator.tsx; with 9e8c8fd, A1, A2, D1 and R2 must FAIL;
+ * with a6ab5b8 (r2), O1 and O2 must FAIL;
  * with 1a00602 (the reviewed candidate), P1 and P2 must FAIL. Each defective branch is also restored on its own by
  * mutation in the package (C-P1, C-P2).
  */
@@ -51,7 +57,7 @@ const before = { name: 'arv-source-before', enforce: 'pre', load(id) {
 const CFG = getConfig('test');
 const C_ARV = CFG.fields.arv, C_REP = CFG.fields.estimatedRepairs, O_ARV = CFG.opportunityFacts.arv, O_REP = CFG.opportunityFacts.repairs;
 
-const FLOOR = 22;   // literal count of check() calls executed on a full run; a shorter run fails (r2: +6)
+const FLOOR = 26;   // literal count of check() calls executed on a full run; a shorter run fails (r2: +6, r3: +4)
 let checks = 0, failures = 0;
 function check(name, ok, detail) { checks += 1; if (!ok) failures += 1; console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail)}`}`); }
 if (BEFORE) console.log(`NEGATIVE CONTROL: DealCalculator.tsx from ${BEFORE}; this run must fail.`);
@@ -59,13 +65,18 @@ if (BEFORE) console.log(`NEGATIVE CONTROL: DealCalculator.tsx from ${BEFORE}; th
 const opp = (id, contactId, name, arv, rep) => ({ id, contactId, contactName: name, opportunityName: name, phone: '', email: '', stageId: 's1',
   customFields: [...(arv === undefined ? [] : [{ id: O_ARV, fieldValueNumber: arv }]), ...(rep === undefined ? [] : [{ id: O_REP, fieldValueNumber: rep }])] });
 const fixture = {
-  contacts: { 'c-noarv': {}, 'c-back': { arv: '310000' }, 'c-blank': { arv: '310000' }, 'c-stale': { arv: '310000', rep: '20000' }, 'c-nodeal': { arv: '310000', rep: '20000' }, 'c-none': {}, 'c-two': { arv: '310000', rep: '20000' }, 'c-type': { arv: '310000' }, 'c-keep': { arv: '310000', rep: '20000' } },
+  contacts: { 'c-o1': { arv: '310000' }, 'c-o2': { arv: '310000' }, 'c-o3': {}, 'c-o4x': { arv: '310000' }, 'c-o4y': {}, 'c-noarv': {}, 'c-back': { arv: '310000' }, 'c-blank': { arv: '310000' }, 'c-stale': { arv: '310000', rep: '20000' }, 'c-nodeal': { arv: '310000', rep: '20000' }, 'c-none': {}, 'c-two': { arv: '310000', rep: '20000' }, 'c-type': { arv: '310000' }, 'c-keep': { arv: '310000', rep: '20000' } },
   opportunities: [
     opp('o-stale', 'c-stale', 'Stale -- 1 Elm', 640000, 45000), opp('o-nodeal', 'c-nodeal', 'NoDealArv -- 2 Elm'), opp('o-none', 'c-none', 'None -- 3 Elm'),
     opp('o-two-a', 'c-two', 'Two A -- 4 Elm', 640000), opp('o-two-b', 'c-two', 'Two B -- 5 Elm'),
     opp('o-type-a', 'c-type', 'Type A -- 6 Elm', 640000), opp('o-type-b', 'c-type', 'Type B -- 7 Elm'),
     opp('o-keep', 'c-keep', 'Keep -- 8 Elm', 640000),
     opp('o-na-a', 'c-noarv', 'NoArv A -- 9 Elm', 640000), opp('o-na-b', 'c-noarv', 'NoArv B -- 10 Elm'),
+    opp('o-o1-a', 'c-o1', 'O1 A -- 15 Elm', 640000), opp('o-o1-b', 'c-o1', 'O1 B -- 16 Elm'),
+    opp('o-o2-a', 'c-o2', 'O2 A -- 17 Elm', 640000), opp('o-o2-b', 'c-o2', 'O2 B -- 18 Elm'),
+    opp('o-o3-a', 'c-o3', 'O3 A -- 19 Elm', 640000), opp('o-o3-b', 'c-o3', 'O3 B -- 20 Elm'),
+    opp('o-o4x', 'c-o4x', 'O4 X -- 21 Elm', 700000),
+    opp('o-o4y-a', 'c-o4y', 'O4 Y A -- 22 Elm', 650000), opp('o-o4y-b', 'c-o4y', 'O4 Y B -- 23 Elm'),
     opp('o-back-a', 'c-back', 'Back A -- 11 Elm', 640000), opp('o-back-b', 'c-back', 'Back B -- 12 Elm'),
     opp('o-blank-a', 'c-blank', 'Blank A -- 13 Elm', 640000), opp('o-blank-b', 'c-blank', 'Blank B -- 14 Elm'),
   ],
@@ -208,6 +219,49 @@ async function main() {
     await choose('o-back-a');
     const p2r = { arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
     check('P2 after reload, choosing that deal again restores the operator\'s 310,000 (its draft, with its deal)', p2r.arv === '310000' && p2r.label === 'Draft -- Not saved to GHL', p2r);
+
+    // O -- ownership established BEFORE linking (r3)
+    const unlinked = async () => {
+      await page.goto(`${base}${PAGE}`);
+      await T('deal-calc-repairs-mode-toggle').waitFor({ timeout: 60000 }); await settle();
+    };
+    const clearScratch = () => page.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('iaos-calculator-draft:') && k.includes('scratch')) localStorage.removeItem(k); });
+    const linkTo = async (contactId) => {
+      await T('deal-calc-link-input').fill(contactId);
+      await T('deal-calc-link-button').click();
+      await T('deal-calc-unlink').waitFor({ timeout: 30000 }).catch(() => {});
+      await page.waitForFunction(() => !/Linking the contact/.test(document.querySelector('[data-testid="deal-calc-draft-status"]')?.textContent || ''), null, { timeout: 30000 }).catch(() => {});
+      await settle();
+    };
+    await unlinked(); await clearScratch(); await unlinked();
+    await T('deal-calc-arv-input').fill('300000'); await settle();
+    await linkTo('c-o1');
+    const o1pre = await val('deal-calc-arv-input');
+    await choose('o-o1-a');
+    const o1 = { pre: o1pre, arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('O1 an ARV typed BEFORE linking stays when a multi-deal contact is linked and the 640,000 deal chosen (the operator\'s)',
+      o1.pre === '300000' && o1.arv === '300000' && o1.label === 'Draft -- Not saved to GHL', o1);
+    await unlinked(); await clearScratch(); await unlinked();
+    await T('deal-calc-arv-input').fill('305000'); await settle();
+    await unlinked();   // reload: the scratch draft is restored
+    const restored = await val('deal-calc-arv-input');
+    await linkTo('c-o2');
+    await choose('o-o2-a');
+    const o2 = { restored, arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('O2 an ARV RESTORED from the scratch draft before linking stays when a deal is chosen', o2.restored === '305000' && o2.arv === '305000' && o2.label === 'Draft -- Not saved to GHL', o2);
+    await unlinked(); await clearScratch(); await unlinked();
+    await linkTo('c-o3');
+    await choose('o-o3-a');
+    const o3 = { arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('O3 an untouched blank before linking adopts the chosen deal\'s 640,000 "On the deal in GHL"', o3.arv === '640000' && o3.label === 'On the deal in GHL', o3);
+    await go('c-o4x');
+    const o4x = await val('deal-calc-arv-input');
+    await T('deal-calc-unlink').click(); await settle();
+    await linkTo('c-o4y');
+    await choose('o-o4y-a');
+    const o4 = { x: o4x, arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('O4 from contact X\'s deal (700,000), linking contact Y and choosing its deal shows Y\'s 650,000 (nothing carried across contacts)',
+      o4.x === '700000' && o4.arv === '650000' && o4.label === 'On the deal in GHL', o4);
 
     // A4 -- never "Approved"
     const allLabels = await page.evaluate(() => [...document.querySelectorAll('[data-testid^="deal-calc-draft-arv"]')].map((e) => e.textContent).join(' | '));
