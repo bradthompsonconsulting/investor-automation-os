@@ -306,7 +306,14 @@ async function main() {
     await dc.close();
     const { context: cc, page: c } = await open('/conversations');
     await c.getByText('Fixture UB', { exact: false }).first().click({ timeout: 15000 }).catch(() => {});
-    const tl = await waitText(c, '[data-testid="thread-latest-inbound"]');
+    /* Release 15-C (GitHub CI 0ca4c6c, step 75): F1 (Bones ACCEPT) gave the strip an explicit loading state inside it
+       ("Latest from seller: Loading…", thread-latest-inbound-loading). waitText returns on ANY text, so R5 could sample
+       that loading state. Wait for the settled strip -- text present and no loading child -- then assert as before. */
+    let tl = null;
+    { const t0 = Date.now(); while (Date.now() - t0 < 15000) {
+      tl = await c.evaluate(() => { const e = document.querySelector('[data-testid="thread-latest-inbound"]');
+        return e && !e.querySelector('[data-testid="thread-latest-inbound-loading"]') ? e.innerText : null; }).catch(() => null);
+      if (tl) break; await c.waitForTimeout(100); } }
     check('R5 Conversations thread names the latest inbound like the Dashboard ("Inbound call — no message text"), not the older SMS, and never another contact\'s message',
       !!tl && /Latest from seller:/.test(tl) && /Inbound call — no message text/.test(tl) && !/NOT UB/.test(tl) && !/Earlier text from UB/.test(tl), tl);
     // r2 (Bones P2-3): one contact, two conversations -- the strip follows the SELECTED conversation, and a switch updates it.
