@@ -741,8 +741,9 @@ export default function DealCalculator() {
       const singleDealArv = single && mine ? dealArv(mine[0]) : null;
       const seeds = { ...contactSeeds, arv: singleDealArv ?? contactSeeds.arv };
       /* B15-22 r4: an ARV the operator owned before linking (typed, cleared, Clear, restored) is theirs here too -- with
-         one deal or several, the prefill below never fills it, even blank, and a deal choice keeps it. */
-      if (!operatorChanged && arvOwnedBefore) kept.add("arv");
+         one deal or several, the prefill below never fills it, even blank, and a deal choice keeps it. Only while that
+         ownership still holds: an operator change during the wait clears it (and rebinds linkOperator). */
+      if (!operatorChanged && arvOwnedBefore && arvOwnedOutsideDeal.current) kept.add("arv");
       // Prepopulate ONLY fields still empty -- linking is a one-time
       // convenience (PB-D55), never a silent overwrite of a typed value.
       // B15-25 (finding 2): nor of a value the operator owns -- a kept or
