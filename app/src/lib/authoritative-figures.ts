@@ -59,7 +59,10 @@ export function compareSellerMao(input: {
   if (recorded === null) {
     return { recordedText, liveNote: "Not yet approved — no approved underwriting recorded yet", token: "none" };
   }
-  if (recorded === input.live) {
+  /* G5 (Spock hosted): both figures are SHOWN in whole dollars (money()); an exact comparison called $428,648 and
+     $428,648 "different" when they differed only below a dollar (the engine does not round). Compare what is shown.
+     Wording only: no value, calculation, approval or gate depends on this. */
+  if (money(recorded) === money(input.live)) {
     return { recordedText, liveNote: "Matches the approved underwriting on record", token: "matches" };
   }
   return { recordedText, liveNote: `Not yet approved — differs from approved ${money(recorded)}`, token: "differs" };
