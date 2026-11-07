@@ -740,13 +740,16 @@ export default function DealCalculator() {
       const single = !!mine && mine.length === 1;
       const singleDealArv = single && mine ? dealArv(mine[0]) : null;
       const seeds = { ...contactSeeds, arv: singleDealArv ?? contactSeeds.arv };
+      /* B15-22 r4: an ARV the operator owned before linking (typed, cleared, Clear, restored) is theirs here too -- with
+         one deal or several, the prefill below never fills it, even blank, and a deal choice keeps it. */
+      if (!operatorChanged && arvOwnedBefore) kept.add("arv");
       // Prepopulate ONLY fields still empty -- linking is a one-time
       // convenience (PB-D55), never a silent overwrite of a typed value.
       // B15-25 (finding 2): nor of a value the operator owns -- a kept or
       // just-edited field, even one deliberately left blank.
       if (!kept.has("arv") && screen.arv.trim() === "" && seeds.arv !== null) setArvInput(String(seeds.arv));
       /* r2: no deal chosen yet -- the ARV awaits a choice, owned only if the operator touched it while the link was pending. */
-      if (!single) arvAwaitingChoice.current = { owned: kept.has("arv") || (!operatorChanged && arvOwnedBefore) };
+      if (!single) arvAwaitingChoice.current = { owned: kept.has("arv") };   // r4: pre-link ownership is in `kept`
       if (!kept.has("repairsQuick") && screen.repairsQuick.trim() === "" && seeds.repairs !== null) setRepairsQuickInput(String(seeds.repairs));
     } catch (e: any) {
       if (generation !== linkGeneration.current) return;

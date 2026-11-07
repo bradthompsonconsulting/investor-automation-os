@@ -34,7 +34,15 @@
  *       from the scratch draft after reload stays too; O3 an untouched blank adopts the chosen deal's ARV; O4 linking
  *       another contact from a deal shows that contact's chosen deal ARV (nothing carried across contacts)
  *
+ *   K   r4: a deliberately blank ARV owned BEFORE linking is honoured by the link's prefill AND the deal choice --
+ *       K1 typed then cleared, multi-deal contact (ARV 310,000): no prefill, and choosing the 640,000 deal keeps it
+ *       blank; K2 the same after Clear; K3 typed then cleared, single deal without an ARV: the contact's 310,000 is not
+ *       prefilled; K4 Clear, single deal with 640,000: not prefilled; K5 an untouched blank with a single deal still
+ *       takes the contact's 310,000 "On the contact in GHL"; K6/K7 after reload each of those blanks comes back
+ *       blank with its deal (multi-deal: choosing the same deal; single deal: on linking)
+ *
  * NEGATIVE CONTROLS: --before=<rev> serves <rev>'s DealCalculator.tsx; with 9e8c8fd, A1, A2, D1 and R2 must FAIL;
+ * with 2b8ce1b (r3), K1-K4 must FAIL;
  * with a6ab5b8 (r2), O1 and O2 must FAIL;
  * with 1a00602 (the reviewed candidate), P1 and P2 must FAIL. Each defective branch is also restored on its own by
  * mutation in the package (C-P1, C-P2).
@@ -57,7 +65,7 @@ const before = { name: 'arv-source-before', enforce: 'pre', load(id) {
 const CFG = getConfig('test');
 const C_ARV = CFG.fields.arv, C_REP = CFG.fields.estimatedRepairs, O_ARV = CFG.opportunityFacts.arv, O_REP = CFG.opportunityFacts.repairs;
 
-const FLOOR = 26;   // literal count of check() calls executed on a full run; a shorter run fails (r2: +6, r3: +4)
+const FLOOR = 33;   // literal count of check() calls executed on a full run; a shorter run fails (r2: +6, r3: +4, r4: +7)
 let checks = 0, failures = 0;
 function check(name, ok, detail) { checks += 1; if (!ok) failures += 1; console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail)}`}`); }
 if (BEFORE) console.log(`NEGATIVE CONTROL: DealCalculator.tsx from ${BEFORE}; this run must fail.`);
@@ -65,7 +73,7 @@ if (BEFORE) console.log(`NEGATIVE CONTROL: DealCalculator.tsx from ${BEFORE}; th
 const opp = (id, contactId, name, arv, rep) => ({ id, contactId, contactName: name, opportunityName: name, phone: '', email: '', stageId: 's1',
   customFields: [...(arv === undefined ? [] : [{ id: O_ARV, fieldValueNumber: arv }]), ...(rep === undefined ? [] : [{ id: O_REP, fieldValueNumber: rep }])] });
 const fixture = {
-  contacts: { 'c-o1': { arv: '310000' }, 'c-o2': { arv: '310000' }, 'c-o3': {}, 'c-o4x': { arv: '310000' }, 'c-o4y': {}, 'c-noarv': {}, 'c-back': { arv: '310000' }, 'c-blank': { arv: '310000' }, 'c-stale': { arv: '310000', rep: '20000' }, 'c-nodeal': { arv: '310000', rep: '20000' }, 'c-none': {}, 'c-two': { arv: '310000', rep: '20000' }, 'c-type': { arv: '310000' }, 'c-keep': { arv: '310000', rep: '20000' } },
+  contacts: { 'c-k1': { arv: '310000' }, 'c-k2': { arv: '310000' }, 'c-k3': { arv: '310000' }, 'c-k4': { arv: '310000' }, 'c-k5': { arv: '310000' }, 'c-o1': { arv: '310000' }, 'c-o2': { arv: '310000' }, 'c-o3': {}, 'c-o4x': { arv: '310000' }, 'c-o4y': {}, 'c-noarv': {}, 'c-back': { arv: '310000' }, 'c-blank': { arv: '310000' }, 'c-stale': { arv: '310000', rep: '20000' }, 'c-nodeal': { arv: '310000', rep: '20000' }, 'c-none': {}, 'c-two': { arv: '310000', rep: '20000' }, 'c-type': { arv: '310000' }, 'c-keep': { arv: '310000', rep: '20000' } },
   opportunities: [
     opp('o-stale', 'c-stale', 'Stale -- 1 Elm', 640000, 45000), opp('o-nodeal', 'c-nodeal', 'NoDealArv -- 2 Elm'), opp('o-none', 'c-none', 'None -- 3 Elm'),
     opp('o-two-a', 'c-two', 'Two A -- 4 Elm', 640000), opp('o-two-b', 'c-two', 'Two B -- 5 Elm'),
@@ -73,6 +81,9 @@ const fixture = {
     opp('o-keep', 'c-keep', 'Keep -- 8 Elm', 640000),
     opp('o-na-a', 'c-noarv', 'NoArv A -- 9 Elm', 640000), opp('o-na-b', 'c-noarv', 'NoArv B -- 10 Elm'),
     opp('o-o1-a', 'c-o1', 'O1 A -- 15 Elm', 640000), opp('o-o1-b', 'c-o1', 'O1 B -- 16 Elm'),
+    opp('o-k1-a', 'c-k1', 'K1 A -- 31 Elm', 640000), opp('o-k1-b', 'c-k1', 'K1 B -- 32 Elm'),
+    opp('o-k2-a', 'c-k2', 'K2 A -- 33 Elm', 640000), opp('o-k2-b', 'c-k2', 'K2 B -- 34 Elm'),
+    opp('o-k3', 'c-k3', 'K3 -- 35 Elm'), opp('o-k4', 'c-k4', 'K4 -- 36 Elm', 640000), opp('o-k5', 'c-k5', 'K5 -- 37 Elm'),
     opp('o-o2-a', 'c-o2', 'O2 A -- 17 Elm', 640000), opp('o-o2-b', 'c-o2', 'O2 B -- 18 Elm'),
     opp('o-o3-a', 'c-o3', 'O3 A -- 19 Elm', 640000), opp('o-o3-b', 'c-o3', 'O3 B -- 20 Elm'),
     opp('o-o4x', 'c-o4x', 'O4 X -- 21 Elm', 700000),
@@ -262,6 +273,53 @@ async function main() {
     const o4 = { x: o4x, arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
     check('O4 from contact X\'s deal (700,000), linking contact Y and choosing its deal shows Y\'s 650,000 (nothing carried across contacts)',
       o4.x === '700000' && o4.arv === '650000' && o4.label === 'On the deal in GHL', o4);
+
+    // K -- a deliberately blank ARV owned BEFORE linking: honoured by the prefill and the deal choice (r4)
+    const blankBeforeLink = async (how) => {
+      await unlinked(); await clearScratch(); await unlinked();
+      await T('deal-calc-arv-input').fill('300000'); await settle();
+      if (how === 'clear-button') await T('deal-calc-clear').click(); else await T('deal-calc-arv-input').fill('');
+      await settle();
+      return val('deal-calc-arv-input');
+    };
+    const notFromGhl = (label) => label !== 'On the deal in GHL' && label !== 'On the contact in GHL';
+    const k1before = await blankBeforeLink('typed-then-cleared');
+    await linkTo('c-k1');
+    const k1pre = await val('deal-calc-arv-input');
+    await choose('o-k1-a');
+    const k1 = { before: k1before, pre: k1pre, arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('K1 typed then cleared before linking a multi-deal contact (ARV 310,000): not prefilled, and choosing the 640,000 deal keeps it blank',
+      k1.before === '' && k1.pre === '' && k1.arv === '' && notFromGhl(k1.label), k1);
+    const k2before = await blankBeforeLink('clear-button');
+    await linkTo('c-k2');
+    const k2pre = await val('deal-calc-arv-input');
+    await choose('o-k2-a');
+    const k2 = { before: k2before, pre: k2pre, arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('K2 Clear before linking a multi-deal contact: not prefilled, and choosing the 640,000 deal keeps it blank',
+      k2.before === '' && k2.pre === '' && k2.arv === '' && notFromGhl(k2.label), k2);
+    const k3before = await blankBeforeLink('typed-then-cleared');
+    await linkTo('c-k3');
+    const k3 = { before: k3before, arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('K3 typed then cleared before linking a single-deal contact (deal without an ARV): the contact\'s 310,000 is not prefilled',
+      k3.before === '' && k3.arv === '' && notFromGhl(k3.label), k3);
+    const k4before = await blankBeforeLink('clear-button');
+    await linkTo('c-k4');
+    const k4 = { before: k4before, arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('K4 Clear before linking a single-deal contact (deal with 640,000): the deal\'s ARV is not prefilled',
+      k4.before === '' && k4.arv === '' && notFromGhl(k4.label), k4);
+    const reloadMulti = async (c, d) => { await go(c); await choose(d); return { arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') }; };
+    const reloadSingle = async (c) => { await go(c); return { arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') }; };
+    const k6 = { k1: await reloadMulti('c-k1', 'o-k1-a'), k2: await reloadMulti('c-k2', 'o-k2-a') };
+    check('K6 after reload, choosing the same deal brings back the multi-deal blanks (K1 typed-then-cleared, K2 Clear) as kept drafts',
+      k6.k1.arv === '' && notFromGhl(k6.k1.label) && k6.k2.arv === '' && notFromGhl(k6.k2.label), k6);
+    const k7 = { k3: await reloadSingle('c-k3'), k4: await reloadSingle('c-k4') };
+    check('K7 after reload, the single-deal blanks (K3 typed-then-cleared, K4 Clear) come back blank with their deal (no prefill)',
+      k7.k3.arv === '' && notFromGhl(k7.k3.label) && k7.k4.arv === '' && notFromGhl(k7.k4.label), k7);
+    await unlinked(); await clearScratch(); await unlinked();
+    await linkTo('c-k5');
+    const k5 = { arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };
+    check('K5 an untouched blank before linking a single-deal contact still takes the contact\'s 310,000 "On the contact in GHL"',
+      k5.arv === '310000' && k5.label === 'On the contact in GHL', k5);
 
     // A4 -- never "Approved"
     const allLabels = await page.evaluate(() => [...document.querySelectorAll('[data-testid^="deal-calc-draft-arv"]')].map((e) => e.textContent).join(' | '));
