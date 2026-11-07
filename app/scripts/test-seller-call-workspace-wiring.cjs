@@ -114,7 +114,7 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
     && stickyWrapperFull.indexOf('<DealBar') < stickyWrapperFull.indexOf('<ReadinessBadge'),
     true);
   check('ReadinessBadge is a sibling element, not a prop of DealBar (still adjacent, not folded in)',
-    /<DealBar cells=\{dealBarCells\} \/>/.test(stickyWrapperFull), true);
+    /<DealBar cells=\{dealBarCells\}(?: compact)? \/>/.test(stickyWrapperFull), true);
 }
 
 // ============================================================
@@ -621,7 +621,8 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('page does not declare its own latestOutcomeNoteForOpportunity', /\b(function|const)\s+latestOutcomeNoteForOpportunity\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
   check('page does not declare its own attemptRecordOutcome', /\b(function|const)\s+attemptRecordOutcome\s*[=(]/.test(sellerCallTsx.replace(/import[\s\S]*?from\s*"[^"]+";/g, '')), false);
   check('page renders a dedicated resume-context line', /data-testid="seller-call-resume-context"/.test(sellerCallTsx), true);
-  check('page renders a dedicated next-objective line', /data-testid="seller-call-next-objective"/.test(sellerCallTsx), true);
+  // B15-03 slice A (Captain 2026-11-03): the separate Next objective line was removed as redundant.
+  check('page no longer renders a separate next-objective line (B15-03 slice A)', /data-testid="seller-call-next-objective"/.test(sellerCallTsx), false);
   check('the resume line reads latestOutcome.snapshot fields verbatim, never recomputing Target/Max/Spread from ARV/Repairs itself', /latestOutcome\.snapshot\.targetAcquisitionPrice/.test(sellerCallTsx) && /latestOutcome\.snapshot\.maxSupportedOffer/.test(sellerCallTsx) && /latestOutcome\.snapshot\.expectedSpread/.test(sellerCallTsx), true);
 }
 
@@ -632,7 +633,7 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
 // default.
 // ============================================================
 {
-  check('page still renders ReadinessBadge unconditionally on a resolved board8 (Offer Ready untouched by Agreement Reached)', /\{readiness \? <ReadinessBadge readiness=\{readiness\} \/> : null\}/.test(sellerCallTsx), true);
+  check('page still renders ReadinessBadge unconditionally on a resolved board8 (Offer Ready untouched by Agreement Reached)', /\{readiness \? <ReadinessBadge readiness=\{readiness\}(?: compact)? \/> : null\}/.test(sellerCallTsx), true);
   check('page renders a dedicated Agreement Reached banner', /data-testid="agreement-reached-banner"/.test(sellerCallTsx), true);
   check('the Agreement Reached banner is gated on latestOutcome?.kind === "accept", never rendered unconditionally', /latestOutcome\?\.kind === "accept" \?[\s\S]{0,200}data-testid="agreement-reached-banner"/.test(sellerCallTsx), true);
   check('the banner text explicitly distinguishes Agreement Reached from Under Contract', /not yet Under Contract/.test(sellerCallTsx), true);
@@ -681,8 +682,13 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
     /onBlur=\{\(e\) => \{ if \(isLifecycleBlur\(e\.currentTarget\)\) return; saveSellerPosition\(\); \}\}/.test(sellerCallTsxNoComments)
     && /onKeyDown=\{saveOnEnter\(saveSellerPosition\)\}/.test(sellerCallTsxNoComments)
     && /formatSellerPositionNote\(\{ opportunityId: t\.opportunityId, at, operator: null, kind: "value", value: Number\(signature\) \}\)/.test(sellerCallTsxNoComments), true);
+  // B15-03 slice C (Bones ACCEPT 216b59e): with Save at Summary enabled, three sections join the Save plan and never
+  // write on their own (`if (!t || saveEnabled) return;`); the refusal button's own guard is `requestSellerPriceRefused`'s
+  // `if (saveEnabled) return;`. The binding rule is unchanged: no autosave writes without a write target.
   check('every autosave binds its contact and opportunity when it starts, and writes nothing without a write target',
-    (sellerCallTsxNoComments.match(/const t = writeTarget;\s*if \(!t\) return;/g) || []).length === 4
+    (sellerCallTsxNoComments.match(/const t = writeTarget;\s*if \(!t(?: \|\| saveEnabled)?\) return;/g) || []).length === 4
+    && (sellerCallTsxNoComments.match(/const t = writeTarget;\s*if \(!t \|\| saveEnabled\) return;/g) || []).length === 3
+    && /function requestSellerPriceRefused\([^)]*\)\s*\{\s*if \(saveEnabled\) return;/.test(sellerCallTsxNoComments)
     && (sellerCallTsxNoComments.match(/await ghl\.notes\.create\(t\.contactId, note\);\s*appendSavedNote\(t\.contactId, note, at\);/g) || []).length === 4, true);
   check('the write target requires this route\'s contact loaded and an opportunity that belongs to it',
     /if \(!contact \|\| contact\.id !== contactId \|\| loadedFor\.current !== contactId\) return null;/.test(sellerCallTsxNoComments)
@@ -701,7 +707,8 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
   check('Current Offer is also locked while the selected seller loads, and keeps its own deliberate save on leave (no autosave, no Enter save)',
     /data-testid="negotiation-current-offer-input"\s*value=\{currentOfferInput\}\s*onChange=\{\(e\) => handleCurrentOfferChange\(e\.target\.value\)\}\s*onBlur=\{\(e\) => \{ if \(isLifecycleBlur\(e\.currentTarget\)\) return; void commitCurrentOffer\(\); \}\}\s*readOnly=\{offerSaves\.isLocked\(dealBarOppId\)\}\s*disabled=\{sellerLoading\}\s*placeholder=/.test(sellerCallTsxNoComments), true);
   check('one page-wide Save changes fallback, shown only while something is unsaved or saving',
-    (sellerCallTsx.match(/data-testid="seller-call-save-changes"/g) || []).length === 1 && /\{pageHasUnsaved \|\| pageSaving \? \(/.test(sellerCallTsxNoComments), true);
+    // slice C: hidden while Save at Summary is enabled (the sections save with the call).
+    (sellerCallTsx.match(/data-testid="seller-call-save-changes"/g) || []).length === 1 && /\{!saveEnabled && \(pageHasUnsaved \|\| pageSaving\) \? \(/.test(sellerCallTsxNoComments), true);
 
   check('a stale Offer Readiness decision is marked in the UI, never silently hidden', /data-testid="readiness-human-action-stale"/.test(sellerCallTsx), true);
   check('the stale marker states it no longer authorizes readiness', /no longer authorizes readiness/.test(sellerCallTsx), true);

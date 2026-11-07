@@ -40,8 +40,10 @@ check('F34 the checklist is labelled as not for the seller',
   page.includes('Your underwriting checklist — not for the seller'), true);
 check('F34 the card handles "no seller question left"',
   /nextBestQuestion\.kind === "operator_only" \? \(\s*<div data-testid="next-best-question-operator-only"/.test(page), true);
-check('F34 the Next objective line handles it too',
-  /nextBestQuestion\.kind === "operator_only"\s*\? "Finish your underwriting checklist below — nothing left to ask the seller\."/.test(page), true);
+// B15-03 slice A (Captain hosted Test 2026-11-03): the separate Next objective line was removed as redundant;
+// the "no seller question left" case stays handled by the card above.
+check('F34 the redundant Next objective line is gone (Captain 2026-11-03); the card above still handles it',
+  !/data-testid="seller-call-next-objective"/.test(page) && /data-testid="next-best-question-operator-only"/.test(page), true);
 
 // ── F31 / F36: recorded Current Offer, same carrier on both screens ──────────
 const rail = read('src/lib/rail.ts');
@@ -87,8 +89,9 @@ check('F33 a stale decision says so in the panel summary',
     known.length > 0 && !/<div>ARV:|<div>Repairs:/.test(known) && known.includes('<div>Seller Ask:'), true);
 }
 check('F32 the sticky deal bar still states ARV and Repairs (unchanged)',
-  /factCell\("arv", "ARV", input\.arv, "Not yet established"\),\r?\n\s+factCell\("repairs", "Repairs", input\.repairs, "Not yet established"\),/.test(read('src/lib/seller-call-deal-bar.ts'))
-    && page.includes('<DealBar cells={dealBarCells} />'), true);
+  /* B15-22: the two cells may carry their approval note (withNote); label, value and wait text unchanged. */
+  /(?:withNote\()?factCell\("arv", "ARV", input\.arv, "Not yet established"\)(?:, arvNote\))?,\r?\n\s+(?:withNote\()?factCell\("repairs", "Repairs", input\.repairs, "Not yet established"\)(?:, repairsNote\))?,/.test(read('src/lib/seller-call-deal-bar.ts'))
+    && /<DealBar cells=\{dealBarCells\}(?: compact)? \/>/.test(page), true);
 check('F32 the operator checklist is unchanged',
   page.includes('data-testid="operator-underwriting-checklist"'), true);
 check('F32 with no ARV the ARV & Comps line names the next action (Jess, option B)',

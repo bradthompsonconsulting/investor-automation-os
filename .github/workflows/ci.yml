@@ -244,6 +244,8 @@ jobs:
         run: node app/scripts/test-b15-seller-call.cjs
       - name: Seller conversation script data, navigation and on-record projection (INV-103, B15-03 Rev 6 slices 1-2) — 61 offline checks
         run: node app/scripts/test-seller-conversation.cjs
+      - name: Seller conversation Save at Summary -- note carrier format/parse, save plan, per-item results, no resend of uncertain or confirmed items, ledger guard, Production refusal, flag DISABLED (INV-103, B15-03 slice C) — 115 offline checks
+        run: node app/scripts/test-seller-conversation-save.cjs
 
       - name: Current Offer save coordinator — serialized per deal, unresolved block, protected Accept (PR 126) — 67 offline checks
         run: node app/scripts/test-current-offer-save-coordinator.cjs
@@ -312,6 +314,8 @@ jobs:
         run: node app/scripts/test-message-links.cjs
       - name: Conversations GHL hand-off buttons (INV-132, B15-23)
         run: node app/scripts/test-b15-conversations-ghl-buttons.cjs
+      - name: Conversations property context, model and wiring (INV-132, B15-23) — 19 checks
+        run: node app/scripts/test-conversation-property.cjs
       - name: Deal Calculator spread status (INV-134, B15-26)
         run: node app/scripts/test-deal-calculator-bar.cjs
       - name: Deal Calculator wiring
@@ -346,6 +350,9 @@ jobs:
         run: node app/scripts/test-b15-20-contacts-columns.cjs
       - name: Contract Workspace display, combined invariants and checked-in slice provenance (B15-21)
         run: node app/scripts/test-b15-21-contract-display.cjs
+      # Node-only (esbuild + react-dom/server); base identity is pinned by committed SHA-256 (no git object needed).
+      - name: Authoritative figures -- recorded vs calculated-now Seller MAO, ARV on record bound to its read, submitted-snapshot approval, base-identity pins (INV-131, B15-22) — 96 checks
+        run: node app/scripts/test-b15-22-authoritative-figures.cjs
       # B1 Blob authority (B15-26 B1 r7 boundary r2/r3): isolated module, loopback fake service only, no real credential.
       - name: B1 Blob authority -- single-attempt conditional writes, process-local handles, forbidden transitions (INV-134) — 80 checks
         run: node app/scripts/test-blob-authority.cjs
@@ -378,10 +385,26 @@ jobs:
         run: node app/scripts/test-b15-08-inbound-visibility.cjs
       - name: Shell labels on the real page -- no Phase A badge, Conversations heading (INV-126, B15-17)
         run: node app/scripts/test-b15-shell-labels.cjs
+      - name: Conversations property context on the real page, stale thread results (INV-132, B15-23) — 12 checks
+        run: node app/scripts/test-conversation-property-rendered.cjs
+      - name: Conversations property context with the app's real styles at 1100px and 1280px (INV-132, B15-23 r2) — 12 checks
+        run: node app/scripts/test-conversation-property-styled.cjs
       - name: /map and /settings redirect to the Dashboard inside the read gate, real App (B15-18)
         run: node app/scripts/test-b15-18-map-settings-redirect.cjs
       - name: Deal Calculator itemized repairs, both Clears and transfer-once, real page (INV-100, B15-01)
         run: node app/scripts/test-deal-calculator-interaction.cjs
+      - name: Deal Calculator browser drafts -- per operator and deal, blanks kept, no derived value stored (B15-25 Phase 1, INV-133)
+        run: node app/scripts/test-calculator-drafts.cjs
+      - name: Deal Calculator browser drafts, real page -- restore, deal isolation, operator change, slow links (B15-25 Phase 1, INV-133)
+        run: node app/scripts/test-deal-calculator-drafts.cjs
+      - name: Deal Calculation ledger carrier and server guard -- registered v1 note, ownership, no silent overwrite, fresh basis, Production refused, separate from approvals, malformed basis refused, runtime projection (B15-25 Phase 2 r2) — 42 checks
+        run: node app/scripts/test-deal-calculation.cjs
+      - name: Save Calculation to Deal / Load Saved Calculation, real page -- explicit save only, one note.create, stale save blocked, Load asks first, OFF branch, unchanged/double-click/unconfirmed guards, cross-deal isolation (B15-25 Phase 2 r2) — 38 checks
+        run: node app/scripts/test-deal-calculation-save.cjs
+      # B15-25 r4 (INV-133, Bones ACCEPT 2026-11-05): no stale save after the visit ends; restored or typed figures stay
+      # unsaved, so Load asks; confirmed or reconciled saves mark only the figures sent. Real page and real panel, offline.
+      - name: Save Calculation to Deal r4 -- no stale save after an operator, deal or visit change; unsaved work stays unsaved, Load asks; real page and panel (B15-25 r4) — 25 checks
+        run: node app/scripts/test-b15-25-r4.cjs
       - name: Incomplete repairs read as provisional, never a green Meets; numbers unchanged, real page (INV-134 B15-26, INV-100 B15-01) — 55 checks
         run: node app/scripts/test-b15-26-provisional-repairs.cjs
       - name: Calendar reliability -- unavailable is never empty, each failure named, last good read kept and labelled, GHL Calendars one click away, real App (INV-106, B15-07) — 27 checks
@@ -396,12 +419,40 @@ jobs:
         run: node app/scripts/test-b15-06-seller-call-focus.cjs
       - name: Seller conversation on the real Seller Call page -- openings, never-blocking navigation, drafts, on-record sources, repair-estimate new tab, Summary recap, readiness levels, isolation between loaded deals, layout; zero writes (INV-103, B15-03) — 103 checks
         run: node app/scripts/test-seller-conversation-rendered.cjs
+      - name: Seller conversation Save at Summary on the real Seller Call page -- flag off shows the plan with zero writes; harness-enabled save writes in order and reports confirmed/refused/uncertain per item; drafts kept; no automatic or duplicate resend; Check again; leave warning; autosave sections integrated when on, unchanged when off (INV-103, B15-03 slice C) — 64 checks
+        run: node app/scripts/test-seller-conversation-save-rendered.cjs
       - name: B1 repair approval ENABLED path on the real page, offline (committed switch on for Test; legacy viewer served the switch-off capability) (INV-134) — 81 checks
         run: node app/scripts/test-repair-approval-browser.cjs
       # Both Production negotiation settings against the real write scope and barrier rules; floor 105
       # (NB6-NB8: a live, unspent reservation for A's deal is refused on B, then writes A once; 23770f6).
       - name: Contact isolation and Production write scope, real pages (B14-12, B14-13) — 105 checks
         run: node app/scripts/test-contact-isolation.cjs
+      # Board 15 R0b P2 (Bones 2026-11-05): the property-answers panel mounts on the real Contact page only when the
+      # server-projected capability is on; Production / committed Test (0-3 deals) render nothing and send nothing.
+      - name: Property answers gate on the real Contact page, Production / Test / Test-enabled (R0b P2) — 74 checks
+        run: node app/scripts/test-property-answers-gate.cjs
+
+      # B15-27 / B15-27b (Bones ACCEPT through r4 fedbd21 and the two-deal tests 677b364, 2026-11-05): a delayed result
+      # for one contact, deal or operator never lands on another; drafts are kept per record; an uncertain save stays
+      # uncertain. Real Contact and Seller Call pages, offline (scripts/harness/b15-27b, b15-27-cross-contact).
+      - name: Contact drafts store -- identity-keyed records, notices, storage failure (B15-27b P2) — 22 checks
+        run: node app/scripts/test-contact-drafts.cjs
+      - name: Cross-contact isolation, real pages -- a delayed result for contact A never changes contact B (B15-27) — 49 checks
+        run: node app/scripts/test-b15-27-cross-contact.cjs
+      - name: Per-contact saving state, real pages (B15-27b P1) — 25 checks
+        run: node app/scripts/test-b15-27b-pending.cjs
+      - name: Draft preservation per contact, deal and operator, real pages (B15-27b P2) — 50 checks
+        run: node app/scripts/test-b15-27b-drafts.cjs
+      - name: Seller Call -- recovery and note appends bound to their contact (B15-27b P3, P4) — 34 checks
+        run: node app/scripts/test-b15-27b-seller-call.cjs
+      - name: Notice isolation and deal-bound outcomes (B15-27b r2) — 23 checks
+        run: node app/scripts/test-b15-27b-r2.cjs
+      - name: Reconciliation bound to the exact contact; call-log operator bound before the reservation (B15-27b r3) — 13 checks
+        run: node app/scripts/test-b15-27b-r3.cjs
+      - name: No reconciliation of an uncertain note by an identical note (B15-27b r4) — 15 checks
+        run: node app/scripts/test-b15-27b-r4.cjs
+      - name: Same-contact two-deal isolation -- above-Max override and readiness retry (B15-27b) — 27 checks
+        run: node app/scripts/test-b15-27b-two-deal.cjs
 
       # B15-04 C1-C4 r4: draft recovery, stored operation authority, wording and fresh-load non-bypass (real handler, offline).
       - name: Property answers recovery and authority, server (B15-04 C1-C4) - 21 cases

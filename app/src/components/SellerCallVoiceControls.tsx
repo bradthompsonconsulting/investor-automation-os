@@ -204,7 +204,7 @@ export function SellerCallVoiceControls(props: { contactId: string; sellerName: 
             <ExternalLink size={16} aria-hidden="true" /> Open seller in GHL
           </button>
         </div>
-        <div className="seller-call-mode__hint" aria-live="polite" data-testid="ghl-handoff-status">
+        <div className="seller-call-mode__hint" aria-live="polite" data-testid="ghl-handoff-status" data-state={handoff ? "result" : "idle"}>
           <GhlHandoffNotice result={handoff} ghlUrl={ghlUrl} />
         </div>
         {!destination ? (
@@ -228,7 +228,7 @@ export function SellerCallVoiceControls(props: { contactId: string; sellerName: 
             </button>
           )}
         </div>
-        <div className="seller-call-mode__hint" aria-live="polite">
+        <div className="seller-call-mode__hint" aria-live="polite" data-unavailable={!destination ? "true" : undefined} data-state={copyState === "idle" ? "idle" : "result"}>
           {!destination
             ? "Unavailable: no valid seller number."
             : isMobile ? "Your phone will prefill the number. You must press Send." : copyState === "copied" ? "Seller number copied." : copyState === "failed" ? "Copy failed — select the number above and copy it manually." : "Use your ordinary cell-phone calling path."}

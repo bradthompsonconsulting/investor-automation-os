@@ -30,12 +30,20 @@
  *      engine's pick (star) is on Price; the strip never says "approved".
  *   P2-1 (Bones). Condition offers the EXISTING repair estimator: this contact's
  *      /underwriting page, opened in a new tab; this page and its drafts stay.
- *   P2-2 (Bones). Summary recaps the eight earlier questions read-only: saved
- *      items with their sources, drafts labelled "Draft — not saved" verbatim,
- *      untouched questions Unanswered; no input, no offer wording.
+ *   SUM (Captain C8 / plan A7; Bones P2 on f919d3f). Summary shows the call note
+ *      read-only: every question Opening -> Summary (+ follow-up date) then General
+ *      notes, in order; each answer equals the editable Call notes value; blank
+ *      stays blank (never "Unanswered"); "Seller doesn't know" printed; NOT SAVED.
+ *      (Replaces the superseded P2-2 Saved/Draft recap checks, history at 901b1e9.)
  *   I. (Bones P2-3) Isolation between FULLY LOADED deals: A -> B -> A -> B with
  *      distinct recorded values and drafts; two deals on one contact (C); and a
  *      delayed old read (A's reads held, route moves to B, B loads, A released).
+ *   SA. Slice A (Captain hosted Test 2026-11-03): calling controls compact at the top right and greyed when
+ *      unavailable with no explanation text; thin deal strip; no Next objective; readiness a small chip;
+ *      conversation first, Deal tools (all existing panels) collapsible below; the Captain's exact wording;
+ *      exactly the approved controls per question; GHL-backed controls named + NOT SAVED; Call notes = every
+ *      question in order sharing the card's draft state, blank stays blank, "Seller doesn't know" printed,
+ *      headings navigate.
  *   G. Layout (real CSS): at 1100x800, 1280x800, 1440x900, and 1440x900 with
  *      Full Script + Notes open, the conversation panel does not overflow
  *      sideways and its spoken line and controls are fully visible.
@@ -62,6 +70,7 @@ const { formatSellerPricePositionNote, formatTransactionAssumptionsNote, formatP
 /* Bones P2-3: two more FULLY LOADED sellers, with distinct recorded values.
    B: one deal. C: two deals on the same contact (the page asks which one). */
 const B = 'syn-conv-bella';
+const N = 'syn-conv-nora-nophone';
 const B_OPP = `${B}-opp`;
 const C = 'syn-conv-cara';
 const C1 = `${C}-opp-one`;
@@ -69,6 +78,8 @@ const C2 = `${C}-opp-two`;
 const EXTRA = {
   [B]: { firstName: 'Bella', address1: '77 Second St', city: 'Waco', state: 'TX', postalCode: '76701', deals: [[B_OPP, 'Bella deal']] },
   [C]: { firstName: 'Cara', address1: '9 Third Ave', city: 'Tyler', state: 'TX', postalCode: '75701', deals: [[C1, 'Cara deal one'], [C2, 'Cara deal two']] },
+  /* Slice A: a seller with NO phone number (no deal needed) -- the calling controls must be greyed, with no explanation text. */
+  [N]: { firstName: 'Nora', address1: '11 Fourth Rd', city: 'Plano', state: 'TX', postalCode: '75024', deals: [], phone: '' },
 };
 const displayOf = (x) => [x.address1, [x.city, [x.state, x.postalCode].join(', ')].join(', ')].join(', ');
 const n = (id, body) => ({ id, body, dateAdded: '2026-10-05T15:00:00.000Z' });
@@ -79,6 +90,7 @@ const EXTRA_NOTES = {
       transactionStructure: { kind: 'value', value: 'Bella structure' }, closingPossession: { kind: 'value', value: 'Bella closes in 60 days' }, titleComplications: { kind: 'value', value: 'Bella lien question' } })),
     n('b-price', formatSellerPricePositionNote({ opportunityId: B_OPP, at: '2026-10-05T15:03:00.000Z', operator: null, kind: 'price', price: 333000 })),
   ],
+  [N]: [],
   [C]: [
     n('c1-price', formatSellerPricePositionNote({ opportunityId: C1, at: '2026-10-05T15:03:00.000Z', operator: null, kind: 'price', price: 210000 })),
     n('c2-price', formatSellerPricePositionNote({ opportunityId: C2, at: '2026-10-05T15:04:00.000Z', operator: null, kind: 'price', price: 290000 })),
@@ -90,7 +102,7 @@ const extraRows = () => Object.entries(EXTRA).flatMap(([cid, x]) => x.deals.map(
 function extraAnswer(req) {
   if (req.kind === 'ghl-opportunities') { const a = fx.answer(req); return { status: a.status, body: { ...a.body, opportunities: [...a.body.opportunities, ...extraRows()] } }; }
   const x = EXTRA[req.contact];
-  if (req.kind === 'detail' && x) return { status: 200, body: { contact: { id: req.contact, firstName: x.firstName, lastName: 'Synthetic', phone: '+15555550123', address1: x.address1, city: x.city, state: x.state, postalCode: x.postalCode, customFields: [] } } };
+  if (req.kind === 'detail' && x) return { status: 200, body: { contact: { id: req.contact, firstName: x.firstName, lastName: 'Synthetic', phone: x.phone ?? '+15555550123', address1: x.address1, city: x.city, state: x.state, postalCode: x.postalCode, customFields: [] } } };
   if (req.kind === 'notes' && x) return { status: 200, body: { notes: EXTRA_NOTES[req.contact].map((y) => ({ ...y })) } };
   if (req.kind === 'row' && x) return { status: 200, body: { id: req.contact, firstName: x.firstName, lastName: 'Synthetic', phone: '+15555550123', tags: [] } };
   if (req.kind === 'opp-read' && extraRows().some((o) => o.id === req.target)) return { status: 200, body: { opportunity: { id: req.target, contactId: extraRows().find((o) => o.id === req.target).contactId, customFields: [] } } };
@@ -99,7 +111,7 @@ function extraAnswer(req) {
 const json = (status, body) => ({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const watchdog = setTimeout(() => { console.error('FAIL  did not finish within 12 minutes'); process.exit(1); }, 12 * 60_000);
 
-const FLOOR = 103;
+const FLOOR = 140;   // Release 15-B step 92: the 80 px check is replaced by five compact-layout contract checks
 const TARGET = '/src/components/SellerConversation.tsx';
 const PAGE = '/src/pages/SellerCallWorkspace.tsx';
 /* [file, from, to]: each `from` must occur exactly once in its file. */
@@ -121,8 +133,31 @@ const MUTATIONS = {
   stalesource: [[PAGE, '      .then(([c, pipeline, policy, notesResult]) => {\n        if (cancelled) return;\n', '      .then(([c, pipeline, policy, notesResult]) => {\n']],
   // Bones P2-1: the repair estimate replaces this page instead of opening a new tab.
   sametab: [[TARGET, 'href={repairsHref} target="_blank" rel="noopener noreferrer"', 'href={repairsHref}']],
-  // Bones P2-2: drafts are presented as saved in the recap.
-  recapsaved: [[TARGET, '<span className="sc-chip sc-chip-draft">Draft — not saved</span>', '<span className="sc-chip sc-chip-record">Saved</span>']],
+  // (recapsaved, the Bones P2-2 control on the old Saved/Draft recap, is retired with that recap: the Captain's
+  //  2026-11-03 C8 ruling replaced it with the read-only call note, covered by the three controls below.)
+  // Slice A P2 (Bones, f919d3f): the Summary leaves General notes out of the call note.
+  summarymissing: [[TARGET, '{note.map((row) => (\n                  <li key={row.id} data-testid={`sc-summary-note-${row.id}`}>', '{note.filter((row) => row.kind !== "general").map((row) => (\n                  <li key={row.id} data-testid={`sc-summary-note-${row.id}`}>']],
+  // Slice A P2: the Summary prints "Unanswered" for a blank answer.
+  summaryunanswered: [[TARGET, '<span className="sc-muted">{x.label}:</span> {x.value}', '<span className="sc-muted">{x.label}:</span> {x.value || "Unanswered"}']],
+  // Slice A P2: the Summary reads a different (empty) copy instead of the shared draft.
+  summarystale: [[TARGET, '  const note = noteFor(d);', '  const note = noteFor(d);\n  const staleNote = noteFor(EMPTY_CONVERSATION);'], [TARGET, '{note.map((row) => (\n                  <li key={row.id} data-testid={`sc-summary-note-${row.id}`}>', '{staleNote.map((row) => (\n                  <li key={row.id} data-testid={`sc-summary-note-${row.id}`}>']],
+  // Slice A: the Call notes edit a separate copy (not the card's draft state).
+  notesdiverge: [[TARGET, 'onChange={(v) => update((p) => withField(p, row.id, f.id, v))} />', 'onChange={() => {}} />']],
+  // Slice A: GHL-backed controls stop saying NOT SAVED.
+  unsavedlabel: [[TARGET, '<span className="sc-ghl-unsaved">NOT SAVED</span>', '']],
+  // Slice A: a Call-notes heading no longer opens its question.
+  // Release 15-B step 92 layout controls (each must fail a named SA layout check, not merely change a height):
+  // the compact strip renders with its non-compact padding.
+  layoutnoncompact: [[PAGE, 'padding: compact ? "6px 12px" : "16px 20px", background: "#0F172A"', 'padding: "16px 20px", background: "#0F172A"']],
+  // the strip is capped and clipped (a max-height with overflow hidden).
+  layoutclip: [[PAGE, 'borderRadius: "10px", marginBottom: compact ? "6px" : "16px",', 'borderRadius: "10px", marginBottom: compact ? "6px" : "16px", maxHeight: "60px", overflow: "hidden",']],
+  // a provenance note is hidden.
+  layouthidenote: [[PAGE, 'style={{ fontSize: "10px", color: "#F59E0B", maxWidth: "200px", lineHeight: 1.3 }}', 'style={{ fontSize: "10px", color: "#F59E0B", maxWidth: "200px", lineHeight: 1.3, visibility: "hidden" }}']],
+  // the content below rides up over the strip (obstruction).
+  layoutobstruct: [[PAGE, 'borderRadius: "10px", marginBottom: compact ? "6px" : "16px",', 'borderRadius: "10px", marginBottom: compact ? "-70px" : "16px",']],
+  // cells too wide: more than two rows at 1440x900.
+  layoutrows: [[PAGE, 'minWidth: compact ? "96px" : "128px"', 'minWidth: compact ? "330px" : "128px"']],
+  headingnav: [[TARGET, 'aria-current={i === d.current ? "step" : undefined} onClick={() => go(i)}>\n                  {row.heading}', 'aria-current={i === d.current ? "step" : undefined} onClick={() => {}}>\n                  {row.heading}']],
 };
 const MUTATION = process.env.SC_CONV_MUTATION || '';
 if (MUTATION && !MUTATIONS[MUTATION]) { console.error(`FAIL  unknown SC_CONV_MUTATION ${MUTATION}`); process.exit(2); }
@@ -331,26 +366,34 @@ async function main() {
     await press(page, 'sc-nav-ownership');
     check('P2-1: no other question offers the repair link', (await tid(page, 'sc-repairs-link').count()) === 0);
 
-    // P2-2. Summary recap: saved vs draft, read-only, nothing inferred
+    // Summary = the call note, read-only (Captain C8 / plan A7; Bones P2 on f919d3f). Replaces the superseded
+    // P2-2 Saved/Draft recap checks (kept in git history at 901b1e9).
+    await press(page, 'sc-nav-opening');
+    await tid(page, 'sc-field-opening-response').fill('Open to talking');
+    await press(page, 'sc-nav-asis');
+    await press(page, 'sc-dont-know');
     await press(page, 'sc-nav-summary');
-    const recapText = (id) => tid(page, `sc-recap-${id}`).textContent();
-    check('P2-2: Summary shows a recap row for each of the eight earlier questions', (await page.locator('[data-testid^="sc-recap-"][data-status]').count()) === 8);
-    const priceRow = await recapText('price');
-    check('P2-2: Price lists the saved seller price position with its source AND the unsaved draft, each labelled',
-      priceRow.includes('Saved') && priceRow.includes('Seller price position: $425,000') && priceRow.includes('Seller price position note')
-      && priceRow.includes('Draft — not saved') && priceRow.includes("Seller's stated price ($): 410000"), priceRow);
-    check('P2-2: the draft price is shown verbatim, not formatted or merged into a saved figure', !priceRow.includes('$410,000') && !/Asking price: \$410/.test(priceRow), priceRow);
-    const ownRow = await recapText('ownership');
-    check('P2-2: Ownership lists the saved title note and the unsaved owners draft', ownRow.includes('Title complications: None (recorded)') && ownRow.includes('Draft — not saved') && ownRow.includes('Ready and a sibling'), ownRow);
-    const reasonRow = await recapText('reason');
-    check('P2-2: Reason is draft only (nothing saved claimed)', reasonRow.includes('Draft — not saved') && !reasonRow.includes('Saved'), reasonRow);
-    const occRow = await recapText('occupancy');
-    check('P2-2: Occupancy shows the draft choice as a draft', occRow.includes('Draft — not saved') && occRow.includes('Tenant Occupied') && !occRow.includes('Saved'), occRow);
-    const asisRow = await recapText('asis');
-    check('P2-2: an untouched question reads Unanswered, with nothing filled in', asisRow.includes('Unanswered') && !asisRow.includes('Saved') && !asisRow.includes('Draft'), asisRow);
-    check('P2-2: every draft line in the recap is labelled "Draft — not saved"', (await page.locator('[data-testid="sc-recap-draft"]').count()) === (await page.locator('[data-testid="sc-recap-draft"]', { hasText: 'Draft — not saved' }).count()) && (await page.locator('[data-testid="sc-recap-draft"]').count()) >= 4);
-    check('P2-2: the recap has no input and no button (read-only)', (await tid(page, 'sc-recap').locator('input,textarea,select,button').count()) === 0);
-    check('P2-2: the recap names no offer or commitment', !/offer|commit|agree/i.test((await tid(page, 'sc-recap').textContent()).replace(/Seller price position/g, '')));
+    await tid(page, 'sc-field-summary-followup').fill('2026-11-10');
+    const sumIds = await page.locator('[data-testid="sc-summary-note"] > ol > li').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+    check('SUM: Summary shows the call note -- every question, Opening through Summary, then General notes, in order',
+      JSON.stringify(sumIds) === JSON.stringify([...ORDER.map((q) => `sc-summary-note-${q}`), 'sc-summary-note-general']), sumIds);
+    const ans = (field) => page.locator(`[data-testid="sc-summary-answer"][data-field="${field}"]`).textContent();
+    check('SUM: Opening, Summary and its follow-up date and General notes appear with this call\'s drafts',
+      (await ans('opening.response')).includes('Open to talking') && (await ans('summary.next')).includes('Send numbers Friday')
+      && (await ans('summary.followup')).includes('2026-11-10') && (await tid(page, 'sc-summary-note-general').textContent()).includes('Seller prefers mornings. Dog on site.'));
+    check('SUM: the seller\'s draft price is shown verbatim (no formatting, no recorded figure mixed in)', (await ans('price.amount')).trim().endsWith('410000') && !(await tid(page, 'sc-summary-note').textContent()).includes('$425,000'));
+    check('SUM: "Seller doesn\'t know" is printed as the As-is answer', (await tid(page, 'sc-summary-dk-asis').textContent({ timeout: 4000 }).catch(() => '')) === "Seller doesn't know");
+    const blankRow = (await ans('condition.overall')).replace(/\s+/g, ' ').trim();
+    check('SUM: a blank answer stays blank (label only), and "Unanswered" appears nowhere in the Summary', blankRow === 'Condition (seller\'s words):' && !(await tid(page, 'sc-summary-note').textContent()).includes('Unanswered'), blankRow);
+    const notesVals = await page.locator('[data-testid="sc-notes-panel"] [data-testid^="sc-note-field-"]').evaluateAll((els) => els.map((e) => [e.getAttribute('data-testid').replace('sc-note-field-', '').replace('-', '.'), e.value]));
+    const sumVals = await page.locator('[data-testid="sc-summary-answer"][data-field]').evaluateAll((els) => els.map((e) => [e.getAttribute('data-field'), e.textContent.replace(/^[^:]*:\s?/, '')]));
+    check('SUM: every Summary answer equals the editable Call notes value for the same field (one draft state)',
+      sumVals.length === notesVals.length && sumVals.every(([f, v], i) => notesVals[i][0] === f && notesVals[i][1] === v), { sumVals, notesVals });
+    check('SUM: the Summary is read-only (no input, select, textarea or button inside it)', (await tid(page, 'sc-summary-note').locator('input,textarea,select,button').count()) === 0);
+    check('SUM: the Summary says NOT SAVED and never claims anything was saved', (await tid(page, 'sc-summary-note').textContent()).includes('NOT SAVED') && !/\bSaved\b/.test(await tid(page, 'sc-summary-note').textContent()));
+    await tid(page, 'sc-note-field-condition-overall').fill('Roof leaks over the garage');
+    check('SUM: an edit in the Call notes appears in the Summary at once', (await ans('condition.overall')).includes('Roof leaks over the garage'));
+    check('SUM: the old recap is gone', (await page.locator('[data-testid="sc-recap"]').count()) === 0);
 
     // E. readiness
     const levels = {};
@@ -460,6 +503,165 @@ async function main() {
     check('E2: occupancy shows "Vacant" from GHL contact Occupancy Status', (await tid(page, 'sc-on-record').textContent()).includes('Occupancy: Vacant') && (await tid(page, 'sc-on-record').textContent()).includes('GHL contact Occupancy Status'));
     fx.state.notes.push(...held);
     await context.close();
+  }
+
+  /* ===== SA. Slice A (Captain hosted Test, 2026-11-03): layout, wording, one control per question, GHL names, Call notes ===== */
+  fx.reset();
+  {
+    const { context, page } = await open(1440, 900);
+    const box = (id) => page.getByTestId(id).boundingBox();
+    // Layout
+    const head = await box('seller-call-header-row');
+    const calls = await box('seller-call-calltop');
+    check('SA layout: calling controls share the title row, at its right', !!head && !!calls && calls.y < head.y + 40 && calls.x + calls.width > head.x + head.width - 20 && calls.x > head.x + head.width / 3, { head, calls });
+    check('SA layout: AirDroid, GHL Phone and Cell are all there, compact (only the AirDroid box names who is dialled)',
+      (await page.locator('[data-testid="seller-call-calltop"] [data-testid$="-mode"]').count()) === 3
+      && (await page.locator('[data-testid="seller-call-calltop"] .seller-call-mode__identity:visible').count()) === 1
+      && (await page.locator('[data-testid="call-with-airdroid-mode"] .seller-call-mode__identity:visible').count()) === 1);
+    check('SA layout: no idle explanation text under the calling controls', (await page.locator('[data-testid="seller-call-calltop"] .seller-call-mode__hint:visible').count()) === 0);
+    /* Release 15-B step 92 (GitHub CI ubuntu-26.04, 2026-11-06): the former check required the strip to be < 80 px tall.
+       That held only where the harness's fallback fonts are narrow (Windows); on Linux, and with the app's real web fonts
+       on BOTH platforms, the strip is two readable rows (102.89 px). Product ruling 2026-11-06 (Jess recommendation,
+       Captain): two rows at 1440x900 are accepted. The compact contract is checked instead of a pixel height: compact
+       styling, at most two rows, every figure/label/provenance note present, nothing clipped/truncated/overflowing, and
+       every part visible and uncovered -- with the calling controls and the conversation also hit-tested. */
+    const L = await page.evaluate(() => {
+      const q = (id) => document.querySelector(`[data-testid="${id}"]`);
+      const R = (el) => { const b = el.getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height, r: b.right, b: b.bottom }; };
+      const hits = (el) => { const b = el.getBoundingClientRect(); if (!b.width || !b.height) return false;
+        const h = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2); return !!h && (h === el || el.contains(h)); };
+      const strip = q('seller-call-deal-strip'); const s = R(strip); const scs = getComputedStyle(strip);
+      const cells = [...strip.children].map((c) => {
+        const parts = [...c.querySelectorAll('span')].filter((p) => p.children.length === 0 && p.textContent.trim());
+        return { y: Math.round(c.getBoundingClientRect().y), label: (c.firstElementChild?.textContent || '').trim(),
+          parts: parts.map((p) => { const b = R(p); const cs = getComputedStyle(p);
+            return { text: p.textContent.trim(), font: cs.fontFamily, size: cs.fontSize,
+              inside: b.x >= s.x - 0.5 && b.r <= s.r + 0.5 && b.y >= s.y - 0.5 && b.b <= s.b + 0.5,
+              shown: cs.visibility === 'visible' && cs.display !== 'none' && +cs.opacity > 0 && b.w > 0 && b.h > 0,
+              cut: p.scrollWidth > p.clientWidth + 1 || cs.textOverflow === 'ellipsis', uncovered: hits(p) }; }) };
+      });
+      const callControls = [...document.querySelectorAll('[data-testid="seller-call-calltop"] [data-testid$="-mode"]')]
+        .map((m) => m.querySelector('button, a')).filter(Boolean).map((el) => ({ id: el.getAttribute('data-testid') || el.textContent.trim(), uncovered: hits(el) }));
+      const card = q('sc-card'); const cb = card.getBoundingClientRect();
+      const qPoint = document.elementFromPoint(cb.x + 40, cb.y + 20);
+      return { compact: strip.getAttribute('data-compact'), padding: scs.padding, stripBox: s,
+        clip: { scrollW: strip.scrollWidth, clientW: strip.clientWidth, scrollH: strip.scrollHeight, clientH: strip.clientHeight, overflow: scs.overflow,
+          pageOverflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth },
+        rows: new Set(cells.map((c) => c.y)).size, cells, labels: cells.map((c) => c.label), text: strip.innerText,
+        callControls, conversationUncovered: !!qPoint && card.contains(qPoint), conversationBelowStrip: cb.y >= s.b - 0.5 };
+    });
+    const parts = L.cells.flatMap((c) => c.parts);
+    const values = parts.filter((p) => /Space Grotesk/.test(p.font));
+    check('SA layout: the deal strip is the compact strip (data-compact, compact padding, 13px figures)',
+      L.compact === 'true' && L.padding === '6px 12px' && values.length >= 4 && values.every((p) => p.size === '13px'), { compact: L.compact, padding: L.padding, sizes: values.map((p) => p.size) });
+    check('SA layout: at 1440x900 the compact strip uses at most two rows (product ruling 2026-11-06)', L.rows >= 1 && L.rows <= 2, { rows: L.rows, strip: L.stripBox });
+    check('SA layout: all seven deal figures keep their labels, values and provenance notes in the strip',
+      JSON.stringify(L.labels) === JSON.stringify(['ARV', 'Repairs', 'Seller Position', 'Current Offer', 'Target', 'Max', 'Spread'])
+      && ['$650,000', '$40,000', '$397,455', '$416,830', 'Not entered yet', 'None recorded', 'no Current Offer entered for this negotiation'].every((t) => L.text.includes(t))
+      && (L.text.match(/Approved/g) || []).length === 2 && (L.text.match(/Calculated now from these inputs/g) || []).length === 2, { labels: L.labels, text: L.text });
+    check('SA layout: nothing in the strip is clipped, truncated or outside it; no page overflow',
+      parts.length > 0 && parts.every((p) => p.inside && !p.cut) && L.clip.scrollW <= L.clip.clientW + 1 && L.clip.scrollH <= L.clip.clientH + 1 && !L.clip.pageOverflowX,
+      { clip: L.clip, bad: parts.filter((p) => !p.inside || p.cut).map((p) => p.text) });
+    check('SA layout: every strip label, figure and note, every calling control and the conversation are visible and uncovered',
+      parts.every((p) => p.shown && p.uncovered) && L.callControls.length === 3 && L.callControls.every((c) => c.uncovered) && L.conversationUncovered && L.conversationBelowStrip,
+      { hidden: parts.filter((p) => !p.shown || !p.uncovered).map((p) => p.text), calls: L.callControls, conversationUncovered: L.conversationUncovered, conversationBelowStrip: L.conversationBelowStrip });
+    check('SA layout: "Next objective" is gone', (await page.locator('[data-testid="seller-call-next-objective"]').count()) === 0);
+    const chip = await box('seller-call-readiness-chip');
+    check('SA layout: readiness is one small chip in the strip (not a large badge)', !!chip && chip.height < 40, chip);
+    const strip = await box('seller-call-deal-strip');
+    const conv = await box('seller-conversation');
+    const tools = await box('seller-call-deal-tools');
+    check('SA layout: the conversation comes first, directly under the strip; Deal tools follow it', conv.y > strip.y && conv.y - (strip.y + strip.height) < 80 && tools.y > conv.y + conv.height - 2, { strip, conv, tools });
+    check('SA layout: the conversation question is visible without scrolling at 1440x900', conv.y < 450);
+    check('SA layout: Deal tools hold the existing decision, negotiation, outcome and underwriting panels',
+      (await page.locator('[data-testid="seller-call-deal-tools"] [data-testid="call-outcome-panel"]').count()) === 1
+      && (await page.locator('[data-testid="seller-call-deal-tools"] [data-testid="negotiation-panel"]').count()) === 1
+      && (await page.locator('[data-testid="seller-call-deal-tools"] [data-testid="repairs-entry-panel"]').count()) === 1
+      && (await page.locator('[data-testid="seller-call-deal-tools"] [data-testid="readiness-human-action-panel"],[data-testid="seller-call-deal-tools"] [data-testid="readiness-human-action-panel-loading"]').count()) === 1);
+    await press(page, 'seller-call-deal-tools-summary');
+    check('SA layout: Deal tools collapse (panels hidden, conversation stays)', !(await tid(page, 'call-outcome-panel').isVisible()) && (await tid(page, 'sc-card').isVisible()));
+    await press(page, 'seller-call-deal-tools-summary');
+    check('SA layout: Deal tools reopen with the panels intact', await tid(page, 'call-outcome-panel').isVisible());
+
+    // Wording (Captain, exact)
+    await press(page, 'sc-nav-ownership');
+    check('SA wording: Ownership line', (await tid(page, 'sc-say').textContent()) === '“Is the property owned in your name, or is anyone else involved in making the decision to sell?”');
+    await press(page, 'sc-nav-price');
+    check('SA wording: Price shows the Captain\'s alternate line', (await tid(page, 'sc-alternate').textContent()) === 'Or: “What would you need to walk away with from the sale for this to make sense?”');
+    await press(page, 'sc-nav-asis');
+    check('SA wording: As-is main line and its follow-up',
+      (await tid(page, 'sc-say').textContent()) === "“What if you could sell it exactly as it sits, with no repairs or cleanup, leave behind anything you don't want, and close on a timeline that works for you? Would that take some weight off your shoulders?”"
+      && (await tid(page, 'sc-then').textContent()).includes("Is that something you'd consider?"));
+    await press(page, 'sc-nav-reason');
+    check('SA wording: the Reason answer is labelled "Reason for selling"', (await page.locator('label[for="sc-reason-reason"]').textContent()).startsWith('Reason for selling'));
+
+    // One control per question (in the card)
+    const EXPECT = { opening: 1, address: 5, ownership: 1, occupancy: 2, reason: 1, timing: 1, price: 2, asis: 1, condition: 1, summary: 2 };
+    const counts = {};
+    for (const q of ORDER) { await press(page, `sc-nav-${q}`); counts[q] = await page.locator('[data-testid="sc-card"] [data-testid^="sc-field-"]').count(); }
+    check('SA controls: each question shows exactly its approved controls (no duplicate boxes)', JSON.stringify(counts) === JSON.stringify(EXPECT), counts);
+
+    // GHL-backed controls are named and NOT SAVED
+    await press(page, 'sc-nav-occupancy');
+    const occGhl = await tid(page, 'sc-ghl-occupancy-occupancy').textContent();
+    check('SA GHL: the Occupancy control names its GHL field and says NOT SAVED', occGhl.includes('GHL · Contact · Occupancy Status') && occGhl.includes('NOT SAVED'), occGhl);
+    check('SA GHL: the GHL-backed control is drawn differently (dashed border); its notes field is not', (await tid(page, 'sc-field-occupancy-occupancy').evaluate((e) => getComputedStyle(e).borderTopStyle)) === 'dashed'
+      && (await tid(page, 'sc-field-occupancy-lease').evaluate((e) => getComputedStyle(e).borderTopStyle)) !== 'dashed');
+    await press(page, 'sc-nav-price');
+    check('SA GHL: the seller\'s price names "Seller price position" and says NOT SAVED', (await tid(page, 'sc-ghl-price-amount').textContent()).includes('GHL · Seller price position') && (await tid(page, 'sc-ghl-price-amount').textContent()).includes('NOT SAVED'));
+    await press(page, 'sc-nav-ownership');
+    check('SA GHL: a non-GHL answer has no GHL label', (await page.locator('[data-testid="sc-card"] [data-testid^="sc-ghl-"]').count()) === 0);
+
+    // Call notes = the same draft state, in order, blank stays blank, "Seller doesn't know" printed, heading navigates
+    const noteIds = await page.locator('[data-testid="sc-notes-panel"] > ol > li').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')));
+    check('SA notes: every question in order, then General notes', JSON.stringify(noteIds) === JSON.stringify([...ORDER.map((q) => `sc-note-${q}`), 'sc-note-general']), noteIds);
+    check('SA notes: blank answers are blank (no "Unanswered" text) and the panel says NOT SAVED',
+      !(await tid(page, 'sc-notes-panel').textContent()).includes('Unanswered') && (await tid(page, 'sc-notes-unsaved').textContent()).includes('NOT SAVED')
+      && (await tid(page, 'sc-note-field-reason-reason').inputValue()) === '');
+    await press(page, 'sc-nav-price');
+    await tid(page, 'sc-field-price-amount').fill('412000');
+    check('SA notes: typing in the card shows in the notes (same state)', (await tid(page, 'sc-note-field-price-amount').inputValue()) === '412000');
+    await tid(page, 'sc-note-field-reason-reason').fill('Relocating for work', { timeout: 4000 }).catch(() => log.blockedClicks.push('fill note reason'));
+    await press(page, 'sc-nav-reason');
+    check('SA notes: typing in the notes shows in the card (same state)', (await tid(page, 'sc-field-reason-reason').inputValue()) === 'Relocating for work');
+    check('SA notes: the edit made in the notes marks the question Draft', (await statusOf(page, 'reason')).trim() === 'Draft');
+    await press(page, 'sc-nav-asis');
+    await press(page, 'sc-dont-know');
+    check('SA notes: "Seller doesn\'t know" is printed as the answer in the notes', (await tid(page, 'sc-note-dk-asis').textContent({ timeout: 4000 }).catch(() => '')) === "Seller doesn't know");
+    await press(page, 'sc-note-heading-timing');
+    check('SA notes: selecting a note heading opens that question', (await cardQ(page)) === 'timing');
+    await press(page, 'sc-note-heading-summary');
+    check('SA notes: and another', (await cardQ(page)) === 'summary');
+    check('SA notes: the Summary call note shows the notes-entered draft', (await page.locator('[data-testid="sc-summary-answer"][data-field="reason.reason"]').textContent({ timeout: 4000 }).catch(() => '')).includes('Relocating for work'));
+
+    // Safety
+    check('SA safety: no "Save changes" appeared (page autosave untouched)', (await tid(page, 'seller-call-save-changes').count()) === 0);
+    await context.close();
+
+    // Greyed calling controls for a seller with no phone number
+    const ctx2 = await browser.newContext({ viewport: { width: 1440, height: 900 }, timezoneId: 'America/Chicago', locale: 'en-US' });
+    const p2 = await ctx2.newPage();
+    p2.on('pageerror', (e) => log.pageErrors.push(`nophone: ${String(e)}`));
+    await ctx2.route('**/*', async (rt) => {
+      const r = rt.request(); const url = r.url();
+      if (url.startsWith(base) && !url.includes('/.netlify/functions/')) return rt.continue();
+      if (!url.includes('/.netlify/functions/')) { log.foreign.push(url); return rt.abort(); }
+      const fn = new URL(url).pathname.replace('/.netlify/functions/', '');
+      if (r.method() !== 'GET') { log.writes.push(`${r.method()} ${fn}`); return rt.fulfill(json(405, { error: 'offline test refuses every write' })); }
+      if (fn === 'app-read-session') return rt.fulfill(json(200, { signedIn: true, expiresAt: new Date(Date.now() + 3600_000).toISOString() }));
+      const req = fx.classify(url, 'GET', null);
+      const a = extraAnswer(req) ?? fx.answer(req);
+      return rt.fulfill(json(a.status, a.body));
+    });
+    await p2.goto(`${base}${HARNESS}?start=${encodeURIComponent(`/contacts/${N}/seller-call`)}`);
+    await p2.getByTestId('seller-call-calltop').waitFor({ timeout: 60000 }).catch(() => {});
+    const air = p2.getByTestId('call-with-airdroid');
+    const cell = p2.getByTestId('call-with-cell-copy');
+    const greyed = async (l) => l.evaluate((e) => { const cs = getComputedStyle(e); return e.disabled && Number(cs.opacity) < 0.6 && /grayscale/.test(cs.filter); }).catch(() => false);
+    check('SA calls: with no seller number, AirDroid and Cell are disabled and greyed', (await air.count()) === 1 && (await greyed(air)) && (await greyed(cell)));
+    check('SA calls: no explanatory text is shown for the unavailable controls', (await p2.locator('[data-testid="seller-call-calltop"] .seller-call-mode__hint:visible').count()) === 0);
+    check('SA calls: GHL Phone stays available', await p2.getByTestId('open-ghl-contact').isEnabled().catch(() => false));
+    await ctx2.close();
   }
 
   /* ===== G. layout with the real stylesheet ===== */

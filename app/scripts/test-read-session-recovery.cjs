@@ -575,6 +575,8 @@ async function main() {
     if (want('P2UW')) {
     sessionMs = 3600_000;
     await freshApp(`/contacts/${A}/underwriting`);
+    // B15-22: this fixture has no property address, so the subject facts start collapsed; open them as an operator would.
+    await page.getByTestId('arv-show-subject-facts').click({ timeout: 30000 });
     const sqft = () => page.getByTestId('arv-subject-squareFeet');
     const miscDesc = () => page.getByTestId('repair-misc-description');
     const miscAmt = () => page.getByTestId('repair-misc-amount');

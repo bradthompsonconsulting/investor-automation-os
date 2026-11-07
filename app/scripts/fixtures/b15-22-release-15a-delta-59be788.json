@@ -1,0 +1,30 @@
+{
+  "_comment": "B15-22 S8 Release 15-A baseline (test-only). The ORIGINAL manifest b15-22-base-pins-a55ead5.json and the combined-integration delta b15-22-combined-integration-dea207e.json are kept unchanged. This file lists ONLY the protected files Release 15-A (on main since PR #159) changed or added; S8 accepts each entry only from its exact original pin (changes) or as an exact new file (additions), and S8b pins this list.",
+  "release": "59be78839d48f5087e818ab8f96a5b24df17e5e6",
+  "base": "16bcf122b0858aa97a0acbc55071cb7b3ea87fab",
+  "originalManifest": "b15-22-base-pins-a55ead5.json",
+  "review": "Release 15-A 4739ffe (Bones ACCEPT G1 2026-11-05, audit-evidence/release-15a-4739ffe-review-20261105/00_BONES_ACCEPT.txt), merged to main as 59be788 (PR #159)",
+  "changes": {
+    "src/lib/ghl.ts": {
+      "from": "637788ab3460adf9f72b2f9d39bf0699fc9cef70de38a14819e403adedd3e4dd",
+      "to": "1da5438c0b24543e7e821720b687b8c666272937a613d535af2a27f0379c0408",
+      "reason": "B15-08 INV-107 ef3a623 (LatestInbound type, optional latestInbound/contentType) + B15-07 INV-106 f495411 (calendar readAuthCode import/error classification); exact union per Bones G1."
+    },
+    "netlify/functions/ghl-conversations.ts": {
+      "from": "cf6ce95f35526fa76b969983f932f3564f09e450a271b5ae230e681ebe0449c5",
+      "to": "b0652f501a19d035bf1c53318f659e39e58b54b4030da969ec3f1f93fc7c1677",
+      "reason": "B15-08 INV-107 ef3a623: latest inbound message from the thread's own source with bounded optional enrichment (read endpoint; no write)."
+    },
+    "netlify/functions/ghl-contact-conversations.ts": {
+      "from": "83528620819ed978bfe7f44a94b6d634972210ef51160b2fe1c0b94e4f03fb10",
+      "to": "7e6c4624cc82f9c806cf151b91f6ee9c45481873a161ec94939f5c8a95e6ba92",
+      "reason": "B15-08 INV-107 ef3a623: per-contact conversation read carries contentType for the inbound preview (read endpoint; no write)."
+    }
+  },
+  "additions": {
+    "shared/inbound-message.ts": {
+      "to": "3cc108170234b05b7d8cdeeb430443e3479bc37d03db2fc0c461b4c542a6a929",
+      "reason": "B15-08 INV-107 ef3a623: the shared, pure latest-inbound selection used by the two read endpoints and the UI (no I/O)."
+    }
+  }
+}

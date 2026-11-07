@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { getRuntimeConfig } from "../../shared/ghl-config";
+import { contactDraftKey, useRecordDraft, type ContactDraftIdentity } from "../lib/contact-drafts";
+import { DraftNotice } from "./DraftNotice";
 import { ghl, CALL_DISPOSITION_ID } from "../lib/ghl";
 import { recordOverride, type StorageLike } from "../lib/dispositionOverride";
 import {
@@ -77,6 +80,43 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
   const [submit, setSubmit] = useState<Submit>({ status: "idle" });
   const [owner, setOwner] = useState<Owner>({ kind: "checking" });
   const [checking, setChecking] = useState(false);
+  /* B15-27b P2 -- the chosen result and the call notes are THIS contact's
+     draft (lib/contact-drafts): kept in this browser per contact and operator,
+     restored when the contact is shown again (also after a reload), never shown
+     on another contact. Once Save has reserved its operation the draft records
+     that operation; it goes when that operation is recorded as finished. */
+  const callDraft = useRecordDraft({
+    scope: "calllog", env: getRuntimeConfig().locationId, record: contactId ? { contactId } : null,
+    values: { result: result ?? "", text },
+    apply: (v) => {
+      setResult(v && (CALL_LOG_RESULTS as readonly string[]).includes(v.result) ? (v.result as CallLogResult) : null);
+      setText(v ? v.text : "");
+    },
+  });
+  /* B15-27b r3 (Bones R2-2): the draft identity (contact + OPERATOR) each
+     contact's Save started under, with its operation id -- recorded BEFORE the
+     first await, so an operator change during the reservation can never make
+     the new operator the owner of the earlier operator's save. */
+  const submitted = useRef<Map<string, { id: ContactDraftIdentity; op: string }>>(new Map());
+  /**
+   * A finished operation for `cid`: the draft it was submitted from goes (wherever the page is).
+   * Returns whether the inputs shown now ARE that draft (same contact and operator), i.e. may be cleared.
+   * Without a recorded submission (a finish found on load or from another session), only the shown
+   * operator's own stored draft for that same operation counts -- never a broader match.
+   */
+  const finishedDraft = (cid: string, op: string): boolean => {
+    const sub = submitted.current.get(cid);
+    if (sub && sub.op === op) {
+      submitted.current.delete(cid);
+      if (callDraft.storedOp(sub.id) === op) callDraft.remove(sub.id);
+      const now = callDraft.identityFor({ contactId: cid });
+      return !!now && contactDraftKey(now) === contactDraftKey(sub.id);
+    }
+    const id = callDraft.identityFor({ contactId: cid });
+    if (!id || callDraft.storedOp(id) !== op) return false;
+    callDraft.remove(id);
+    return true;
+  };
   /* The contacts with a save or check running in THIS page. Per contact: an
      operation for A keeps running to its end after the page moves to B, and
      neither blocks the other. */
@@ -94,13 +134,14 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
 
   /** Shows what the server recorded for an operation (or the contact). Never sends anything. */
   function apply(cid: string, view: CallLogView, keepMessage = false) {
+    const ownInputs = view.state === "finished" ? finishedDraft(cid, view.op) : false;   // B15-27b P2 / r3
     if (!forThis(cid)) return;
     if (view.state === "open") operations.current.set(cid, view.op);
     const d = describe(view);
     if (d.tone === "clear") { setOwner({ kind: "clear" }); return; }
     if (d.tone === "done" && view.state === "finished") {
       setSubmit({ status: "done", result: view.outcome.result as CallLogResult });
-      setResult(null); setText("");
+      if (ownInputs) { setResult(null); setText(""); }   // B15-27b r3: only the inputs of the draft this operation was submitted from
       setOwner({ kind: "clear" });
       return;
     }
@@ -125,7 +166,11 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
     setSubmit({ status: "idle" });
     void readCallLogStatus(cid).then((v) => {
       if (!forThis(cid)) return;
-      if (v.state === "finished") { setOwner({ kind: "clear" }); return; }   // a just-finished operation: nothing open
+      if (v.state === "finished") {
+        // B15-27b P2: the kept draft was this finished operation's: it is recorded, so it goes.
+        if (finishedDraft(cid, v.op)) { setResult(null); setText(""); }
+        setOwner({ kind: "clear" }); return;   // a just-finished operation: nothing open
+      }
       apply(cid, v);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -178,6 +223,8 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
     const chosen = result;
     const body = callLogNote(chosen, text.slice(0, CALL_NOTES_MAX));
     const op = crypto.randomUUID();
+    const draftId = callDraft.identityFor({ contactId: cid });   // B15-27b P2: cid's draft, under the operator now
+    if (draftId) submitted.current.set(cid, { id: draftId, op });   // B15-27b r3: bound before the first await
     operations.current.set(cid, op);
     setSubmit({ status: "in_flight" });
     setOwner({ kind: "busy" });
@@ -193,6 +240,7 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
       }
       if (reserved.state === "held") { operations.current.delete(cid); if (forThis(cid)) { setSubmit({ status: "idle" }); apply(cid, reserved.current); } return; }
       if (reserved.state !== "reserved") { apply(cid, reserved); return; }
+      callDraft.markSending(draftId, { result: chosen, text }, op);   // B15-27b P2: the draft now belongs to this operation
 
       // 1. The result, sent ONCE with its derived id. From here the operation runs
       // to its end for ITS contact, even if the page has moved on.
@@ -343,6 +391,7 @@ export function CallLogControl({ contactId, notes, onAttempt, onNoteWritten, onO
       <textarea data-testid="call-log-notes" value={text} maxLength={CALL_NOTES_MAX}
         onChange={(e) => setText(e.target.value)} placeholder={CALL_NOTES_PLACEHOLDER} rows={3} disabled={busy}
         style={{ marginTop: "10px", width: "100%", boxSizing: "border-box", background: "#0B1220", color: "#E2E8F0", border: "1px solid #334155", borderRadius: "6px", padding: "8px 10px", fontSize: "12px", fontFamily: "inherit", resize: "vertical" }} />
+      <DraftNotice testid="call-log-draft" kept={callDraft.kept && !busy} notice={busy || submit.status === "not_saved" ? null : callDraft.notice} what="call log" owner="contact" />
 
       <div style={{ marginTop: "8px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
         <button data-testid="call-log-save" onClick={() => void save()} disabled={busy || locked || !result}

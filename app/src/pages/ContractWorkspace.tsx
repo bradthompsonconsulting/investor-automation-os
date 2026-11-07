@@ -70,6 +70,7 @@ import {
 } from "../lib/contract-execution-carriers";
 import { allContractLifecycleRecordsForOpportunity } from "../lib/contract-lifecycle-carriers";
 import { matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
+import { DISPOSITION_ARV_LABEL, DISPOSITION_REPAIRS_LABEL } from "../lib/authoritative-figures";
 import {
   evaluateDispositionHandoffEligibility, buildDispositionHandoffRecordArgs,
   verifyHandoffMatchesUnderContract,
@@ -4358,8 +4359,10 @@ export default function ContractWorkspace() {
                           <ul style={{ margin: 0, padding: 0, listStyle: "none", fontSize: "12px", color: "#E2E8F0", lineHeight: 1.9 }}>
                             <li>Property: {pkg.propertyAddress.kind === "populated" ? pkg.propertyAddress.value : "unconfirmed"}</li>
                             <li>Seller contract price: {money(pkg.sellerContractPrice)}</li>
-                            <li>Approved ARV: {money(pkg.approvedArv.amount)} {pkg.approvedArv.approvalEvidenceState ? `(${pkg.approvedArv.approvalEvidenceState}, ${pkg.approvedArv.approvalDecision})` : "(no matching ARV approval record)"}</li>
-                            <li>Approved repairs: {money(pkg.approvedRepairs)}</li>
+                            {/* B15-22 / INV-131: these are the frozen snapshot captured at Agreement Reached
+                                (screen.economics.economics), so they are labelled as the banner labels them. */}
+                            <li data-testid="disposition-handoff-preview-arv">{DISPOSITION_ARV_LABEL}: {money(pkg.approvedArv.amount)} {pkg.approvedArv.approvalEvidenceState ? `(${pkg.approvedArv.approvalEvidenceState}, ${pkg.approvedArv.approvalDecision})` : "(no matching ARV approval record)"}</li>
+                            <li data-testid="disposition-handoff-preview-repairs">{DISPOSITION_REPAIRS_LABEL}: {money(pkg.approvedRepairs)}</li>
                             <li>Required signers: {pkg.requiredSigners.map((s) => `${s.role} (${s.displayName})`).join(", ")}</li>
                             <li>GHL document: {pkg.underContract.providerDocumentId} (revision {pkg.underContract.providerDocumentRevision ?? "unavailable"})</li>
                             <li>Artifact SHA-256: <span style={{ fontFamily: "monospace", fontSize: "10px" }}>{pkg.underContract.artifactSha256}</span></li>

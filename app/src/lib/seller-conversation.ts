@@ -30,10 +30,11 @@
  * an assumed value.
  */
 
-export type ScriptSource = "rev6-settled" | "rev6-candidate";
+export type ScriptSource = "rev6-settled" | "rev6-candidate" | "captain-2026-11-03";
 export const SOURCE_LABEL: Record<ScriptSource, string> = {
   "rev6-settled": "Rev 6 wording (settled 2026-10-15)",
   "rev6-candidate": "Rev 6 Test candidate (Captain to review)",
+  "captain-2026-11-03": "Captain's wording (hosted Test, 2026-11-03)",
 };
 
 export type OpeningId = "cold" | "inbound" | "follow_up";
@@ -53,7 +54,12 @@ export const OPENING_THEN = { say: "If everything worked out exactly the way you
 
 /** Stable answer-entry kinds. Changing wording never changes these. */
 export type ControlKind = "text" | "textarea" | "date" | "money" | "choice";
-export type AnswerField = { id: string; label: string; kind: ControlKind; options?: readonly string[]; hint?: string };
+/**
+ * `ghl`: the GHL record this answer corresponds to, shown on the control (Captain 2026-11-03: GHL-backed
+ * fields are visibly distinct and named). Slice A is DRAFT-ONLY: nothing is written, and every such
+ * control is labelled NOT SAVED.
+ */
+export type AnswerField = { id: string; label: string; kind: ControlKind; options?: readonly string[]; hint?: string; ghl?: string };
 
 export type QuestionId =
   | "opening" | "address" | "ownership" | "occupancy" | "reason"
@@ -67,7 +73,9 @@ export type Question = {
   title: string;
   /** The spoken line; for "opening" the selected Opening is spoken instead. */
   say: string;
-  /** "After listening" transition, when Rev 6 has one. */
+  /** Other approved ways to ask the same question (shown as "Or:"). */
+  alternates?: readonly string[];
+  /** "After listening" line, when there is one. */
   then: string | null;
   followUps: readonly string[];
   source: ScriptSource;
@@ -78,7 +86,11 @@ export type Question = {
 /** The exact three values `contact.occupancy` permits (INV95); Rev 6's "Other" is not one of them. */
 export const OCCUPANCY_CHOICES = ["Owner Occupied", "Tenant Occupied", "Vacant"] as const;
 
-/** Rev 6 final order (prototype re-sort): Opening, then nine questions. */
+/**
+ * Rev 6 final order (prototype re-sort): Opening, then nine questions. Captain 2026-11-03 (hosted Test,
+ * INV-103): exact Ownership / Price-alternate / As-is wording, the "Reason for selling" label, and ONE
+ * answer control per question (a specific field plus notes only where the Captain listed it).
+ */
 export const QUESTIONS: readonly Question[] = [
   { id: "opening", title: "Opening", say: "", then: null, source: "rev6-candidate", onRecord: null,
     followUps: ["Confirm you’re speaking with the right person. If they are not interested or request no further contact, end respectfully and follow the existing contact-preference workflow."],
@@ -86,9 +98,15 @@ export const QUESTIONS: readonly Question[] = [
   { id: "address", title: "Property address", source: "rev6-settled", onRecord: "address",
     say: "Just to make sure I’m looking at the right property, can I confirm the address?", then: null,
     followUps: ["Check a unit or apartment when relevant. Formatting alone does not prove property identity."],
-    fields: [{ id: "note", label: "What the seller said about the address (unit, differences)", kind: "textarea" }] },
-  { id: "ownership", title: "Ownership & decision-makers", source: "rev6-settled", onRecord: "complications",
-    say: "Just so I understand the situation, is the property owned in your name, or is anyone else involved in making the decision to sell?",
+    fields: [
+      { id: "street", label: "Street", kind: "text", ghl: "Deal property address (Test)" },
+      { id: "unit", label: "Unit", kind: "text", ghl: "Deal property address (Test)" },
+      { id: "city", label: "City", kind: "text", ghl: "Deal property address (Test)" },
+      { id: "state", label: "State", kind: "text", ghl: "Deal property address (Test)" },
+      { id: "zip", label: "ZIP", kind: "text", ghl: "Deal property address (Test)" },
+    ] },
+  { id: "ownership", title: "Ownership & decision-makers", source: "captain-2026-11-03", onRecord: "complications",
+    say: "Is the property owned in your name, or is anyone else involved in making the decision to sell?",
     then: "Would it make sense to include them in the next conversation so everybody has the same information?",
     followUps: [
       "Individual, joint, entity-held, inherited or trust-held?",
@@ -96,10 +114,7 @@ export const QUESTIONS: readonly Question[] = [
       "Is there anything with the property or ownership that you think could complicate a sale?",
       "Verbal statements do not establish authority to sell.",
     ],
-    fields: [
-      { id: "owners", label: "Reported owners / decision-makers", kind: "textarea" },
-      { id: "questions", label: "Representation / title questions", kind: "textarea" },
-    ] },
+    fields: [{ id: "owners", label: "Owner / decision-maker", kind: "textarea" }] },
   { id: "occupancy", title: "Occupancy", source: "rev6-settled", onRecord: "occupancy",
     say: "Is anyone living in the property right now, or is it vacant?",
     then: "Is there anything about the living situation or lease that we should take into account?",
@@ -108,8 +123,8 @@ export const QUESTIONS: readonly Question[] = [
       "Ask about lease arrangements, move-out preferences, or utilities as relevant. Arrange access at the next-step discussion.",
     ],
     fields: [
-      { id: "occupancy", label: "Occupancy", kind: "choice", options: OCCUPANCY_CHOICES },
-      { id: "lease", label: "Occupancy / lease / move-out notes", kind: "textarea" },
+      { id: "occupancy", label: "Occupancy", kind: "choice", options: OCCUPANCY_CHOICES, ghl: "Contact · Occupancy Status" },
+      { id: "lease", label: "Occupancy notes", kind: "textarea" },
     ] },
   { id: "reason", title: "Reason for selling", source: "rev6-candidate", onRecord: null,
     say: "Can you tell me the reason for wanting to move or sell?",
@@ -120,20 +135,15 @@ export const QUESTIONS: readonly Question[] = [
       "What’s most important to you — price, timing, convenience, or something else?",
       "What happens if you decide to keep it for now?",
     ],
-    fields: [
-      { id: "reason", label: "Reason for considering a sale", kind: "textarea" },
-      { id: "outcome", label: "Desired outcome / priorities", kind: "textarea" },
-    ] },
+    fields: [{ id: "reason", label: "Reason for selling", kind: "textarea", ghl: "Deal · Seller Reason (Test)" }] },
   { id: "timing", title: "Timing", source: "rev6-settled", onRecord: "timing",
     say: "If everything worked out the way you’d want, when would you like to have the property sold?",
     then: "Is there a particular reason for that timing, or do you have some flexibility?",
     followUps: ["Would you need time after closing to move?", "Is there anything that might delay a sale?"],
-    fields: [
-      { id: "date", label: "Specific date, if known", kind: "date" },
-      { id: "flexibility", label: "Flexibility / dependencies", kind: "textarea" },
-    ] },
-  { id: "price", title: "Price expectations", source: "rev6-settled", onRecord: "price",
+    fields: [{ id: "timing", label: "Timing", kind: "text", ghl: "Transaction assumptions · Closing / possession" }] },
+  { id: "price", title: "Price expectations", source: "captain-2026-11-03", onRecord: "price",
     say: "What price were you hoping to get for the property?",
+    alternates: ["What would you need to walk away with from the sale for this to make sense?"],
     then: "And how did you arrive at that number?",
     followUps: [
       "Are you assuming you’d make repairs, or would you prefer to sell it in its current condition?",
@@ -142,19 +152,19 @@ export const QUESTIONS: readonly Question[] = [
       "An asking price does not authorize an offer.",
     ],
     fields: [
-      { id: "amount", label: "Seller's stated price ($)", kind: "money", hint: "What the seller said. Not an offer, and not saved over the asking price." },
-      { id: "basis", label: "Basis / as-is expectations", kind: "textarea" },
+      { id: "amount", label: "Seller's stated price ($)", kind: "money", ghl: "Seller price position", hint: "What the seller said. Not an offer, and never saved over the asking price." },
+      { id: "basis", label: "Price notes", kind: "textarea" },
     ] },
-  { id: "asis", title: "As-is sale fit", source: "rev6-candidate", onRecord: null,
-    say: "If you could sell without making repairs, leave behind what you don’t want, and work toward a closing date that fits your plans, is that something you’d consider?",
-    then: null,
+  { id: "asis", title: "As-is sale fit", source: "captain-2026-11-03", onRecord: null,
+    say: "What if you could sell it exactly as it sits, with no repairs or cleanup, leave behind anything you don't want, and close on a timeline that works for you? Would that take some weight off your shoulders?",
+    then: "Is that something you'd consider?",
     followUps: [
       "Which part of that would matter most to you?",
       "What would you need to feel comfortable exploring that option?",
       "Continue into condition, clarify their priorities, or go directly to Summary & next step. Your choice; no automatic rejection.",
       "These are possibilities to explore, not approved offer or possession terms.",
     ],
-    fields: [{ id: "priorities", label: "Terms / concerns to explore", kind: "textarea" }] },
+    fields: [{ id: "priorities", label: "As-is answer", kind: "textarea" }] },
   { id: "condition", title: "Condition & repairs", source: "rev6-settled", onRecord: "condition",
     say: "Tell me a little about the house. How would you describe its overall condition?",
     then: "Okay. And if somebody were going to buy it today, what do you think they’d need to fix or update?",
@@ -164,10 +174,7 @@ export const QUESTIONS: readonly Question[] = [
       "Is there anything else about its condition I should know?",
       "Seller estimates remain unverified for underwriting.",
     ],
-    fields: [
-      { id: "overall", label: "Overall condition (seller's words)", kind: "textarea" },
-      { id: "repairs", label: "Repairs / updates the seller mentioned", kind: "textarea" },
-    ] },
+    fields: [{ id: "overall", label: "Condition (seller's words)", kind: "textarea" }] },
   { id: "summary", title: "Summary & next step", source: "rev6-candidate", onRecord: "summary",
     say: "Let me make sure I’ve got everything right. Did I understand your situation correctly?",
     then: "Thanks, that gives me a much better picture. I’d like to review the property information and see whether the numbers and terms could make sense. I don’t want to throw out a number without doing that homework.",
@@ -178,9 +185,8 @@ export const QUESTIONS: readonly Question[] = [
       "For an offer follow-up without approved terms: I haven’t settled on terms I’m ready to propose yet. Would it be alright if I followed up once I’ve completed my review?",
     ],
     fields: [
-      { id: "next", label: "Agreed next step", kind: "textarea" },
-      { id: "followup", label: "Proposed follow-up date", kind: "date" },
-      { id: "objections", label: "Objections / concerns raised", kind: "textarea" },
+      { id: "next", label: "Summary & agreed next step", kind: "textarea" },
+      { id: "followup", label: "Follow-up date", kind: "date" },
     ] },
 ];
 
@@ -258,40 +264,33 @@ export function nextOpenQuestion(from: number, statuses: readonly AnswerStatus[]
   return null;
 }
 
-/* ---------- Summary recap (read-only; Bones P2-2) ---------- */
+/* ---------- The structured call note (Captain C8, 2026-11-03; plan A7) ---------- */
 
-export type RecapRow = {
-  id: QuestionId;
-  title: string;
-  status: AnswerStatus;
-  /** What GHL holds for this deal (saved), each with its source. */
-  saved: OnRecordItem[];
-  /** What Brad typed on this page (NOT saved), by field label, verbatim. */
-  draft: { label: string; value: string }[];
-  mark: Mark | null;
-};
+export type NoteRow =
+  | { kind: "question"; id: QuestionId; heading: string; dontKnow: boolean; answers: { fieldId: string; label: string; value: string }[] }
+  | { kind: "general"; id: "general"; heading: string; value: string };
 
 /**
- * One row per question between the opening and the summary, in order. It only
- * re-presents what `onRecordFor` and the drafts already hold: saved items keep
- * their sources, draft text is shown verbatim and labelled unsaved, nothing is
- * inferred, formatted into a number, or merged across sources.
+ * THE one projection of this call's note, used by the editable Call notes panel and the read-only Summary
+ * view alike, so the two can never differ. Every question in QUESTIONS order (Opening through Summary and its
+ * follow-up date), then General notes. Values are the draft text exactly as typed ("" when blank -- shown
+ * blank, never "Unanswered"); "Seller doesn't know" is a flag the views print literally. Draft only: nothing
+ * here is saved, and no recorded GHL value is mixed in. (Replaces the earlier Saved/Draft recap, which the
+ * Captain's 2026-11-03 ruling superseded.)
  */
-export function recapFor(d: ConversationDraft, onRecord: OnRecord): RecapRow[] {
-  return QUESTIONS.filter((q) => q.id !== "opening" && q.id !== "summary").map((q) => {
+export function noteFor(d: ConversationDraft): NoteRow[] {
+  const rows: NoteRow[] = QUESTIONS.map((q, i) => {
     const a = d.answers[q.id];
     return {
+      kind: "question" as const,
       id: q.id,
-      title: q.title,
-      status: questionStatus(q.id, d, onRecord),
-      saved: [...(onRecord[q.id] ?? [])],
-      draft: q.fields.flatMap((f) => {
-        const v = a?.fields[f.id];
-        return v !== undefined && v.trim() !== "" ? [{ label: f.label, value: v.trim() }] : [];
-      }),
-      mark: a?.mark ?? null,
+      heading: i === 0 ? q.title : `${i}. ${q.title}`,
+      dontKnow: a?.mark === "seller_doesnt_know",
+      answers: q.fields.map((f) => ({ fieldId: f.id, label: f.label, value: a?.fields[f.id] ?? "" })),
     };
   });
+  rows.push({ kind: "general", id: "general", heading: "General notes", value: d.notes });
+  return rows;
 }
 
 /* ---------- guidance: the existing engine's pick, mapped (never re-derived) ---------- */
