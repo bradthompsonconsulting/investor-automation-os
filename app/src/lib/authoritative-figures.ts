@@ -39,8 +39,8 @@ export type SellerMaoComparison = {
   recordedText: string;
   /** The line under the live figure, or null when there is no live figure. */
   liveNote: string | null;
-  /** Evidence token: none | matches | differs | no_live. */
-  token: "none" | "matches" | "differs" | "no_live";
+  /** Evidence token: none | matches | matches_rounded | differs | no_live. */
+  token: "none" | "matches" | "matches_rounded" | "differs" | "no_live";
 };
 
 /**
@@ -60,10 +60,19 @@ export function compareSellerMao(input: {
     return { recordedText, liveNote: "Not yet approved — no approved underwriting recorded yet", token: "none" };
   }
   /* G5 (Spock hosted): both figures are SHOWN in whole dollars (money()); an exact comparison called $428,648 and
-     $428,648 "different" when they differed only below a dollar (the engine does not round). Compare what is shown.
-     Wording only: no value, calculation, approval or gate depends on this. */
-  if (money(recorded) === money(input.live)) {
+     $428,648 "different" when they differed only below a dollar (the engine does not round).
+     r2 (Bones REVISE P2): only an EXACT match says "Matches"; figures that agree only at whole dollars say so,
+     and that the figure calculated now is not itself approved. Wording only: no value, calculation, approval
+     or gate depends on this. */
+  if (recorded === input.live) {
     return { recordedText, liveNote: "Matches the approved underwriting on record", token: "matches" };
+  }
+  if (money(recorded) === money(input.live)) {
+    return {
+      recordedText,
+      liveNote: `Same as the approved ${money(recorded)} only when rounded to the whole dollar — the figure calculated now is not itself approved`,
+      token: "matches_rounded",
+    };
   }
   return { recordedText, liveNote: `Not yet approved — differs from approved ${money(recorded)}`, token: "differs" };
 }
