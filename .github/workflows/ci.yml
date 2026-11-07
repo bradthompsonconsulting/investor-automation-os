@@ -353,6 +353,9 @@ jobs:
       # Node-only (esbuild + react-dom/server); base identity is pinned by committed SHA-256 (no git object needed).
       - name: Authoritative figures -- recorded vs calculated-now Seller MAO, ARV on record bound to its read, submitted-snapshot approval, base-identity pins (INV-131, B15-22) — 96 checks
         run: node app/scripts/test-b15-22-authoritative-figures.cjs
+      # B15-22 G5 F1 (Bones ACCEPT f01aee6): a whole-dollar-only match says so, never the green "Matches"; static rendered markup.
+      - name: Seller MAO note compares the figures as shown -- exact match green, whole-dollar-only match amber and qualified (B15-22 G5 F1) — 14 checks
+        run: node app/scripts/test-g5-seller-mao-display.cjs
       # B1 Blob authority (B15-26 B1 r7 boundary r2/r3): isolated module, loopback fake service only, no real credential.
       - name: B1 Blob authority -- single-attempt conditional writes, process-local handles, forbidden transitions (INV-134) — 80 checks
         run: node app/scripts/test-blob-authority.cjs
