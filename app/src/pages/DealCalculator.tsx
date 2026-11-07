@@ -7,6 +7,7 @@ import {
 import { ghl } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
 import { parseContactSeeds, parsePolicy } from "../lib/underwriting/resolver";
+import { readOpportunityNumber } from "../lib/underwriting/selectOpportunity";
 import { IAOS_STARTERS } from "../lib/underwriting/starters";
 import { computeUnderwriting } from "../lib/underwriting/compute";
 import {
@@ -143,6 +144,22 @@ const CONTACT_IDS = {
   repairs: CONFIG.fields.estimatedRepairs,
   askingPrice: CONFIG.fields.askingPrice,
 };
+
+/* B15-22 ARV source (CAPTAIN GO 2026-11-07; PB-D55 read order: the Opportunity first, the Contact only when the
+   Opportunity has none). A chosen deal's ARV is that deal's GHL Opportunity ARV, read from the deal row the existing
+   pipeline read already returned -- exactly as Underwriting reads it (fieldValueNumber) -- and the contact's ARV only
+   when the deal has none. No extra read. Never called "approved": approval evidence is not read here. Quick Repairs is
+   unchanged (the contact's figure). */
+type ArvSource = "deal" | "contact" | null;
+function dealArv(deal: OpportunityRow): number | null {
+  return readOpportunityNumber(deal.customFields, CONFIG.opportunityFacts.arv);
+}
+function ghlForDeal(deal: OpportunityRow, contactGhl: GhlNow): { ghl: GhlNow; arvSource: ArvSource } {
+  if (contactGhl.kind !== "ok") return { ghl: contactGhl, arvSource: null };
+  const n = dealArv(deal);
+  if (n !== null) return { ghl: { kind: "ok", values: { ...contactGhl.values, arv: { kind: "value", value: String(n) } } }, arvSource: "deal" };
+  return { ghl: contactGhl, arvSource: contactGhl.values.arv?.kind === "value" ? "contact" : null };
+}
 
 const PANEL_STYLE: React.CSSProperties = {
   padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px",
@@ -415,6 +432,9 @@ export default function DealCalculator() {
      Opportunity resolution happens here at all. */
   const [linkedContactId, setLinkedContactId] = useState<string | null>(null);
   const [linkedContactName, setLinkedContactName] = useState<string | null>(null);
+  /* B15-22: the source of the ARV baseline shown now, and the contact ARV the link prefilled while no deal was chosen. */
+  const [arvSource, setArvSource] = useState<ArvSource>(null);
+  const arvPrefill = useRef<string | null>(null);
   const [linkInput, setLinkInput] = useState(linkParam ?? "");
   const [linkBusy, setLinkBusy] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -520,6 +540,7 @@ export default function DealCalculator() {
     return { values, kept };
   }
   function leaveContext(reason: string) {
+    setArvSource(null);
     setContext(null);
     setDraft(null);
     setGhlNow(NO_GHL);
@@ -531,7 +552,19 @@ export default function DealCalculator() {
   function chooseDeal(deal: OpportunityRow, contactId: string, ghl: GhlNow, screen: Record<DraftField, string>, overrides?: Partial<Record<DraftField, string>>) {
     setSelectedDealId(deal.id);
     const id: DraftIdentity = { kind: "deal", env: CONFIG.locationId, operator: draftOperator(), contactId, propertyId: deal.id, opportunityId: deal.id };
-    return enterContext(id, ghl, "this deal", screen, { overrides });
+    /* B15-22: this deal's ARV first, the contact's only when the deal has none. */
+    const forDeal = ghlForDeal(deal, ghl);
+    setArvSource(forDeal.arvSource);
+    /* The contact ARV the link prefilled before a deal was chosen is not the operator's: untouched, it gives way to
+       this deal's ARV. A typed, kept or restored figure stays (enterContext never overwrites one). */
+    let shown = screen;
+    const prefill = arvPrefill.current;
+    arvPrefill.current = null;
+    if (prefill !== null && screen.arv === prefill && !(overrides && "arv" in overrides)) {
+      shown = { ...screen, arv: baselineFor("arv", forDeal.ghl) };
+      if (shown.arv !== screen.arv) setArvInput(shown.arv);
+    }
+    return enterContext(id, forDeal.ghl, "this deal", shown, { overrides });
   }
 
   /* Bones Phase 1 finding 1: the draft belongs to the operator signed in NOW. When the write-session
@@ -601,7 +634,9 @@ export default function DealCalculator() {
   function draftStatus(field: DraftField) {
     const s = fieldStates[field];
     if (!context || !s) return null;
-    if (s.state === "ghl") return <div data-testid={`deal-calc-draft-${field}`} style={{ ...DRAFT_STATUS_STYLE, color: "#64748B" }}>From the linked contact in GHL</div>;
+    /* B15-22: ARV names its source (the deal or the contact); Quick Repairs keeps its existing label. */
+    const source = field === "arv" ? (arvSource === "deal" ? "On the deal in GHL" : "On the contact in GHL") : "From the linked contact in GHL";
+    if (s.state === "ghl") return <div data-testid={`deal-calc-draft-${field}`} style={{ ...DRAFT_STATUS_STYLE, color: "#64748B" }}>{source}</div>;
     if (s.state === "draft") return <div data-testid={`deal-calc-draft-${field}`} style={DRAFT_STATUS_STYLE}>Draft -- Not saved to GHL</div>;
     if (s.state !== "conflict" && s.state !== "unchecked") return null;
     const allowed = canResolve(ghlNow, field);
@@ -610,6 +645,7 @@ export default function DealCalculator() {
         {s.state === "conflict" ? (
           <>
             <div data-testid={`deal-calc-draft-${field}-ghl`}>GHL now: {ghlText(s.ghl)} (changed since your draft)</div>
+            {field === "arv" ? <div data-testid="deal-calc-draft-arv-ghl-source">{source}</div> : null}
             <div data-testid={`deal-calc-draft-${field}-mine`}>Your draft: {s.draft} -- Not saved to GHL</div>
           </>
         ) : (
@@ -638,13 +674,14 @@ export default function DealCalculator() {
     };
     linkTouched.current = new Set();
     linkOperator.current = draftOperator();
+    arvPrefill.current = null;
     previousScreen.current = start;
     setLinkBusy(true);
     setLinkError(null);
     leaveContext("Linking the contact -- figures here are not kept until a deal is chosen.");
     try {
       const contact = await ghl.contacts.getDetail(contactId.trim());
-      const seeds = parseContactSeeds(contact.customFields, CONTACT_IDS);
+      const contactSeeds = parseContactSeeds(contact.customFields, CONTACT_IDS);
       const seedGhl: GhlNow = { kind: "ok", values: {
         arv: seedEvidence(contact.customFields, CONTACT_IDS.arv),
         repairsQuick: seedEvidence(contact.customFields, CONTACT_IDS.repairs),
@@ -676,11 +713,17 @@ export default function DealCalculator() {
       else leaveContext(mine === null ? "This contact's deals could not be loaded, so figures here are not kept."
         : mine.length === 0 ? "This contact has no deal, so figures here are not kept."
         : "Choose a deal below to keep these figures. Until then they are not kept.");
+      /* B15-22: with exactly one deal (chosen above), its ARV first and the contact's only when it has none; with no
+         deal chosen yet, the contact's -- remembered as the link's prefill, so choosing a deal can replace it. */
+      const single = !!mine && mine.length === 1;
+      const singleDealArv = single && mine ? dealArv(mine[0]) : null;
+      const seeds = { ...contactSeeds, arv: singleDealArv ?? contactSeeds.arv };
       // Prepopulate ONLY fields still empty -- linking is a one-time
       // convenience (PB-D55), never a silent overwrite of a typed value.
       // B15-25 (finding 2): nor of a value the operator owns -- a kept or
       // just-edited field, even one deliberately left blank.
       if (!kept.has("arv") && screen.arv.trim() === "" && seeds.arv !== null) setArvInput(String(seeds.arv));
+      if (!single && !kept.has("arv") && screen.arv.trim() === "" && seeds.arv !== null) arvPrefill.current = String(seeds.arv);
       if (!kept.has("repairsQuick") && screen.repairsQuick.trim() === "" && seeds.repairs !== null) setRepairsQuickInput(String(seeds.repairs));
     } catch (e: any) {
       if (generation !== linkGeneration.current) return;
@@ -708,6 +751,7 @@ export default function DealCalculator() {
   }
 
   function handleUnlink() {
+    arvPrefill.current = null;
     setLinkedContactId(null);
     setLinkedContactName(null);
     setLinkError(null);
