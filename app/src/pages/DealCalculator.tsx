@@ -500,6 +500,9 @@ export default function DealCalculator() {
     const kept = new Set(Object.keys(overrides) as DraftField[]);
     setContext(id);
     setNotKept(null);
+    /* B15-25 S6: this screen is kept again -- a session change handled late (its render saw the not-kept screen) must
+       not clear it as a previous operator's not-kept figures, which would blank the restored draft and delete it. */
+    notKeptOwner.current = null;
     setGhlNow(ghl);
     setPersist(null);
     const baseline = Object.fromEntries(DRAFT_FIELDS.map((f) => [f, baselineFor(f, ghl)])) as Record<DraftField, string>;
