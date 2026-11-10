@@ -407,6 +407,8 @@ jobs:
       # unsaved, so Load asks; confirmed or reconciled saves mark only the figures sent. Real page and real panel, offline.
       - name: Save Calculation to Deal r4 -- no stale save after an operator, deal or visit change; unsaved work stays unsaved, Load asks; real page and panel (B15-25 r4) — 25 checks
         run: node app/scripts/test-b15-25-r4.cjs
+      - name: B15-25 S6 draft durability — 14 checks
+        run: node app/scripts/test-b15-25-s6-durability.cjs
       - name: Incomplete repairs read as provisional, never a green Meets; numbers unchanged, real page (INV-134 B15-26, INV-100 B15-01) — 55 checks
         run: node app/scripts/test-b15-26-provisional-repairs.cjs
       - name: Calendar reliability -- unavailable is never empty, each failure named, last good read kept and labelled, GHL Calendars one click away, real App (INV-106, B15-07) — 27 checks
