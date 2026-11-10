@@ -38,7 +38,7 @@ const TMP = path.join(APP, '.tmp-b15-22-authoritative-test');
 const esbuild = require(path.join(APP, 'node_modules', '.pnpm', 'esbuild@0.25.12', 'node_modules', 'esbuild'));
 
 /** Literal check() call-site count in this file. */
-const FLOOR = 99;   // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta)
+const FLOOR = 100;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta)
 let checks = 0; let failures = 0;
 function check(name, actual, expected) {
   checks += 1;
@@ -388,10 +388,30 @@ check('S7 the label is backed by the resolver: Opportunity ARV first, Contact on
   check('S8c the F5 R2 delta is exactly its one reviewed adapter change, chained from the Release 15-A bytes',
     [Object.keys(F5.changes || {}).sort(), Object.keys(F5.additions || {}).length, f5Problems],
     [['netlify/functions/ghl-contact-conversations.ts'], 0, []]);
+  /* B15-29 integration (Jeff, 2026-11-10): One Login (INV-137; Bones-accepted local chain through a5440a3) integrated
+     onto main 319c983 as 9944cbe. It changes 26 protected files and adds 4, listed in b15-22-b15-29-delta-9944cbe.json.
+     CHAINED onto everything above: a change applies only when its `from` is exactly the bytes already expected after
+     S8a-S8c (main's bytes); an addition only for a file nothing above expects. Per-file evidence that each delta equals
+     B15-29's accepted 16bcf12..a5440a3 change is in the integration package (s8d-patch-proof.tsv). */
+  const B29 = JSON.parse(fs.readFileSync(path.join(APP, 'scripts', 'fixtures', 'b15-22-b15-29-delta-9944cbe.json'), 'utf8'));
+  const b29Problems = [];
+  for (const [rel, c] of Object.entries(B29.changes || {})) {
+    if (!(rel in expected)) b29Problems.push(`not an expected protected file: ${rel}`);
+    else if (!c || c.from !== expected[rel] || typeof c.to !== 'string' || c.to === c.from) b29Problems.push(`not a reviewed change from the expected bytes: ${rel}`);
+    else expected[rel] = c.to;
+  }
+  for (const [rel, a] of Object.entries(B29.additions || {})) {
+    if (rel in expected) b29Problems.push(`addition already expected: ${rel}`);
+    else if (!a || typeof a.to !== 'string' || !/^[0-9a-f]{64}$/.test(a.to)) b29Problems.push(`not a reviewed addition: ${rel}`);
+    else expected[rel] = a.to;
+  }
+  check('S8d the B15-29 One Login delta is exactly its 26 reviewed changes and 4 additions, chained from the bytes expected above',
+    [Object.keys(B29.changes || {}).length, Object.keys(B29.additions || {}).sort(), b29Problems],
+    [26, ['netlify/functions/app-signout.ts', 'netlify/functions/app-write-token.ts', 'netlify/functions/lib/authorization.ts', 'netlify/functions/lib/session-revocation.ts'], []]);
   const drift = [];
   for (const rel of seen) { if (!(rel in expected)) drift.push(`added ${rel}`); else if (hashOf(rel) !== expected[rel]) drift.push(`changed ${rel}`); }
   for (const rel of Object.keys(expected)) if (!seen.includes(rel)) drift.push(`removed ${rel}`);
-  check('S8 write paths, engines, ledger formats, functions and config unchanged vs base, except the reviewed combined-integration, Release 15-A and F5 R2 deltas (SHA-256 manifest of every protected file)',
+  check('S8 write paths, engines, ledger formats, functions and config unchanged vs base, except the reviewed combined-integration, Release 15-A, F5 R2 and B15-29 One Login deltas (SHA-256 manifest of every protected file)',
     Object.keys(PINS.protected).length > 50 ? drift : 'manifest too small', []);
 }
 
