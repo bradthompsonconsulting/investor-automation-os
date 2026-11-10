@@ -98,6 +98,7 @@ const readAuth = require(path.join(FUNCTIONS, 'lib/app-read-auth.ts'));
 const writeAuth = require(path.join(FUNCTIONS, 'lib/app-write-auth.ts'));
 const rev = require(path.join(FUNCTIONS, 'lib/session-revocation.ts'));
 cfg.getConfig('test').supplementalReadBudget = { enabled: cfg.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'offline-disabled', ceiling: 0 };
+cfg.getConfig('test').oneLoginTestSessionSeconds = null;   // pinned in-process: these checks are 30-day checks, whatever the committed Test lifetime
 const blobs = createFakeBlobs({ siteID: SITE, clock: () => T });
 // Bones HOLD on 3311102: the anchor lives in its own never-restored store (session-revocation.ts SESSION_AUTHORITY_STORE).
 const ANCHOR_STORE = 'iaos-session-authority';
@@ -602,8 +603,49 @@ const resetAll = async ({ signIn = true } = {}) => {
     assert.ok(!/fetch|XMLHttpRequest|sendBeacon|netlify\/functions|document\.cookie|import /.test(src));
   });
 
+  // =========================================================================== RS  (Jess 2026-11-10)
+  // RS: reminders on a server-issued Test-scaled lifetime.
+  {
+    const OL = require(path.join(APP, 'src/lib/one-login.ts'));
+    const RMs = require(path.join(APP, 'src/lib/session-reminder.ts'));
+    const FULL = 30 * DAY; const SCALE = 3600_000 / FULL;   // a 60-minute Test session
+    await check('RS1 the scale comes ONLY from the server projection: {active:true, sessionSeconds:3600} -> 1/720; absent, inactive, malformed, < 600 s or >= 30 days -> 1 (the 30-day behaviour)', async () => {
+      assert.equal(OL.oneLoginSessionScale({ oneLogin: { active: true, sessionSeconds: 3600 } }), SCALE);
+      for (const r of [null, {}, { oneLogin: { active: true } }, { oneLogin: { active: false, sessionSeconds: 3600 } }, { oneLogin: { active: true, sessionSeconds: '3600' } },
+        { oneLogin: { active: true, sessionSeconds: 599 } }, { oneLogin: { active: true, sessionSeconds: 3600.5 } }, { oneLogin: { active: true, sessionSeconds: 30 * 24 * 3600 } },
+        { oneLogin: { active: true, sessionSeconds: -1 } }, { oneLogin: 'yes' }]) assert.equal(OL.oneLoginSessionScale(r), 1, JSON.stringify(r));
+    });
+    await check('RS2 scaled checkpoints (60-minute session): none before exp - 10 min; T5 from exp - 10 min; T1 from exp - 2 min; none at expiry; the next-checkpoint timer lands on exactly those instants', async () => {
+      const exp = 1_800_000_000_000; const at = (t) => RMs.dueReminder(exp, t, SCALE);
+      assert.deepEqual([at(exp - 3600_000), at(exp - 600_001), at(exp - 600_000), at(exp - 120_001), at(exp - 120_000), at(exp - 1), at(exp)], [null, null, 5, 5, 1, 1, null]);
+      assert.equal(RMs.nextReminderDelay(exp, exp - 3600_000, SCALE), 3000_000);
+      assert.equal(RMs.nextReminderDelay(exp, exp - 600_000, SCALE), 480_000);
+      assert.equal(RMs.nextReminderDelay(exp, exp - 120_000, SCALE), 120_000);
+      assert.equal(RMs.nextReminderDelay(exp, exp, SCALE), null);
+    });
+    await check('RS3 scaled wording says Test session and whole minutes, rounded up and never more than the checkpoint bound; never "days" or "24 hours"', async () => {
+      const t5 = RMs.reminderMessage(5, 570_000, SCALE); const t1 = RMs.reminderMessage(1, 30_000, SCALE); const t1b = RMs.reminderMessage(1, undefined, SCALE);
+      assert.equal(t5, 'Your IAOS Test session expires within 10 minutes. Log in again now to keep your workflow uninterrupted.');
+      assert.equal(t1, 'Your IAOS Test session expires within 1 minute. Log in again now to keep your workflow uninterrupted.');
+      assert.equal(t1b, 'Your IAOS Test session expires within 2 minutes. Log in again now to keep your workflow uninterrupted.');
+      for (const s of [t5, t1, t1b]) assert.ok(!/days|24 hours/.test(s), s);
+    });
+    await check('RS4 scale 1 (and the default) is the 30-day behaviour exactly: same checkpoints, same timer, same words as before', async () => {
+      const exp = 1_800_000_000_000;
+      for (let t = exp - 31 * DAY; t <= exp + DAY; t += 0.37 * DAY) {
+        assert.equal(RMs.dueReminder(exp, t, 1), RMs.dueReminder(exp, t)); assert.equal(RMs.nextReminderDelay(exp, t, 1), RMs.nextReminderDelay(exp, t));
+      }
+      assert.equal(RMs.dueReminder(exp, exp - 5 * DAY), 5); assert.equal(RMs.dueReminder(exp, exp - DAY), 1);
+      assert.equal(RMs.reminderMessage(1, 3600_000, 1), 'Your IAOS session expires within 24 hours. Log in again now to keep your workflow uninterrupted.');
+      assert.equal(RMs.reminderMessage(5, 4.2 * DAY), 'Your IAOS session expires within 5 days. Log in again now to keep your workflow uninterrupted.');
+      for (const bad of [0, -1, 2, NaN, Infinity]) assert.equal(RMs.dueReminder(exp, exp - 5 * DAY, bad), 5, String(bad));
+    });
+
+    setFlag(false);
+  }
+
   Date.now = realNow; setFlag(false);
-  const FLOOR = 41;
+  const FLOOR = 45;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (client): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;

@@ -24,7 +24,7 @@
  * by every writer. The paragraph above describes the OFF behaviour.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { oneLoginActiveFor } from "../../../shared/ghl-config";
+import { oneLoginActiveFor, oneLoginSessionSecondsFor, ONE_LOGIN_FULL_SESSION_SECONDS } from "../../../shared/ghl-config";
 
 export const READ_AUDIENCE = "iaos-app-read";
 export const READ_SESSION_SECONDS = 8 * 60 * 60;
@@ -90,7 +90,15 @@ export function isCanonicalEpoch(value: unknown): value is string {
  * accepted ONLY while one IAOS sign-in is on for this IAOS_ENV, so turning the switch off (a rollback) can never
  * leave a non-revocable 30-day session usable. Off: the 8-hour session above, unchanged.
  */
-export const ONE_LOGIN_SESSION_SECONDS = 30 * 24 * 60 * 60;
+export const ONE_LOGIN_SESSION_SECONDS = ONE_LOGIN_FULL_SESSION_SECONDS;
+/**
+ * The lifetime THIS deployment issues and accepts: 30 days, except a reviewed Test-only value
+ * (shared/ghl-config.ts oneLoginSessionSecondsFor; Production can never receive one). Upper bounds elsewhere (the
+ * cookie Max-Age check, the sign-out handle) keep the full 30 days.
+ */
+export function oneLoginSessionSeconds(config: Pick<ReadAuthConfig, "deployment">): number {
+  return oneLoginSessionSecondsFor(config.deployment);
+}
 /**
  * B15-29 r5/r6: an ETag from the session store's conditional writes at sign-in, carried in the session so every check
  * can re-write the identical bytes `onlyIfMatch` it. Opaque; printable ASCII without spaces, 1-200 characters.
@@ -108,7 +116,7 @@ export function issueReadSession(email: string, config: ReadAuthConfig, now = Da
   if (epoch !== undefined && (sid === undefined || !isCanonicalEpoch(epoch))) throw new ReadAuthRefused("Invalid session epoch");
   if (etags !== undefined && (epoch === undefined || !isCanonicalEtag(etags.aetag) || !isCanonicalEtag(etags.setag))) throw new ReadAuthRefused("Invalid session etags");
   const iat = Math.floor(now / 1000);
-  const base = { iss: "iaos", aud: READ_AUDIENCE, env: config.deployment, sub, iat, exp: iat + (etags === undefined ? READ_SESSION_SECONDS : ONE_LOGIN_SESSION_SECONDS) };
+  const base = { iss: "iaos", aud: READ_AUDIENCE, env: config.deployment, sub, iat, exp: iat + (etags === undefined ? READ_SESSION_SECONDS : oneLoginSessionSeconds(config)) };
   const claims = sid === undefined ? base : epoch === undefined ? { ...base, sid } : etags === undefined ? { ...base, sid, epoch }
     : { ...base, sid, epoch, aetag: etags.aetag, setag: etags.setag };
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
@@ -135,7 +143,7 @@ export function verifyReadSession(token: string, config: ReadAuthConfig, now = D
   if (hasReadBindingClaim(claims) && !oneLoginActiveFor(config.deployment)) throw new ReadAuthRefused("Expired or unauthorized read session");
   if (header?.alg !== "HS256" || header?.typ !== "JWT" || claims?.iss !== "iaos" || claims.aud !== READ_AUDIENCE ||
       claims.env !== config.deployment || !Number.isInteger(claims.iat) || !Number.isInteger(claims.exp) ||
-      claims.exp - claims.iat !== (oneLogin ? ONE_LOGIN_SESSION_SECONDS : READ_SESSION_SECONDS) || claims.exp <= seconds || claims.iat > seconds + 30 ||
+      claims.exp - claims.iat !== (oneLogin ? oneLoginSessionSeconds(config) : READ_SESSION_SECONDS) || claims.exp <= seconds || claims.iat > seconds + 30 ||
       typeof claims.sub !== "string" || !config.emails.includes(claims.sub)) {
     throw new ReadAuthRefused("Expired or unauthorized read session");
   }

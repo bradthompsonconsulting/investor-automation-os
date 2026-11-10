@@ -235,6 +235,12 @@ export interface GhlConfig {
    * Enabling is its own reviewed config-only commit, never a runtime toggle.
    */
   oneLogin: string;
+  /**
+   * B15-29 (Jess 2026-11-10) -- TEST ONLY: a short one-sign-in session lifetime in seconds (600 .. 30 days), or null
+   * for the full 30 days. Read only by oneLoginSessionSecondsFor("test"). The PRODUCTION object never carries it, and
+   * that function never consults it for any other environment. Changing it is a reviewed, config-only commit.
+   */
+  oneLoginTestSessionSeconds?: number | null;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -1255,6 +1261,8 @@ const TEST: GhlConfig = {
   sellerConversationSave: SELLER_CONVERSATION_SAVE_DISABLED,
   // B15-29 (INV-137): one IAOS sign-in is OFF. Enabling is a separately reviewed config-only commit.
   oneLogin: ONE_LOGIN_DISABLED,
+  // B15-29 (Jess 2026-11-10): TEST ONLY. null = the full 30 days. A short value (e.g. 3600) is its own reviewed config-only commit.
+  oneLoginTestSessionSeconds: null,
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },
@@ -1439,6 +1447,25 @@ export function getConfig(selector: string | undefined): GhlConfig {
 export function oneLoginActiveFor(environment: unknown): boolean {
   if (environment !== "test" && environment !== "production") return false;
   try { return getConfig(environment).oneLogin === ONE_LOGIN_ENABLED; } catch { return false; }
+}
+
+/**
+ * B15-29 (INV-137; Jess decisions 1-2, 2026-11-10) -- the one IAOS sign-in session lifetime, per environment.
+ *
+ * Production is ALWAYS the Captain's fixed 30 days: for any environment other than the exact string "test" this
+ * returns the constant without reading any config object, variable or request, and the PRODUCTION config object has
+ * no lifetime field at all. Test may carry a short, server-honoured lifetime (TEST.oneLoginTestSessionSeconds) so
+ * expiry and the reminder checkpoints can be walked through without waiting 30 days. The server issues, verifies
+ * (exact exp - iat) and expires every one-sign-in session with this value, so a browser clock cannot change it.
+ * Absent, null or malformed falls back to 30 days (a valid value is a whole number from 600 s to 30 days).
+ */
+export const ONE_LOGIN_FULL_SESSION_SECONDS = 30 * 24 * 60 * 60;
+export function oneLoginSessionSecondsFor(environment: unknown): number {
+  if (environment !== "test") return ONE_LOGIN_FULL_SESSION_SECONDS;
+  let s: unknown;
+  try { s = TEST.oneLoginTestSessionSeconds; } catch { return ONE_LOGIN_FULL_SESSION_SECONDS; }
+  if (typeof s !== "number" || !Number.isInteger(s) || s < 600 || s > ONE_LOGIN_FULL_SESSION_SECONDS) return ONE_LOGIN_FULL_SESSION_SECONDS;
+  return s;
 }
 
 /**

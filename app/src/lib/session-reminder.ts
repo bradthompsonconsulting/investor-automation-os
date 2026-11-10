@@ -14,18 +14,27 @@ export const REMINDER_MAX_TIMER_MS = DAY_MS;
 export type ReminderCheckpoint = 5 | 1;
 export const REMINDER_KEY_PREFIX = "iaos.session-reminder.dismissed.";
 
+/**
+ * B15-29 (Jess 2026-11-10): `scale` (0 < scale <= 1, one-login.ts oneLoginSessionScale) places the checkpoints on a
+ * Test-only shorter lifetime at the same proportions: T5 = 5/30 and T1 = 1/30 of the lifetime before expiry. scale 1
+ * (the default, and the only value Production can see) is the 30-day behaviour exactly.
+ */
+const unit = (scale: number) => (Number.isFinite(scale) && scale > 0 && scale <= 1 ? scale : 1) * DAY_MS;
+
 /** The latest due checkpoint at `now`, or null (before T5, or at/after expiry). */
-export function dueReminder(expiresAt: number, now: number): ReminderCheckpoint | null {
+export function dueReminder(expiresAt: number, now: number, scale = 1): ReminderCheckpoint | null {
   if (!Number.isFinite(expiresAt) || !(now < expiresAt)) return null;
-  if (now >= expiresAt - 1 * DAY_MS) return 1;
-  if (now >= expiresAt - 5 * DAY_MS) return 5;
+  const d = unit(scale);
+  if (now >= expiresAt - 1 * d) return 1;
+  if (now >= expiresAt - 5 * d) return 5;
   return null;
 }
 
 /** Milliseconds until the next checkpoint (T5, T1 or the expiry itself) strictly after `now`, capped; null when none is left. */
-export function nextReminderDelay(expiresAt: number, now: number): number | null {
+export function nextReminderDelay(expiresAt: number, now: number, scale = 1): number | null {
   if (!Number.isFinite(expiresAt)) return null;
-  const next = [expiresAt - 5 * DAY_MS, expiresAt - 1 * DAY_MS, expiresAt].find((t) => t > now);
+  const d = unit(scale);
+  const next = [expiresAt - 5 * d, expiresAt - 1 * d, expiresAt].find((t) => t > now);
   return next === undefined ? null : Math.min(REMINDER_MAX_TIMER_MS, next - now);
 }
 
@@ -33,8 +42,16 @@ export function nextReminderDelay(expiresAt: number, now: number): number | null
  * r4 (Bones): the wording never overstates the time left on a late visit. T1 -> "within 24 hours". T5 -> "within N
  * days" with N = the whole days left, rounded UP (2..5): an upper bound that stays true while the dialog is open.
  * Without remainingMs the checkpoint's own bound is used ("within 5 days" / "within 24 hours").
+ * On a Test-scaled lifetime (scale < 1) the same upper-bound rule is stated in whole minutes, rounded up, and the
+ * text says it is a Test session -- never "days" or "24 hours" that are not true.
  */
-export function reminderMessage(days: ReminderCheckpoint, remainingMs?: number): string {
+export function reminderMessage(days: ReminderCheckpoint, remainingMs?: number, scale = 1): string {
+  if (unit(scale) < DAY_MS) {
+    const bound = days === 1 ? unit(scale) : 5 * unit(scale);
+    const left = remainingMs === undefined || !Number.isFinite(remainingMs) ? bound : Math.min(bound, Math.max(60_000, remainingMs));
+    const m = Math.ceil(left / 60_000);
+    return `Your IAOS Test session expires within ${m} minute${m === 1 ? "" : "s"}. Log in again now to keep your workflow uninterrupted.`;
+  }
   const n = remainingMs === undefined || !Number.isFinite(remainingMs) ? 5 : Math.min(5, Math.max(2, Math.ceil(remainingMs / DAY_MS)));
   return `Your IAOS session expires ${days === 1 ? "within 24 hours" : `within ${n} days`}. Log in again now to keep your workflow uninterrupted.`;
 }

@@ -116,6 +116,7 @@ const authz = require(path.join(FUNCTIONS, 'lib/authorization.ts'));
 const blobAuthority = require(path.join(FUNCTIONS, 'lib/blob-authority.ts'));
 // This suite's subject is not the read budget; pin it OFF (as test-app-read-auth does).
 cfg.getConfig('test').supplementalReadBudget = { enabled: cfg.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'offline-disabled', ceiling: 0 };
+cfg.getConfig('test').oneLoginTestSessionSeconds = null;   // pinned in-process: these checks are 30-day checks, whatever the committed Test lifetime
 const flag = (on, env = 'test') => { cfg.getConfig(env).oneLogin = on ? cfg.ONE_LOGIN_ENABLED : cfg.ONE_LOGIN_DISABLED; };
 function load(name) {
   for (const key of Object.keys(require.cache)) if (key.startsWith(FUNCTIONS + path.sep) && !key.includes(`${path.sep}lib${path.sep}`)) delete require.cache[key];
@@ -1250,7 +1251,112 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.deepEqual(storeOps.filter((o) => o.store === ASTORE && o.key !== ANCHOR_KEY), []);
     assert.ok(storeOps.some((o) => o.store === ASTORE) && storeOps.some((o) => o.store === SSTORE));
   });
-  const FLOOR = 228;
+  // =========================================================================== TL  (Jess 2026-11-10: Test-only lifetime)
+  // The accelerated-expiry mechanism: a server-honoured, Test-only session lifetime (TEST.oneLoginTestSessionSeconds).
+  // Every check restores the committed values in `finally`.
+  const TESTCFG = cfg.getConfig('test'); const PRODCFG = cfg.getConfig('production');
+  const restoreTL = () => { TESTCFG.oneLoginTestSessionSeconds = null; delete PRODCFG.oneLoginTestSessionSeconds; setEnv('test'); flag(false, 'production'); };
+  const rtc = require(path.join(FUNCTIONS, 'iaos-runtime-config.ts'));
+  await check('TL1 committed: TEST carries oneLoginTestSessionSeconds = null, PRODUCTION carries no such field; every environment is 30 days', async () => {
+    const srcTL = fs.readFileSync(path.join(APP, 'shared/ghl-config.ts'), 'utf8');
+    const testBlock = srcTL.slice(srcTL.indexOf('const TEST: GhlConfig = {'));
+    const committedTL = /\n  oneLoginTestSessionSeconds: ([^,\r\n]+),/.exec(testBlock);
+    assert.equal(committedTL && committedTL[1], 'null', 'the committed TEST value');
+    assert.equal(TESTCFG.oneLoginTestSessionSeconds, null, 'pinned in this process');
+    assert.equal(Object.prototype.hasOwnProperty.call(PRODCFG, 'oneLoginTestSessionSeconds'), false);
+    for (const e of ['test', 'production', undefined, null, 'Test', 'TEST', ' test', '', 'staging', 7]) assert.equal(cfg.oneLoginSessionSecondsFor(e), 30 * DAY, String(e));
+    assert.equal(readAuth.ONE_LOGIN_SESSION_SECONDS, 30 * DAY);
+  });
+  await check('TL2 Production is never scaled: with Test at 3600 s AND a value forced onto the PRODUCTION object, production (and every non-"test" value) is still exactly 30 days; Test is 3600', async () => {
+    try {
+      TESTCFG.oneLoginTestSessionSeconds = 3600; PRODCFG.oneLoginTestSessionSeconds = 600;
+      assert.equal(cfg.oneLoginSessionSecondsFor('test'), 3600);
+      for (const e of ['production', undefined, 'Test', 'test ', '']) assert.equal(cfg.oneLoginSessionSecondsFor(e), 30 * DAY, String(e));
+      assert.equal(readAuth.oneLoginSessionSeconds({ deployment: 'production' }), 30 * DAY);
+      assert.equal(readAuth.oneLoginSessionSeconds({ deployment: 'test' }), 3600);
+    } finally { restoreTL(); }
+  });
+  await check('TL3 a malformed Test value falls back to the full 30 days (599, 3600.5, "3600", 30 days + 1, -1, NaN, Infinity, {}, true)', async () => {
+    try {
+      for (const v of [599, 3600.5, '3600', 30 * DAY + 1, -1, NaN, Infinity, {}, true]) { TESTCFG.oneLoginTestSessionSeconds = v; assert.equal(cfg.oneLoginSessionSecondsFor('test'), 30 * DAY, String(v)); }
+      for (const v of [600, 3600, 30 * DAY]) { TESTCFG.oneLoginTestSessionSeconds = v; assert.equal(cfg.oneLoginSessionSecondsFor('test'), v); }
+    } finally { restoreTL(); }
+  });
+  await check('TL4 scaled Test, REAL sign-in: exp - iat = 3600 exactly; Set-Cookie Max-Age <= 3600; status expiresAt = sign-in + 1 h; the mint pexp is that expiry', async () => {
+    reset(); flag(true);
+    try {
+      TESTCFG.oneLoginTestSessionSeconds = 3600;
+      const before = Math.floor(Date.now() / 1000);
+      const r = await signIn(); assert.equal(r.statusCode, 200, r.body);
+      const c = cookieOf(r); const claims = decode(c);
+      assert.equal(claims.exp - claims.iat, 3600); assert.ok(claims.iat >= before - 1 && claims.iat <= before + 5);
+      const maxAge = Number(/Max-Age=(\d+)/.exec(r.headers['Set-Cookie'])[1]); assert.ok(maxAge > 3590 && maxAge <= 3600, String(maxAge));
+      const s = parse(await status(c)); assert.equal(s.state, 'signed_in'); assert.equal(Date.parse(s.expiresAt), claims.exp * 1000);
+      const m = await mint(tokenEv(c)); assert.equal(m.statusCode, 200, m.body); assert.equal(decode(parse(m).token).pexp, claims.exp);
+    } finally { restoreTL(); }
+  });
+  await check('TL5 scaled Test, server-enforced: valid at exp - 1 s; at exp and exp + 1 s verify, reader, writer, mint and status all refuse (a browser clock cannot extend it)', async () => {
+    reset(); flag(true); const realNow = Date.now;
+    try {
+      TESTCFG.oneLoginTestSessionSeconds = 3600;
+      const r = await signIn(); const c = cookieOf(r); const endMs = decode(c).exp * 1000;
+      const tok = parse(await mint(tokenEv(c))).token;
+      assert.equal(readAuth.verifyReadSession(c, readAuth.appReadConfig(), endMs - 1000).email, 'brad@example.invalid');
+      for (const t of [endMs, endMs + 1000]) {
+        Date.now = () => t;
+        assert.throws(() => readAuth.verifyReadSession(c, readAuth.appReadConfig(), t));
+        assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: c }), process.env, t)).statusCode, 401);
+        assert.equal((await load('ghl-contact')(ev({ method: 'GET', cookie: c, query: { id: 'fixtureContact' } }))).statusCode, 401);
+        assert.equal((await rev.sessionWriteRefusal(ev({ bearer: tok }), process.env, t)).statusCode, 401);
+        const m = await mint(tokenEv(c)); assert.equal(m.statusCode, 401); noCredentialLeak(m);
+        assert.equal(parse(await status(c)).state, 'signed_out');
+      }
+    } finally { Date.now = realNow; restoreTL(); }
+  });
+  await check('TL6 not usable in Production: a Production session is 30 days even with Test at 3600; a correctly SIGNED Production one-sign-in token with a 3600 s lifetime is refused', async () => {
+    try {
+      TESTCFG.oneLoginTestSessionSeconds = 3600; flag(true, 'production'); setEnv('production');
+      const pc = readAuth.appReadConfig(); assert.equal(pc.deployment, 'production');
+      const iss = readAuth.issueReadSession('brad@example.invalid', pc, Date.now(), sid(90), EPOCH, { aetag: '"a"', setag: '"s"' });
+      const pcl = decode(iss.token); assert.equal(pcl.exp - pcl.iat, 30 * DAY); assert.equal(readAuth.verifyReadSession(iss.token, pc).sid, sid(90));
+      const now = Math.floor(Date.now() / 1000);
+      const forged = signTok({ iss: 'iaos', aud: readAuth.READ_AUDIENCE, env: 'production', sub: 'brad@example.invalid', iat: now, exp: now + 3600, sid: sid(91), epoch: EPOCH, aetag: '"a"', setag: '"s"' }, pc.secret);
+      assert.throws(() => readAuth.verifyReadSession(forged, pc), /Expired or unauthorized/);
+    } finally { restoreTL(); }
+  });
+  await check('TL7 changing the Test lifetime fails CLOSED: a 30-day session is refused once Test is 3600 s, and a 3600 s session is refused once it is back to 30 days', async () => {
+    reset(); flag(true);
+    try {
+      const c30 = cookieOf(await signIn());
+      TESTCFG.oneLoginTestSessionSeconds = 3600;
+      assert.throws(() => readAuth.verifyReadSession(c30, readAuth.appReadConfig()));
+      const c1h = cookieOf(await signIn()); assert.equal(readAuth.verifyReadSession(c1h, readAuth.appReadConfig()).email, 'brad@example.invalid');
+      TESTCFG.oneLoginTestSessionSeconds = null;
+      assert.throws(() => readAuth.verifyReadSession(c1h, readAuth.appReadConfig()));
+    } finally { restoreTL(); }
+  });
+  await check('TL8 runtime payload: sessionSeconds appears ONLY for test with one sign-in on and a short value; production never; off: no oneLogin key at all; the TEST field itself is never projected', async () => {
+    try {
+      TESTCFG.oneLoginTestSessionSeconds = 3600; flag(true); flag(true, 'production');
+      assert.deepEqual(rtc.runtimePayload('test').oneLogin, { active: true, sessionSeconds: 3600 });
+      assert.deepEqual(rtc.runtimePayload('production').oneLogin, { active: true });
+      assert.ok(!JSON.stringify(rtc.runtimePayload('test')).includes('oneLoginTestSessionSeconds'));
+      TESTCFG.oneLoginTestSessionSeconds = null;
+      assert.deepEqual(rtc.runtimePayload('test').oneLogin, { active: true });
+      flag(false); flag(false, 'production'); TESTCFG.oneLoginTestSessionSeconds = 3600;
+      assert.equal('oneLogin' in rtc.runtimePayload('test'), false); assert.equal('oneLogin' in rtc.runtimePayload('production'), false);
+    } finally { restoreTL(); flag(false); }
+  });
+  await check('TL9 static: the PRODUCTION object source names no test lifetime; oneLoginSessionSecondsFor returns 30 days for every non-"test" value FIRST; issue and verify use the per-deployment lifetime and no fixed one', async () => {
+    const src = fs.readFileSync(path.join(APP, 'shared/ghl-config.ts'), 'utf8');
+    const prod = src.slice(src.indexOf('const PRODUCTION: GhlConfig = {'), src.indexOf('const TEST: GhlConfig = {'));
+    assert.ok(prod.length > 1000); assert.ok(!/oneLoginTestSessionSeconds/.test(prod));
+    assert.ok(/export function oneLoginSessionSecondsFor\(environment: unknown\): number \{\s*if \(environment !== "test"\) return ONE_LOGIN_FULL_SESSION_SECONDS;/.test(src), 'first statement refuses every non-"test" value');
+    const ra = fs.readFileSync(path.join(FUNCTIONS, 'lib/app-read-auth.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
+    assert.equal((ra.match(/oneLoginSessionSeconds\(config\)/g) || []).length, 2, 'issue + verify');
+    assert.ok(!/:\s*ONE_LOGIN_SESSION_SECONDS\)/.test(ra), 'no fixed 30-day lifetime left in issue/verify');
+  });
+  const FLOOR = 237;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (server): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;

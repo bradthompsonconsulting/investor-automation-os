@@ -71,6 +71,7 @@ global.fetch = async (url, init) => {
 };
 const cfg = require(path.join(APP, 'shared/ghl-config.ts'));
 cfg.getConfig('test').oneLogin = cfg.ONE_LOGIN_ENABLED;   // in-memory, this process only
+cfg.getConfig('test').oneLoginTestSessionSeconds = null;   // pinned in-process: these checks are 30-day checks, whatever the committed Test lifetime
 const readAuth = require(path.join(FUNCTIONS, 'lib/app-read-auth.ts'));
 const writeAuth = require(path.join(FUNCTIONS, 'lib/app-write-auth.ts'));
 const rev = require(path.join(FUNCTIONS, 'lib/session-revocation.ts'));
@@ -733,8 +734,57 @@ async function main() {
       await ctx11.close();
     }
 
+    // ════════════════ 9. Jess 2026-11-10: a server-issued Test-scaled session (60 minutes) on the real page ════════════════
+    {
+      const TESTCFG = cfg.getConfig('test');
+      try {
+        TESTCFG.oneLoginTestSessionSeconds = 3600;   // in-memory, this process only: the server now ISSUES 60-minute sessions
+        await signInJar();
+        const realExp = claims().exp; const realIat = claims().iat;
+        check('L23 the real sign-in issued a 60-minute session (server lifetime, exp - iat = 3600)', realExp - realIat === 3600, { lifetime: realExp - realIat });
+        const MIN = 60_000;
+        const exp9 = signedInAgo(50 * MIN - 20000);   // T5 (exp - 10 min) is 20 s away (page start-up included)
+        const ctx9 = await newCtx();
+        const S9 = await newTab(ctx9, 'S9', '/ws/seller-call/42?tab=notes&sessionSeconds=3600');
+        await until(() => shown(S9, 'draft'));
+        const status9 = (await txt(S9, 'read-access-signed-in')) || '';
+        check('L24 the status line says Test session and shows the end TIME of the 60-minute session',
+          /^Signed in · Test session ends \d{1,2}:\d{2}/.test(status9), { status9 });
+        const decided9 = await reminderDecided(S9);
+        check('L24 no reminder before the scaled T5 (exp - 10 min)', decided9 && Date.now() < exp9 - 10 * MIN && !(await shown(S9, 'session-reminder')), { decided9, msToT5: exp9 - 10 * MIN - Date.now() });
+        await until(() => shown(S9, 'session-reminder'), 30000);
+        check('L25 at the scaled T5 the reminder appears with no reload: "Your IAOS Test session expires within 10 minutes. …"',
+          Date.now() >= exp9 - 10 * MIN && ((await txt(S9, 'session-reminder-text')) || '') === 'Your IAOS Test session expires within 10 minutes. Log in again now to keep your workflow uninterrupted.',
+          { text: await txt(S9, 'session-reminder-text') });
+        await S9.getByTestId('session-reminder-later').click({ timeout: 8000 }).catch(() => {});
+        await until(async () => !(await shown(S9, 'session-reminder')), 10000);
+        await S9.getByTestId('draft').click({ timeout: 8000 }).catch(() => {});
+        await S9.getByTestId('draft').fill('kept through the Test expiry', { timeout: 8000 }).catch(() => {});
+        // T1 (exp - 2 min) 4 s away, then the expiry itself: the overlay with the Test copy, and the draft is kept.
+        const exp9b = signedInAgo(58 * MIN - 4000);
+        await S9.evaluate(() => window.dispatchEvent(new Event('focus')));
+        // The re-issued session has a NEW expiry, so its own T5 is due first (dismiss it); then the T1 checkpoint arrives.
+        await until(async () => {
+          if (!(await shown(S9, 'session-reminder'))) return false;
+          if (((await txt(S9, 'session-reminder-text')) || '') === 'Your IAOS Test session expires within 2 minutes. Log in again now to keep your workflow uninterrupted.') return true;
+          await S9.getByTestId('session-reminder-later').click({ timeout: 3000 }).catch(() => {}); return false;
+        }, 20000);
+        check('L26 at the scaled T1 the reminder says "within 2 minutes" (never days or 24 hours)',
+          Date.now() >= exp9b - 2 * MIN && ((await txt(S9, 'session-reminder-text')) || '') === 'Your IAOS Test session expires within 2 minutes. Log in again now to keep your workflow uninterrupted.',
+          { text: await txt(S9, 'session-reminder-text') });
+        await S9.getByTestId('session-reminder-later').click({ timeout: 8000 }).catch(() => {});
+        signedInAgo(60 * MIN - 3000);   // the server's expiry is 3 s away
+        await S9.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await until(() => shown(S9, 'read-access-recovery'), 20000);
+        check('L27 past the scaled expiry the server refuses (status signed_out) and the page shows the overlay with the Test copy; the unsaved draft stays',
+          (await serverStatus()).state === 'signed_out' && (await msgText(S9)) === 'Your Test session has ended. Sign in to continue — your unsaved work is still here.' &&
+          (await draftValue(S9)) === 'kept through the Test expiry', { msg: await msgText(S9), draft: await draftValue(S9) });
+        await ctx9.close();
+      } finally { TESTCFG.oneLoginTestSessionSeconds = null; }
+    }
+
     check('L0 nothing left the machine: no outbound request other than the stubbed Google script', outbound.length === 0, outbound);
-    if (checks < 67) { failures += 1; console.error(`FAIL  check floor -- ${checks} checks ran, the floor is 67`); }
+    if (checks < 73) { failures += 1; console.error(`FAIL  check floor -- ${checks} checks ran, the floor is 73`); }
     if (failedNames.length) console.error(`FAILED CHECKS (${failedNames.length}): ${failedNames.map((n) => JSON.stringify(n)).join(' | ')}`);
     console.log(`B15-29 login experience (real page): ${checks - failures}/${checks} checks passed`);
     await exit(failures ? 1 : 0);

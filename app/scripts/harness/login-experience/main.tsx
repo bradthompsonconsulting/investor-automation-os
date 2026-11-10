@@ -11,7 +11,10 @@ import { createRoot } from "react-dom/client";
 import { useEffect, useState } from "react";
 import { getConfig, projectRuntimeConfig, setRuntimeConfig } from "../../../shared/ghl-config";
 
-setRuntimeConfig({ ...projectRuntimeConfig(getConfig("test"), "test"), oneLogin: { active: true } });
+// B15-29 (Jess 2026-11-10): `?sessionSeconds=N` stands in for the server Test-only projection
+// (`oneLogin.sessionSeconds`, sent only when the server itself issues that lifetime). Absent: unchanged.
+const scaled = Number(new URLSearchParams(window.location.search).get("sessionSeconds"));
+setRuntimeConfig({ ...projectRuntimeConfig(getConfig("test"), "test"), oneLogin: Number.isInteger(scaled) && scaled > 0 ? { active: true, sessionSeconds: scaled } : { active: true } });
 
 const [{ BrowserRouter, Routes, Route, Link, useLocation }, { default: Layout }, { appWriteFetch, AppWriteSignInRequired }] = await Promise.all([
   import("react-router-dom"),

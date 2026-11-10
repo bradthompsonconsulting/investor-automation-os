@@ -2,7 +2,7 @@ import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } 
 import OneLoginScreen, { ReminderDialog, type ScreenAction, type ScreenMessage } from "./OneLoginScreen";
 import { dismissReminder, dueReminder, nextReminderDelay, reminderDismissed, reminderMessage } from "../lib/session-reminder";
 import { READ_SESSION_ENDPOINT, READ_SESSION_LOST_EVENT } from "../lib/read-session";
-import { SESSION_UNAVAILABLE_EVENT, SESSION_UNAVAILABLE_MARKER } from "../lib/one-login";
+import { SESSION_UNAVAILABLE_EVENT, SESSION_UNAVAILABLE_MARKER, oneLoginSessionScale } from "../lib/one-login";
 import { clearAppWriteToken, confirmAppWriteSession, pauseAppWriteForSignOut, primeAppWriteSession, replaceAppWriteSession, resumeAppWriteAccess } from "../lib/app-write-session";
 import { clearOperatorScopedData, operatorChangedSinceLastPage, rememberOperator } from "../lib/operator-partition";
 import { ReadRecovered, ReadViewReport, type ReadView } from "./access-status";
@@ -12,8 +12,11 @@ export function OneLoginStatusLine({ read }: { read: ReadView }) {
   if (read.kind !== "signed_in") return null;
   return <div role="status" data-testid="session-status" className="text-sm" style={{ padding: "6px 16px", color: "#fff", background: "#14213d" }}>
     <span data-testid="read-access-signed-in">
-      {/* 30-day session: show the END DATE (a time alone read as "ends today"). */}
-      Signed in · session ends {new Date(read.expiresAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} · <button onClick={read.signOut}>Sign out</button></span>
+      {/* 30-day session: show the END DATE (a time alone read as "ends today"). A Test-scaled session (under a day)
+          says so and shows the end TIME, which is what can be checked. */}
+      {oneLoginSessionScale() < 1
+        ? <>Signed in · Test session ends {new Date(read.expiresAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</>
+        : <>Signed in · session ends {new Date(read.expiresAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</>} · <button onClick={read.signOut}>Sign out</button></span>
   </div>;
 }
 
@@ -30,6 +33,9 @@ export const SIGN_IN_LABEL = "Sign In to IAOS";
 export const WORKING_TEXT = "Opening secure sign-in…";
 export const POPUP_BLOCKED_TEXT = "Allow pop-ups for IAOS to sign in.";
 export const EXPIRED_TEXT = "Your 30-day session has ended. Sign in to continue — your unsaved work is still here.";
+/** B15-29 (Jess 2026-11-10): the same copy on a Test-scaled lifetime, never claiming 30 days. */
+export const TEST_EXPIRED_TEXT = "Your Test session has ended. Sign in to continue — your unsaved work is still here.";
+const sessionLengthText = (scale: number) => (scale < 1 ? `${Math.round((scale * 30 * 24 * 60))}-minute Test` : "30-day");
 /** r4 (R3-2): shown once after a sign-in with a DIFFERENT account replaced this page's session. */
 export const ACCOUNT_CHANGED_HEADING = "Signed in with a different account";
 export const ACCOUNT_CHANGED_TEXT = "Unsaved work from the previous account was cleared from this page. Anything already saved is not affected.";
@@ -211,7 +217,7 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
   // local timer at the next checkpoint (capped at one day). No request is made here.
   useEffect(() => {
     if (!expiresAt) return;
-    const delay = nextReminderDelay(expiresAt, Date.now());
+    const delay = nextReminderDelay(expiresAt, Date.now(), oneLoginSessionScale());
     if (delay === null) return;
     const timer = setTimeout(() => setTick((n) => n + 1), delay);
     return () => clearTimeout(timer);
@@ -288,14 +294,15 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
         line={ACCOUNT_CHANGED_TEXT} primary={{ label: "Continue", onClick: () => setAccountChanged(false), testId: "one-login-account-continue" }} />;
     } else if (relogin) {
       layer = <OneLoginScreen key="overlay" mode="overlay" testId="one-login-relogin" heading="Log in again"
-        line="Start a new 30-day session. With the same account, your unsaved work on this page stays where it is."
+        line={`Start a new ${sessionLengthText(oneLoginSessionScale())} session. With the same account, your unsaved work on this page stays where it is.`}
         primary={signInAction} message={popupMessage}
         secondary={{ label: "Cancel", onClick: () => { setRelogin(false); setPopupState("idle"); }, testId: "one-login-cancel" }} />;
     } else {
-      const due = dueReminder(status.expiresAt, Date.now());
+      const scale = oneLoginSessionScale();
+      const due = dueReminder(status.expiresAt, Date.now(), scale);
       if (due !== null && !reminderDismissed(status.expiresAt, due)) {
         const at = status.expiresAt;
-        layer = <ReminderDialog key={`reminder-${due}`} text={reminderMessage(due, status.expiresAt - Date.now())}
+        layer = <ReminderDialog key={`reminder-${due}`} text={reminderMessage(due, status.expiresAt - Date.now(), scale)}
           onLater={() => { dismissReminder(at, due); setTick((n) => n + 1); }}
           onLogIn={() => { dismissReminder(at, due); setRelogin(true); }} />;
       }
@@ -324,7 +331,7 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
       ? <OneLoginScreen key="overlay" mode="overlay" testId="read-access-recovery"
           heading={status.reason === "revoked" ? "You've signed out" : "Your session has ended"}
           line="Sign in again to continue where you left off." primary={signInAction}
-          message={popupMessage ?? msg(status.reason === "revoked" ? SIGNED_OUT_TEXT : EXPIRED_TEXT)} />
+          message={popupMessage ?? msg(status.reason === "revoked" ? SIGNED_OUT_TEXT : oneLoginSessionScale() < 1 ? TEST_EXPIRED_TEXT : EXPIRED_TEXT)} />
       : status.kind === "unavailable"
         ? <OneLoginScreen key="overlay" mode="overlay" testId="read-access-recovery" heading="IAOS can't confirm your sign-in right now"
             line={`${keep} A new sign-in would not fix this; try again in a moment.`} primary={tryAgain} message={msg(status.message, "alert")} />

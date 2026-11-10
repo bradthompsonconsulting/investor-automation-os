@@ -30,7 +30,7 @@
  * proven, not before.
  */
 
-import { getConfig, oneLoginActiveFor, projectRuntimeConfig } from "../../shared/ghl-config";
+import { getConfig, oneLoginActiveFor, oneLoginSessionSecondsFor, projectRuntimeConfig, ONE_LOGIN_FULL_SESSION_SECONDS } from "../../shared/ghl-config";
 import { repairApprovalActiveFor } from "../../shared/repair-approval-config";
 
 /**
@@ -44,7 +44,13 @@ export function runtimePayload(env: string | undefined, active: (env: unknown) =
   // repairApproval is added LAST and stays decided solely by repairApprovalActiveFor(env); the two are independent.
   // B15-29 (INV-137): `oneLogin` appears ONLY while one IAOS sign-in is on for this env, so the payload while it is
   // off is byte-for-byte the previous one. The browser treats an absent or malformed value as off.
-  const oneLogin = oneLoginActiveFor(env) ? { oneLogin: { active: true } } : {};
+  // B15-29 (Jess 2026-11-10): a Test-only short session lifetime is projected as `sessionSeconds` so the browser can
+  // place the scaled reminder checkpoints; it appears only when the SERVER issues that lifetime (only "test" can). The
+  // server enforces the lifetime itself; this value is presentation only.
+  const seconds = oneLoginSessionSecondsFor(env);
+  const oneLogin = oneLoginActiveFor(env)
+    ? { oneLogin: seconds === ONE_LOGIN_FULL_SESSION_SECONDS ? { active: true } : { active: true, sessionSeconds: seconds } }
+    : {};
   return { ...projectRuntimeConfig(getConfig(env), env), ...oneLogin, repairApproval: { active: active(env) } };
 }
 
