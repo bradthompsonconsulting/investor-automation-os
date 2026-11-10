@@ -688,11 +688,34 @@ const resetAll = async ({ signIn = true } = {}) => {
       const part = strip('src/lib/operator-partition.ts');
       assert.ok(/const LOCAL_KEYS = \["iaos_dashboard_last_visit"\];/.test(part) && !/iaos-contact-draft|calculator/.test(part));
     });
+    await check('DO6 recovery R-2: one sign-in turned OFF -- One Login drafts are NOT deleted and stay under one-login:<tag>; a legacy draft reappears for its ORIGINAL owner; nothing is re-attributed or re-keyed', async () => {
+      const S = mapStorage();
+      setFlag(true); OP.rememberOperator('tagA');
+      let store = CD.openContactDraftStore(() => S);
+      assert.equal(store.save(draftOf(CD.draftOperator(W), 'one-login draft of A')), true);
+      // a legacy draft stored before one sign-in existed, under the e-mail owner (the previous rule)
+      setFlag(false);
+      assert.equal(CD.draftOperator(W), 'brad@example.invalid', 'OFF: the previous owner rule exactly');
+      store = CD.openContactDraftStore(() => S);
+      assert.equal(store.save(draftOf(CD.draftOperator(W), 'legacy draft of brad')), true);
+      const before = JSON.stringify([...S.m.entries()].sort());
+      // OFF (the rollback): a reload reads the legacy owner's draft; the One Login record is untouched
+      store = CD.openContactDraftStore(() => S);
+      const legacy = store.load(id(CD.draftOperator(W)));
+      assert.ok(legacy.ok && legacy.draft && legacy.draft.values.text === 'legacy draft of brad', JSON.stringify(legacy));
+      assert.ok([...S.m.keys()].some((k) => k.includes('one-login%3AtagA')), 'the One Login draft is still stored');
+      assert.equal(JSON.stringify([...S.m.entries()].sort()), before, 'nothing re-keyed, re-attributed or deleted by reading under OFF');
+      // and back ON: A's One Login draft is A's again; the legacy draft is not shown under one-login:tagA
+      setFlag(true); OP.rememberOperator('tagA');
+      store = CD.openContactDraftStore(() => S);
+      const back = store.load(id(CD.draftOperator(W)));
+      assert.ok(back.ok && back.draft && back.draft.values.text === 'one-login draft of A', JSON.stringify(back));
+    });
     setFlag(false);
   }
 
   Date.now = realNow; setFlag(false);
-  const FLOOR = 50;
+  const FLOOR = 51;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (client): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;

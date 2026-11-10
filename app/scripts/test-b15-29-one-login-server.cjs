@@ -1546,7 +1546,43 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal((await NOOPR()(ev({ method: 'POST', cookie: b.cookie }))).statusCode, 404);
     assert.equal(other.length, 0);
   });
-  const FLOOR = 269;
+  // ── R: recovery ──
+  const storeImage = () => JSON.stringify([...blobs.store.entries()].sort());
+  await check('R1 flag OFF after ON: the One Login cookie is refused by verify and a reader; the bound token by requireAppWriter AND sessionWriteRefusal (one_login_off) before any Blob/outbound; legacy sign-in and saving still work; no record, receipt or anchor changed', async () => {
+    reset(); flag(true); const b = await bind(67); const tok = tokenFor(b);
+    const before = storeImage(); const m0 = blobs.mutations.length;
+    flag(false);
+    const b0 = blobs.log.length; other = [];
+    assert.throws(() => readAuth.verifyReadSession(b.cookie, readAuth.appReadConfig()));
+    assert.equal((await load('ghl-contact')(ev({ method: 'GET', cookie: b.cookie, query: { id: 'fixtureContact' } }))).statusCode, 401);
+    assert.throws(() => writeAuth.requireAppWriter(ev({ bearer: tok })));
+    const w = await rev.sessionWriteRefusal(ev({ bearer: tok })); assert.equal(w.statusCode, 401); assert.equal(parse(w).reason, 'one_login_off');
+    assert.equal(blobs.log.length, b0, 'no Blob request'); assert.equal(other.length, 0, 'no outbound');
+    const legacy = legacyCookie(); assert.equal(readAuth.verifyReadSession(legacy, readAuth.appReadConfig()).email, 'brad@example.invalid');
+    assert.equal(writeAuth.requireAppWriter(ev({ bearer: writeAuth.issueAppSession('brad@example.invalid').token })), 'brad@example.invalid');
+    assert.equal(storeImage(), before, 'the store is byte-identical'); assert.equal(blobs.mutations.length, m0);
+    flag(true);
+  });
+  await check('R3 flag back ON with the SAME epoch: a session issued before the OFF period is ACCEPTED again until its fixed exp (pinned); a session revoked before OFF stays revoked; after an epoch rotation (close + reopen) the old session is refused', async () => {
+    reset(); flag(true); const keep = await bind(68); const gone = await bind(69);
+    await rev.revokeSession(gone.sid, gone.epoch, 'test', { event: NF });
+    flag(false); flag(true);
+    assert.equal(await rev.sessionReadRefusal(ev({ method: 'GET', cookie: keep.cookie })), null, 'pre-OFF session accepted again (same epoch)');
+    assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: gone.cookie }))).statusCode, 401, 'revoked stays revoked');
+    seedAnchor({ state: 'closed' }); seedAnchor({ epoch: EPOCH2 });
+    assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: keep.cookie }))).statusCode, 401, 'refused after epoch rotation');
+  });
+  await check('R4 anchor CLOSED with one sign-in ON: sign-in 503 authority_closed; an existing session 401 at the reader, the mint and the writer; no data changed (the closed anchor and every record byte-identical)', async () => {
+    reset(); flag(true); const b = await bind(70); const tok = tokenFor(b);
+    seedAnchor({ state: 'closed' }); const before = storeImage(); const m0 = blobs.mutations.length;
+    const s = await signIn(); assert.equal(s.statusCode, 503, s.body);
+    assert.equal((await rev.sessionReadRefusal(ev({ method: 'GET', cookie: b.cookie }))).statusCode, 401);
+    assert.equal((await mint(tokenEv(b.cookie))).statusCode, 401);
+    assert.equal((await rev.sessionWriteRefusal(ev({ bearer: tok }))).statusCode, 401);
+    assert.equal((await NOOP()(ev({ bearer: tok, body: JSON.stringify({ probe: 'a6' }) }))).statusCode, 401);
+    assert.equal(storeImage(), before, 'byte-identical store'); assert.equal(blobs.mutations.length, m0);
+  });
+  const FLOOR = 272;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (server): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;
