@@ -351,7 +351,7 @@ jobs:
       - name: Contract Workspace display, combined invariants and checked-in slice provenance (B15-21)
         run: node app/scripts/test-b15-21-contract-display.cjs
       # Node-only (esbuild + react-dom/server); base identity is pinned by committed SHA-256 (no git object needed).
-      - name: Authoritative figures -- recorded vs calculated-now Seller MAO, ARV on record bound to its read, submitted-snapshot approval, base-identity pins (INV-131, B15-22) — 96 checks
+      - name: Authoritative figures -- recorded vs calculated-now Seller MAO, ARV on record bound to its read, submitted-snapshot approval, base-identity pins (INV-131, B15-22) — 100 checks
         run: node app/scripts/test-b15-22-authoritative-figures.cjs
       # B1 Blob authority (B15-26 B1 r7 boundary r2/r3): isolated module, loopback fake service only, no real credential.
       - name: B1 Blob authority -- single-attempt conditional writes, process-local handles, forbidden transitions (INV-134) — 80 checks
@@ -499,13 +499,13 @@ jobs:
 
       # B15-29 (INV-137) one IAOS sign-in, OFF in both committed configs. The suites switch it on in their own
       # process only; the session store is an in-memory fake Lambda Blobs API. Offline; the page suite needs Chromium.
-      - name: One IAOS sign-in, server -- flag-off equivalence, conditional-write session authority, token mint, acknowledged Sign out, handle authority, 30-day lifetime, tabs and devices, authorization seam, reader/writer inventory, authority binding + restore epoch (INV-137, B15-29) - 209 checks
+      - name: One IAOS sign-in, server -- flag-off equivalence, conditional-write session authority, token mint, acknowledged Sign out, handle authority, 30-day lifetime, tabs and devices, authorization seam, reader/writer inventory, authority binding + restore epoch (INV-137, B15-29) - 237 checks
         run: node app/scripts/test-b15-29-one-login-server.cjs
-      - name: One IAOS sign-in, saving module with the real handlers -- 29-day span on one sign-in, 30-day end, browser close, two devices, cross-tab Sign out, never re-sent, reminder checkpoints from the server expiry (INV-137, B15-29) - 34 checks
+      - name: One IAOS sign-in, saving module with the real handlers -- 29-day span on one sign-in, 30-day end, browser close, two devices, cross-tab Sign out, never re-sent, reminder checkpoints from the server expiry (INV-137, B15-29) - 50 checks
         run: node app/scripts/test-b15-29-one-login-client.cjs
       - name: One IAOS sign-in on the real page -- one sign-in, Sign out stops another tab without any browser channel, unavailable is not signed out, drafts kept, persistent 30-day cookie (INV-137, B15-29) - 28 checks
         run: node app/scripts/test-b15-29-one-login-page.cjs
-      - name: One IAOS sign-in, professional login experience on the real page -- entrance keeps the deep link, responsive, real restyled popup (Google stubbed), overlay keeps drafts and focus over an inert app, 5-day / 1-day reminders, Remind Me Later sends nothing, Log In Again = new 30-day session, expiry, Logout, outage is never a sign-in prompt (INV-137, B15-29) - 54 checks
+      - name: One IAOS sign-in, professional login experience on the real page -- entrance keeps the deep link, responsive, real restyled popup (Google stubbed), overlay keeps drafts and focus over an inert app, 5-day / 1-day reminders, Remind Me Later sends nothing, Log In Again = new 30-day session, expiry, Logout, outage is never a sign-in prompt (INV-137, B15-29) - 73 checks
         run: node app/scripts/test-b15-29-login-experience-page.cjs
 
       # Not a counted runner — a typecheck. No floor, and it must not be given
