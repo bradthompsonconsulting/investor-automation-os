@@ -429,7 +429,11 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     const src = fs.readFileSync(path.join(FUNCTIONS, 'lib/session-revocation.ts'), 'utf8');
     const body = src.slice(src.indexOf('export async function checkSession'), src.indexOf('export type RevokeResult'));
     assert.ok(!/getWithMetadata|\.get\(/.test(body), 'checkSession contains no read');
-    assert.equal((src.match(/getWithMetadata\(/g) || []).length, 1, 'the module reads exactly once: the sign-in anchor lookup');
+    // Jeff work order T1: the Test-only probe section (runAuthorityProbe) reads ONLY its own probe/<runId>/ key; P7 pins that.
+    // Outside it the module still reads exactly once: the sign-in anchor lookup.
+    const authoritySrc = src.slice(0, src.indexOf('// --------------------------------------------- Test-only authority probe ---'));
+    assert.ok(authoritySrc.length > 1000 && authoritySrc.length < src.length, 'the probe section is delimited');
+    assert.equal((authoritySrc.match(/getWithMetadata\(/g) || []).length, 1, 'the module reads exactly once outside the probe section: the sign-in anchor lookup');
   });
   // sign-in failures (module level)
   for (const [label, prep, reason] of [
@@ -892,17 +896,24 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     'ghl-conversations', 'ghl-documents-capability', 'ghl-mailers', 'ghl-opportunities', 'ghl-proxy', 'ghl-underwriting-policy', 'repair-approval-status'];
   const WRITERS = ['call-log-barrier', 'current-offer-barrier', 'generate-contract-pdf', 'ghl-contract-send-readback', 'ghl-executed-artifact-upload', 'ghl-write', 'property-answer', 'repair-approval-save'];
   const RETIRED = ['ghl-contract-send-execute', 'ghl-contract-send-reserve'];
+  // Jeff work order T3: the Test-only probe functions (Production 404) -- their own class, so the business inventory stays exact.
+  const TEST_ONLY_READERS = ['protected-noop-read', 'session-authority-probe'];
+  const TEST_ONLY_WRITERS = ['protected-noop'];
   const all = fs.readdirSync(FUNCTIONS).filter((f) => f.endsWith('.ts')).map((f) => f.slice(0, -3));
   const src = (n) => fs.readFileSync(path.join(FUNCTIONS, n + '.ts'), 'utf8');
   await check('I1 inventory: the files calling readAuthRefusal are exactly the 14 readers; those calling requireAppWriter are exactly the 8 writers + 2 retired 410 endpoints', async () => {
-    assert.deepEqual(all.filter((n) => /readAuthRefusal\(event\)/.test(src(n))).sort(), [...READERS].sort());
-    assert.deepEqual(all.filter((n) => /requireAppWriter\(event\)/.test(src(n))).sort(), [...WRITERS, ...RETIRED].sort());
+    assert.deepEqual(all.filter((n) => /readAuthRefusal\(event\)/.test(src(n))).sort(), [...READERS, ...TEST_ONLY_READERS].sort());
+    assert.deepEqual(all.filter((n) => /requireAppWriter\(event\)/.test(src(n))).sort(), [...WRITERS, ...RETIRED, ...TEST_ONLY_WRITERS].sort());
+  });
+  await check('I1b the Test-only probe functions: the FIRST statement of each handler is the Test-only gate (404 otherwise), and no business reader or writer uses that gate', async () => {
+    for (const n of [...TEST_ONLY_READERS, ...TEST_ONLY_WRITERS]) assert.match(src(n), /export const handler = async \(event: any\) => \{\r?\n\s*if \(!testProbeGateOpen\(event\)\) return PROBE_NOT_FOUND;/, n);
+    for (const n of [...READERS, ...WRITERS]) assert.ok(!/testProbeGateOpen/.test(src(n)), n);
   });
   await check('I2 every reader: `await sessionReadRefusal(event)` immediately follows its unchanged two readAuthRefusal statements', async () => {
-    for (const n of READERS) assert.match(src(n), /const (refused|refusal) = readAuthRefusal\(event\);\r?\n\s*if \(\1\) return \1;\r?\n\s*const revoked = await sessionReadRefusal\(event\);\r?\n\s*if \(revoked\) return revoked;/, n);
+    for (const n of [...READERS, ...TEST_ONLY_READERS]) assert.match(src(n), /const (refused|refusal) = readAuthRefusal\(event\);\r?\n\s*if \(\1\) return \1;\r?\n\s*const revoked = await sessionReadRefusal\(event\);\r?\n\s*if \(revoked\) return revoked;/, n);
   });
   await check('I3 every writer: `await sessionWriteRefusal(event)` follows requireAppWriter and requireAppWriteOrigin, before anything else', async () => {
-    for (const n of WRITERS) {
+    for (const n of [...WRITERS, ...TEST_ONLY_WRITERS]) {
       const s = src(n);
       const a = s.indexOf('requireAppWriter(event)'), o = s.indexOf('requireAppWriteOrigin(event)'), w = s.indexOf('await sessionWriteRefusal(event)');
       assert.ok(a > 0 && o > a && w > o, n);
@@ -1415,7 +1426,127 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
       await pxRefusesEverywhere(b, b.exp * 1000, '60-minute');
     } finally { TESTCFG_PX.oneLoginTestSessionSeconds = null; }
   });
-  const FLOOR = 240;
+  // =========================================================================== P / N / R  (Jeff work order T1-T4, 2026-11-10)
+  // P: session-authority-probe (P-1, U1/U2/U4). N: protected-noop + reader twin (P-2, A6). R: recovery (R-1, R-3, R-4).
+  const PROBE = () => load('session-authority-probe'); const NOOP = () => load('protected-noop'); const NOOPR = () => load('protected-noop-read');
+  const RUN = 'probe-run-0001-abcdef';
+  const probeEv = (o = {}) => ev({ body: JSON.stringify({ probe: 'authority', runId: RUN }), ...o });
+  const legacyCookie = () => readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig()).token;
+  const keysTouched = (from) => blobs.log.slice(from).map((e) => `${e.storeName}|${e.key}|${e.method}`);
+  const gateCases = () => [
+    ['Production env', () => setEnv('production'), {}],
+    ['no runtime site id', () => {}, { headers: { 'x-nf-site-id': undefined } }],
+    ['the Production site id', () => {}, { headers: { 'x-nf-site-id': PROD_SITE } }],
+    ['two site ids', () => {}, { multi: { 'x-nf-site-id': [SITE, PROD_SITE] } }],
+    ['a query selector', () => {}, { query: { mode: 'x' } }],
+  ];
+  for (const [name, fn] of [['session-authority-probe', PROBE], ['protected-noop', NOOP], ['protected-noop-read', NOOPR]]) {
+    for (const [label, prep, extra] of gateCases()) {
+      await check(`P0 ${name}: ${label} -> bare 404 before any auth, Blob or outbound request`, async () => {
+        reset(); flag(true); prep(); const b0 = blobs.log.length; other = [];
+        const r = await fn()(ev({ method: name === 'protected-noop-read' ? 'GET' : 'POST', cookie: legacyCookie(), body: '{}', ...extra }));
+        assert.equal(r.statusCode, 404, r.body); assert.equal(r.body, 'Not Found');
+        assert.equal(blobs.log.length, b0); assert.equal(other.length, 0); setEnv('test');
+      });
+    }
+  }
+  await check('P1 probe: the wrong method -> 404; no session -> the read refusal (401); a malformed body with a valid session -> 404', async () => {
+    reset(); flag(false);
+    assert.equal((await PROBE()(ev({ method: 'GET', cookie: legacyCookie() }))).statusCode, 404);
+    assert.equal((await PROBE()(probeEv())).statusCode, 401);
+    for (const body of ['{}', JSON.stringify({ probe: 'authority' }), JSON.stringify({ probe: 'authority', runId: 'short' }), JSON.stringify({ probe: 'authority', runId: RUN, extra: 1 }), JSON.stringify({ probe: 'x', runId: RUN })])
+      assert.equal((await PROBE()(ev({ cookie: legacyCookie(), body }))).statusCode, 404, body);
+  });
+  await check('P2 probe positive (before activation: one sign-in OFF, legacy read session): 200; every step ok; U4 present/single/lowercase/pinned; only probe/<runId>/ keys in iaos-write-receipts; never the authority store, a session record or a delete; writes <= 4 + N', async () => {
+    reset(); flag(false); const b0 = blobs.log.length; other = [];
+    const r = await PROBE()(probeEv({ cookie: legacyCookie() })); const out = parse(r);
+    assert.equal(r.statusCode, 200, r.body); assert.equal(out.stoppedAt, null, JSON.stringify(out.steps));
+    assert.deepEqual(out.steps.map((s) => s.ok), [true, true, true, true, true, true, true]);
+    assert.deepEqual(out.u4, { present: true, single: true, lowercase: true, equalsPinned: true });
+    const touched = blobs.log.slice(b0);
+    assert.ok(touched.length > 0 && touched.every((e) => e.storeName === 'site:' + SSTORE && String(e.key).startsWith(`probe/${RUN}/`)), JSON.stringify(keysTouched(b0)));
+    assert.ok(!touched.some((e) => e.method === 'DELETE'));
+    assert.ok(touched.filter((e) => e.method === 'PUT' && e.status === 200).length <= 4, 'applied writes <= 4 (create, identical, one winner, revoke); refused attempts change nothing');
+    assert.equal(other.length, 0);
+    assert.ok(!/"c-|"w-|Bearer|__Host|cookie/i.test(r.body), 'no ETag value, token or cookie in the transcript');
+  });
+  await check('P3 probe positive with one sign-in ON and a bound session (sessionReadRefusal in the chain): 200, all ok', async () => {
+    reset(); flag(true); const b = await bind(60);
+    const out = parse(await PROBE()(probeEv({ cookie: b.cookie }))); assert.equal(out.stoppedAt, null, JSON.stringify(out.steps));
+  });
+  await check('P4 the probe can FAIL: a store that ignores If-None-Match -> stopped at step 2 (duplicate create accepted), later steps not run', async () => {
+    reset(); flag(false); blobs.setIgnoreConditions({ ifNoneMatch: true });
+    try { const out = parse(await PROBE()(probeEv({ cookie: legacyCookie() }))); assert.equal(out.stoppedAt, 2); assert.equal(out.steps.length, 2); assert.equal(out.steps[1].ok, false); }
+    finally { blobs.setIgnoreConditions({}); }
+  });
+  await check('P5 the probe can FAIL: a store that ignores If-Match -> U2 failure at the stale-ETag step (4)', async () => {
+    reset(); flag(false); blobs.setIgnoreConditions({ ifMatch: true });
+    try { const out = parse(await PROBE()(probeEv({ cookie: legacyCookie() }))); assert.equal(out.stoppedAt, 4); assert.equal(out.steps[3].op, 'stale onlyIfMatch refused (U2)'); }
+    finally { blobs.setIgnoreConditions({}); }
+  });
+  await check('P6 the probe can FAIL: per-write ETags (U1 false) -> stopped at the identical-bytes step (3), etagChanged true', async () => {
+    reset(); flag(false); blobs.setEtagMode('per-write');
+    try { const out = parse(await PROBE()(probeEv({ cookie: legacyCookie() }))); assert.equal(out.stoppedAt, 3); assert.equal(out.steps[2].etagChanged, true); }
+    finally { blobs.setEtagMode('content'); }
+  });
+  await check('P7 static: runAuthorityProbe names no authority store / anchor / session-record key and never deletes; the probe handler imports no GHL module', async () => {
+    const lib = fs.readFileSync(path.join(FUNCTIONS, 'lib/session-revocation.ts'), 'utf8');
+    const body = lib.slice(lib.indexOf('export async function runAuthorityProbe('));
+    assert.ok(body.length > 500);
+    assert.ok(!/onceAuthority|SESSION_AUTHORITY_STORE|AUTHORITY_KEY|SESSION_PREFIX|sessionKey\(|\.delete\(/.test(body));
+    const reads = body.match(/getWithMetadata\(([^,)]+)/g) || [];
+    assert.ok(reads.length >= 1 && reads.every((r) => /getWithMetadata\(key$/.test(r)), 'the probe reads only its own key: ' + reads.join(','));
+    assert.ok(body.includes("probe/") || body.includes("PROBE_KEY_PREFIX"), 'the probe key is built from PROBE_KEY_PREFIX');
+    for (const n of ['session-authority-probe', 'protected-noop', 'protected-noop-read', 'lib/test-probe-gate']) {
+      const s = fs.readFileSync(path.join(FUNCTIONS, n + '.ts'), 'utf8');
+      assert.ok(!/from "[^"]*(ghl-write-boundary|supplemental-read-budget|write-receipts|write-contracts|production-write-scope|src\/lib\/ghl|\/ghl-(?!config")[a-z-]+)"/.test(s), n);
+      assert.ok(!/leadconnectorhq|fetch\(/.test(s), n + ': no outbound call');
+    }
+  });
+  // ── N: protected-noop ──
+  reset(); flag(true);
+  await check('N1 protected-noop positive: valid session + fresh token -> 200 {ok:true,sent:false}; zero outbound', async () => {
+    reset(); flag(true); const b = await bind(61); other = [];
+    const r = await NOOP()(ev({ bearer: tokenFor(b), body: JSON.stringify({ probe: 'a6' }) }));
+    assert.equal(r.statusCode, 200, r.body); assert.deepEqual(parse(r), { ok: true, sent: false }); assert.equal(other.length, 0);
+  });
+  await check('N2 protected-noop: an expired parent with an UNEXPIRED token -> 401 session_expired, zero Blob access, zero outbound (the R1 pattern)', async () => {
+    reset(); flag(true); const realNow = Date.now; const b = await bind(62, { at: realNow() - 10_000 }); const endMs = b.exp * 1000;
+    const tok = tokenFor(b, { at: endMs - 60_000 });
+    try {
+      Date.now = () => endMs + 1000; const b0 = blobs.log.length; other = [];
+      const r = await NOOP()(ev({ bearer: tok, body: JSON.stringify({ probe: 'a6' }) }));
+      assert.equal(r.statusCode, 401); assert.equal(parse(r).reason, 'session_expired'); assert.equal(blobs.log.length, b0); assert.equal(other.length, 0);
+    } finally { Date.now = realNow; }
+  });
+  await check('N3 protected-noop: a revoked session -> 401 revoked', async () => {
+    reset(); flag(true); const b = await bind(63); const tok = tokenFor(b);
+    await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF });
+    const r = await NOOP()(ev({ bearer: tok, body: JSON.stringify({ probe: 'a6' }) })); assert.equal(r.statusCode, 401); assert.equal(parse(r).reason, 'revoked');
+  });
+  await check('N4 protected-noop: a malformed body WITH a valid session -> 400 malformed; the same body with NO token -> 401 (distinguishable)', async () => {
+    reset(); flag(true); const b = await bind(64);
+    for (const body of ['{}', JSON.stringify({ probe: 'a7' }), JSON.stringify({ probe: 'a6', x: 1 }), 'not json']) {
+      const r = await NOOP()(ev({ bearer: tokenFor(b), body })); assert.equal(r.statusCode, 400, body); assert.equal(parse(r).error, 'malformed');
+    }
+    assert.equal((await NOOP()(ev({ body: '{}' }))).statusCode, 401);
+  });
+  await check('N5 protected-noop: the wrong method -> 404; a bound token while one sign-in is OFF -> 401 one_login_off', async () => {
+    reset(); flag(true); const b = await bind(65); const tok = tokenFor(b); flag(false);
+    assert.equal((await NOOP()(ev({ method: 'GET', bearer: tok }))).statusCode, 404);
+    const r = await NOOP()(ev({ bearer: tok, body: JSON.stringify({ probe: 'a6' }) })); assert.equal(r.statusCode, 401);
+    flag(true);
+  });
+  await check('N6 protected-noop-read: valid -> 204 empty; revoked -> 401; no session -> 401; POST -> 404; zero outbound', async () => {
+    reset(); flag(true); const b = await bind(66); other = [];
+    const ok = await NOOPR()(ev({ method: 'GET', cookie: b.cookie })); assert.equal(ok.statusCode, 204); assert.equal(ok.body, '');
+    await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF });
+    assert.equal((await NOOPR()(ev({ method: 'GET', cookie: b.cookie }))).statusCode, 401);
+    assert.equal((await NOOPR()(ev({ method: 'GET' }))).statusCode, 401);
+    assert.equal((await NOOPR()(ev({ method: 'POST', cookie: b.cookie }))).statusCode, 404);
+    assert.equal(other.length, 0);
+  });
+  const FLOOR = 269;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (server): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;

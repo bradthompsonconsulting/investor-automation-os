@@ -1,0 +1,31 @@
+{
+  "_comment": "B15-22 S8 B15-29 probe tooling amendment (Jeff work order T1-T3). The original manifest and every earlier amendment, including the One Login S8d fixture, are unchanged. One change, CHAINED from the bytes S8d adds for lib/session-revocation.ts, and four additions for files nothing above expects; S8e pins this list.",
+  "candidate": "B15-29 probes and recovery (Scotty; see its package)",
+  "chainedFrom": "b15-22-b15-29-delta-9944cbe.json",
+  "review": "Pending Bones review of the probe tooling",
+  "changes": {
+    "netlify/functions/lib/session-revocation.ts": {
+      "from": "5b3403af9073bc0540fe42afb5ba3ae97d34eb3f259747d4cbcedf43da4e7def",
+      "to": "00e0ae705aad6f440c29e48e34866303d6a826ed58293cdab5e65a26f27d1b51",
+      "reason": "P-1: appends the Test-only runAuthorityProbe (its own section; reuses context + once; only probe/<runId>/ keys in iaos-write-receipts; never the authority store, a session record or a delete). Nothing above the section changes."
+    }
+  },
+  "additions": {
+    "netlify/functions/lib/test-probe-gate.ts": {
+      "to": "21bc29e49ec83eb2d1b4b2d757eca18dd784cd76ea9c9fe685d1a54a0d1025a5",
+      "reason": "The Test-only gate (IAOS_ENV test + exactly one pinned Test site id + no query/base64) every probe passes first; bare 404 otherwise."
+    },
+    "netlify/functions/session-authority-probe.ts": {
+      "to": "e9b43000cc93653b4b96bbe5620324ede8a65def548fc2e6a09f45124809db7f",
+      "reason": "P-1 handler: gate -> POST -> read session chain -> fixed body -> runAuthorityProbe."
+    },
+    "netlify/functions/protected-noop.ts": {
+      "to": "6f7e95f2f53385bd07434fd3634bcd48d0d26ce74e268817daabf1e696e8a397",
+      "reason": "P-2 handler: gate -> POST -> requireAppWriter -> requireAppWriteOrigin -> sessionWriteRefusal -> authorize -> fixed body -> 200 {ok:true,sent:false}; no GHL import."
+    },
+    "netlify/functions/protected-noop-read.ts": {
+      "to": "cfbbc3bbc13ed16f9c15afc12902cac98fa7ad7bfede2d9d1f7cbb4095151058",
+      "reason": "P-2 reader twin: gate -> GET -> readAuthRefusal -> sessionReadRefusal -> 204; no GHL import."
+    }
+  }
+}

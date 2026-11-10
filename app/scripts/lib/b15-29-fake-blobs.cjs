@@ -36,6 +36,9 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
   let rules = [];
   let n = 0;
   let mode = etagMode;
+  /* B15-29 P-1 tests (Jeff work order T3): a provider that IGNORES a precondition, so the probe can be shown to FAIL.
+     Default off; reset() turns it off again. */
+  let ignore = { ifMatch: false, ifNoneMatch: false };
   const k = (site, s, key) => `${site}|${s}|${key}`;
   const etagFor = (text) => (mode === 'content' ? `"c-${crypto.createHash('sha256').update(text).digest('hex').slice(0, 24)}"` : `"w-${++n}"`);
 
@@ -50,8 +53,8 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
     const cur = store.get(id);
     const inm = headers['if-none-match'];
     const im = headers['if-match'];
-    if (inm === '*' && cur) return { status: 412 };
-    if (im && (!cur || cur.etag !== im)) return { status: 412 };
+    if (inm === '*' && cur && !ignore.ifNoneMatch) return { status: 412 };
+    if (im && (!cur || cur.etag !== im) && !ignore.ifMatch) return { status: 412 };
     const etag = cur && cur.text === body && mode === 'content' ? cur.etag : etagFor(body);
     if (!cur || cur.text !== body) mutations.push({ key, created: !cur, conditional: inm ? 'if-none-match' : im ? 'if-match' : null, at: clock() });
     store.set(id, { text: body, etag });
@@ -108,9 +111,11 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
     mutations,
     store,
     setEtagMode: (m) => { mode = m; },
+    /** B15-29 P-1 tests: { ifMatch?, ifNoneMatch? } -- the fake ignores that precondition (a provider defect). */
+    setIgnoreConditions: (o) => { ignore = { ifMatch: !!(o && o.ifMatch), ifNoneMatch: !!(o && o.ifNoneMatch) }; },
     rule: (...r) => { rules.push(...r); },
     clearRules: () => { rules = []; },
-    reset: () => { store.clear(); log.length = 0; mutations.length = 0; rules = []; mode = etagMode; },
+    reset: () => { store.clear(); log.length = 0; mutations.length = 0; rules = []; mode = etagMode; ignore = { ifMatch: false, ifNoneMatch: false }; },
     /** Write a raw value at a key (test setup / operator action only, never through the module). */
     put: (storeName, key, text) => { store.set(k(siteID, 'site:' + storeName, key), { text, etag: etagFor(text) }); },
     /** Remove a value at a key (test setup only). */

@@ -464,3 +464,80 @@ export async function sessionWriteRefusal(event: any, env: NodeJS.ProcessEnv = p
   if (r.kind === "revoked") return refused("revoked");
   return sessionUnavailableResponse();
 }
+
+// --------------------------------------------- Test-only authority probe ---
+
+/**
+ * B15-29 P-1 (activation plan section 1; Jeff work order T1): the U1 / U2 / U4 conditional-write probe, through the SAME
+ * Lambda-context transport the session authority uses (`context` -- environment, pinned site, connectLambda -- and
+ * `once` -- one recorded request to the SESSION store). Test only: any deployment but "test" is refused here, and the
+ * caller (session-authority-probe.ts) also refuses it before calling.
+ *
+ * It addresses ONLY keys `probe/<runId>/...` in REVOCATION_STORE (iaos-write-receipts). It never calls `onceAuthority`
+ * (so never opens the authority store) and never builds a `session-revocation/` key. It never deletes (retention is
+ * runbook section 7). Writes per run: at most 4 + concurrency. It stops at the first unexpected answer, so a store that
+ * ignores conditions is reported as a U1/U2 FAILURE, never as a pass. The transcript carries no ETag value, cookie,
+ * token or platform context -- only statuses, `modified` and ETag-equality booleans.
+ */
+export const PROBE_KEY_PREFIX = "probe/";
+export const PROBE_RUN_ID = /^[A-Za-z0-9_-]{16,32}$/;
+export const PROBE_MAX_CONCURRENCY = 10;
+export type ProbeStep = { n: number; op: string; status: number | null; etagChanged: boolean | null; modified: boolean | null; ok: boolean };
+export type ProbeResult = {
+  runId: string; steps: ProbeStep[]; stoppedAt: number | null;
+  u4: { present: boolean; single: boolean; lowercase: boolean; equalsPinned: boolean };
+};
+export async function runAuthorityProbe(runId: string, deployment: string, opts: OpOpts & { concurrency?: number } = {}): Promise<ProbeResult | { refused: string }> {
+  if (deployment !== "test") return { refused: "not_test" };
+  if (typeof runId !== "string" || !PROBE_RUN_ID.test(runId)) return { refused: "refused_input" };
+  const n = Math.min(PROBE_MAX_CONCURRENCY, Math.max(2, Math.floor(opts.concurrency ?? 5)));
+  const site = headerValues(opts.event, RUNTIME_SITE_HEADER);
+  const u4 = {
+    present: site.length > 0,
+    single: site.length === 1,
+    lowercase: site.length === 1 && typeof site[0] === "string" && site[0] === (site[0] as string).toLowerCase(),
+    equalsPinned: site.length === 1 && site[0] === PINNED_REVOCATION_SITES.test,
+  };
+  const ctx = context(opts.env ?? process.env, "test", opts.budgetMs ?? 20_000, opts);
+  if ("refused" in ctx) return { refused: ctx.refused };
+  const key = `${PROBE_KEY_PREFIX}${runId}/record`;
+  const text = (label: string) => canonicalJson({ kind: "iaos-conditional-write-probe", label, runId, v: 1 });
+  const steps: ProbeStep[] = [];
+  const modifiedOf = (r: Recorded) => (r.data && typeof r.data === "object" && typeof (r.data as any).modified === "boolean" ? (r.data as any).modified : null);
+  const read = async () => {
+    const r = await once(ctx, (s) => s.getWithMetadata(key, { type: "text" }));
+    return r.status === 200 && r.data && typeof r.data === "object" ? String((r.data as any).data) : null;
+  };
+  const step = (op: string, r: Recorded, ok: boolean, before?: string | null): boolean => {
+    steps.push({ n: steps.length + 1, op, status: r.status, etagChanged: before === undefined ? null : before === null || r.etag === null ? null : before !== r.etag, modified: modifiedOf(r), ok });
+    return ok;
+  };
+  const done = (): ProbeResult => ({ runId, steps, stoppedAt: steps.some((s) => !s.ok) ? steps.find((s) => !s.ok)!.n : null, u4 });
+  // 1. conditional create
+  const created = await once(ctx, (s) => s.set(key, text("A"), { onlyIfNew: true }));
+  if (!step("create onlyIfNew", created, created.status === 200 && isCanonicalEtag(created.etag)) ) return done();
+  const e1 = created.etag as string;
+  // 2. duplicate create refused, bytes unchanged
+  const dup = await once(ctx, (s) => s.set(key, text("B"), { onlyIfNew: true }));
+  if (!step("duplicate create refused", dup, dup.status === 412 && (await read()) === text("A"))) return done();
+  // 3. U1: identical bytes onlyIfMatch -> 200, ETag unchanged
+  const same = await once(ctx, (s) => s.set(key, text("A"), { onlyIfMatch: e1 }));
+  if (!step("identical bytes onlyIfMatch (U1)", same, same.status === 200 && same.etag === e1, e1)) return done();
+  // 4. U2: a non-current ETag refused, bytes unchanged
+  const stale = await once(ctx, (s) => s.set(key, text("C"), { onlyIfMatch: "\"iaos-probe-not-current\"" }));
+  if (!step("stale onlyIfMatch refused (U2)", stale, stale.status === 412 && (await read()) === text("A"))) return done();
+  // 5. U2: N concurrent conflicting writers on the same ETag -> exactly one winner, whose bytes are stored
+  const racers = await Promise.all(Array.from({ length: n }, (_, i) => once(ctx, (s) => s.set(key, text(`W${i}`), { onlyIfMatch: e1 }))));
+  const winners = racers.map((r, i) => ({ r, i })).filter((x) => x.r.status === 200);
+  const losersOk = racers.every((r) => r.status === 200 || r.status === 412);
+  const stored = await read();
+  const raceOk = winners.length === 1 && losersOk && stored === text(`W${winners[0].i}`) && isCanonicalEtag(winners[0].r.etag);
+  if (!step(`concurrent onlyIfMatch x${n}: exactly one winner (U2)`, { status: winners.length === 1 ? 200 : null, etag: null, data: { modified: winners.length === 1 }, why: null }, raceOk)) return done();
+  const eW = winners[0].r.etag as string;
+  // 6. U2: revoke, then replaying the old bytes with the old ETag is refused and the record stays revoked
+  const revoked = await once(ctx, (s) => s.set(key, text("REVOKED"), { onlyIfMatch: eW }));
+  if (!step("revoke onlyIfMatch", revoked, revoked.status === 200, eW)) return done();
+  const replay = await once(ctx, (s) => s.set(key, text("A"), { onlyIfMatch: e1 }));
+  step("replay of old bytes with old ETag refused (U2)", replay, replay.status === 412 && (await read()) === text("REVOKED"));
+  return done();
+}

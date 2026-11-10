@@ -38,7 +38,7 @@ const TMP = path.join(APP, '.tmp-b15-22-authoritative-test');
 const esbuild = require(path.join(APP, 'node_modules', '.pnpm', 'esbuild@0.25.12', 'node_modules', 'esbuild'));
 
 /** Literal check() call-site count in this file. */
-const FLOOR = 100;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta)
+const FLOOR = 101;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta)
 let checks = 0; let failures = 0;
 function check(name, actual, expected) {
   checks += 1;
@@ -408,6 +408,24 @@ check('S7 the label is backed by the resolver: Opportunity ARV first, Contact on
   check('S8d the B15-29 One Login delta is exactly its 26 reviewed changes and 4 additions, chained from the bytes expected above',
     [Object.keys(B29.changes || {}).length, Object.keys(B29.additions || {}).sort(), b29Problems],
     [26, ['netlify/functions/app-signout.ts', 'netlify/functions/app-write-token.ts', 'netlify/functions/lib/authorization.ts', 'netlify/functions/lib/session-revocation.ts'], []]);
+  /* B15-29 probe tooling (Jeff work order T1-T3): ONE change, chained from the bytes S8d adds for lib/session-revocation.ts
+     (the appended Test-only runAuthorityProbe section), and FOUR additions (the Test-only gate, P-1 and P-2 handlers).
+     Listed, with reasons, in b15-22-b15-29-probes-delta.json. S8d and every earlier amendment are unchanged. */
+  const B29P = JSON.parse(fs.readFileSync(path.join(APP, 'scripts', 'fixtures', 'b15-22-b15-29-probes-delta.json'), 'utf8'));
+  const b29pProblems = [];
+  for (const [rel, c] of Object.entries(B29P.changes || {})) {
+    if (!(rel in expected)) b29pProblems.push(`not an expected protected file: ${rel}`);
+    else if (!c || c.from !== expected[rel] || typeof c.to !== 'string' || c.to === c.from) b29pProblems.push(`not a reviewed change from the expected bytes: ${rel}`);
+    else expected[rel] = c.to;
+  }
+  for (const [rel, a] of Object.entries(B29P.additions || {})) {
+    if (rel in expected) b29pProblems.push(`addition already expected: ${rel}`);
+    else if (!a || typeof a.to !== 'string' || !/^[0-9a-f]{64}$/.test(a.to)) b29pProblems.push(`not a reviewed addition: ${rel}`);
+    else expected[rel] = a.to;
+  }
+  check('S8e the B15-29 probe-tooling delta is exactly its one chained change and four Test-only additions',
+    [Object.keys(B29P.changes || {}).sort(), Object.keys(B29P.additions || {}).sort(), b29pProblems],
+    [['netlify/functions/lib/session-revocation.ts'], ['netlify/functions/lib/test-probe-gate.ts', 'netlify/functions/protected-noop-read.ts', 'netlify/functions/protected-noop.ts', 'netlify/functions/session-authority-probe.ts'], []]);
   const drift = [];
   for (const rel of seen) { if (!(rel in expected)) drift.push(`added ${rel}`); else if (hashOf(rel) !== expected[rel]) drift.push(`changed ${rel}`); }
   for (const rel of Object.keys(expected)) if (!seen.includes(rel)) drift.push(`removed ${rel}`);
