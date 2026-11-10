@@ -208,7 +208,7 @@ function classify(url, method, post) {
 /**
  * Runs one suite. `scenarios(ctx)` drives the page; `floor` is the minimum number of checks.
  */
-async function run({ title, floor, fixture, scenarios }) {
+async function run({ title, floor, fixture, scenarios, entry: entryOverride, answer }) {
   let checks = 0;
   let failures = 0;
   const check = (name, ok, detail) => {
@@ -216,7 +216,8 @@ async function run({ title, floor, fixture, scenarios }) {
     if (!ok) failures += 1;
     console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail)}`}`);
   };
-  const entry = prepareEntry();
+  // B15-29 R2: a suite may render its own harness entry (no --before swap) and answer extra functions first.
+  const entry = entryOverride ?? prepareEntry();
   const bf = createBarrierFixture({ contactOf: fixture.contactOf });
   const ctx = { A, B, A_CALLBACK, B_CALLBACK, F, fixture, bf, check, log: [], holds: [], failNext: [], refuseNext: [], abortNext: [], respondNext: [], foreign: [], pageErrors: [] };
   const { createServer } = await import('vite');
@@ -269,6 +270,7 @@ async function run({ title, floor, fixture, scenarios }) {
           () => { const a = fixture.applyWrite(req.op, req.contact, req.args); return { confirmed: a.status === 200 }; },
           { outcome: req.op === 'note.create' ? parseOutcomeNote(req.args.body) : null, refuse: pre }));
       }
+      if (answer) { const a = answer(req, url, method, post); if (a) return fulfill(a); }
       return fulfill(fixture.answer(req));
     });
     await context.route(/gohighlevel\.com/, (route) => route.abort());

@@ -507,6 +507,8 @@ jobs:
         run: node app/scripts/test-b15-29-one-login-page.cjs
       - name: One IAOS sign-in, professional login experience on the real page -- entrance keeps the deep link, responsive, real restyled popup (Google stubbed), overlay keeps drafts and focus over an inert app, 5-day / 1-day reminders, Remind Me Later sends nothing, Log In Again = new 30-day session, expiry, Logout, outage is never a sign-in prompt (INV-137, B15-29) - 73 checks
         run: node app/scripts/test-b15-29-login-experience-page.cjs
+      - name: One IAOS sign-in, draft retention and isolation on the REAL Deal Calculator and Seller Call -- reload, same-account re-authentication, A->B without leak, legacy drafts never shown or deleted (INV-137, B15-29 R2) - 21 checks
+        run: node app/scripts/test-b15-29-one-login-drafts.cjs
 
       # Not a counted runner — a typecheck. No floor, and it must not be given
       # one. See the header for why it is scoped rather than using pnpm check.
