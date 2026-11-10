@@ -1,5 +1,5 @@
 {
-  "purpose": "B15-29 One Login (INV-137) reviewed delta: Bones-accepted a5440a3 integrated onto main 319c983 as 9944cbe. Chained: each change applies only from the bytes main already carries.",
+  "purpose": "B15-29 One Login (INV-137) reviewed delta: Bones-accepted a5440a3 integrated onto main 319c983 as 9944cbe. Chained: each change applies only from the bytes main already carries. Updated for B15-29 C1 (b2db14f) on three already-listed files.",
   "base": "319c983cf549e87332cb1e4e511c867aa512d7fa",
   "candidate": "9944cbe5e1ea9109635253fab45ef7008ba5804b",
   "changes": {
@@ -100,13 +100,13 @@
     },
     "netlify/functions/iaos-runtime-config.ts": {
       "from": "5a474121e0bb64b97481beae2ebc30065537e485d8c62612e078421b46156e5f",
-      "to": "d18437156334670f6be0fcea2d403b4a533bdeaced7eaff71275dfd25318ed27",
-      "reason": "B15-29 accepted change"
+      "to": "c32bd32dfa30f52da63bb1e70c490dba3ef236fa25447f1187ff45af7c083546",
+      "reason": "B15-29 accepted change + B15-29 C1 (Scotty b2db14f, Test-only session lifetime; reviewed separately by Bones)"
     },
     "netlify/functions/lib/app-read-auth.ts": {
       "from": "88593ab9c7559bf04b35b5299f469ea8bbfcb8879a5c151ef55cff5e82763e4a",
-      "to": "6e5ef90b17cb28d705caaf4ecfb62d8e0ea5ed2d6c2be1e5189442901f11106e",
-      "reason": "B15-29 accepted change"
+      "to": "893aa992f898832d71758ecf5595d741b0e1916573880f039eb45b56b60f9858",
+      "reason": "B15-29 accepted change + B15-29 C1 (Scotty b2db14f, Test-only session lifetime; reviewed separately by Bones)"
     },
     "netlify/functions/lib/app-write-auth.ts": {
       "from": "91c12b5092bc6aec0f6bf61892263b1389e34588c462ed76e09e982df6313c3a",
@@ -130,8 +130,8 @@
     },
     "shared/ghl-config.ts": {
       "from": "6dda33bd08bc8107f72be6734dd5d785f9af62f28cf68de61df6012b9d7c105c",
-      "to": "230c741a20d8ce1c877c2a0f437734ee3949950ce7fcb6715b7e6072172374fc",
-      "reason": "B15-29 accepted change; merge conflict resolved additively (sellerConversationSave and oneLogin both kept, both DISABLED)"
+      "to": "c9e591416ad07a584ab9201d0e62c81d6f6be85fdbca9f3a64b5089d215770f3",
+      "reason": "B15-29 accepted change; merge conflict resolved additively (sellerConversationSave and oneLogin both kept, both DISABLED) + B15-29 C1 (Scotty b2db14f, Test-only session lifetime; reviewed separately by Bones)"
     }
   },
   "additions": {
