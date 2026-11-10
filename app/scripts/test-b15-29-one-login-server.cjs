@@ -1356,7 +1356,66 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal((ra.match(/oneLoginSessionSeconds\(config\)/g) || []).length, 2, 'issue + verify');
     assert.ok(!/:\s*ONE_LOGIN_SESSION_SECONDS\)/.test(ra), 'no fixed 30-day lifetime left in issue/verify');
   });
-  const FLOOR = 237;
+  // =========================================================================== PX  (Bones REVISE R1 on bf83269, 2026-11-10)
+  // An expired PARENT session refuses an otherwise UNEXPIRED saving token at every real writer, with the parent-specific
+  // reason, before any Blob access or GHL dispatch. The token is minted 60 s before pexp, so its own exp (iat + 900 s)
+  // is still ahead at and after pexp.
+  const PX_TIMES = (endMs) => [endMs, endMs + 1000, endMs + 600_000];
+  async function pxRefusesEverywhere(b, endMs, label) {
+    const realNow = Date.now;
+    const tok = tokenFor(b, { at: endMs - 60_000 });
+    const tokExpMs = decode(tok).exp * 1000;
+    assert.equal(decode(tok).pexp, b.exp, label + ': token bound to the parent expiry');
+    try {
+      for (const t of PX_TIMES(endMs)) {
+        assert.ok(tokExpMs > t, `${label}: the token's own exp is still ahead at t=${t - endMs} ms`);
+        Date.now = () => t;
+        for (const w of WRITERS) {
+          const blobBefore = blobs.log.length; const otherBefore = other.length;
+          const r = await load(w)(ev({ bearer: tok, body: '{}' }));
+          assert.equal(r.statusCode, 401, `${label} ${w} at +${t - endMs} ms: ${r.statusCode} ${r.body}`);
+          assert.equal(parse(r).reason, 'session_expired', `${label} ${w}: the parent-specific reason`);
+          assert.equal(marker(r), 'iaos-app-write-auth', `${label} ${w}: the write-auth refusal`);
+          assert.equal(blobs.log.length, blobBefore, `${label} ${w}: no Blob access before the refusal`);
+          assert.equal(other.length, otherBefore, `${label} ${w}: no GHL or other outbound request`);
+          noCredentialLeak(r);
+        }
+      }
+    } finally { Date.now = realNow; }
+    return tok;
+  }
+  reset(); flag(true);
+  await check('PX1 30-day session: at pexp, pexp + 1 s and pexp + 10 min, an UNEXPIRED saving token is refused by all 8 real writers -- 401 session_expired, zero Blob access, zero GHL dispatch', async () => {
+    const realNow = Date.now; const authAt = realNow() - 10_000;
+    const b = await bind(70, { at: authAt });
+    await pxRefusesEverywhere(b, b.exp * 1000, '30-day');
+  });
+  await check('PX2 positive control: the SAME kind of token one second before pexp passes the session check (null) and no writer refuses it as session_expired', async () => {
+    const realNow = Date.now; const authAt = realNow() - 10_000;
+    const b = await bind(71, { at: authAt }); const endMs = b.exp * 1000;
+    const tok = tokenFor(b, { at: endMs - 60_000 });
+    try {
+      Date.now = () => endMs - 1000;
+      assert.equal(await rev.sessionWriteRefusal(ev({ bearer: tok }), process.env, endMs - 1000), null);
+      for (const w of WRITERS) {
+        const r = await load(w)(ev({ bearer: tok, body: '{}' }));
+        assert.ok(!(r.statusCode === 401 && (parse(r) || {}).reason === 'session_expired'), `${w}: ${r.statusCode} ${r.body}`);
+      }
+    } finally { Date.now = realNow; }
+  });
+  await check('PX3 Test-scaled 60-minute session: the same refusal at all 8 writers once the 1-hour parent session ends, with the token still unexpired', async () => {
+    const TESTCFG_PX = cfg.getConfig('test');
+    try {
+      TESTCFG_PX.oneLoginTestSessionSeconds = 3600;
+      const realNow = Date.now; const authAt = realNow() - 10_000;
+      const g = await rev.beginSession(sid(72), 'test', { event: NF }); assert.equal(g.kind, 'issued');
+      const cookie = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), authAt, sid(72), g.epoch, { aetag: g.aetag, setag: g.setag }).token;
+      const b = { sid: sid(72), cookie, epoch: g.epoch, aetag: g.aetag, setag: g.setag, exp: decode(cookie).exp };
+      assert.equal(decode(cookie).exp - decode(cookie).iat, 3600);
+      await pxRefusesEverywhere(b, b.exp * 1000, '60-minute');
+    } finally { TESTCFG_PX.oneLoginTestSessionSeconds = null; }
+  });
+  const FLOOR = 240;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (server): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;
