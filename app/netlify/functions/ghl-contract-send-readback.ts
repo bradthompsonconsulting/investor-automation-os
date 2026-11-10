@@ -61,6 +61,7 @@
  */
 
 import { requireAppWriter } from "./lib/app-write-auth";
+import { sessionWriteRefusal } from "./lib/session-revocation";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { getConfig } from "../../shared/ghl-config";
 import { evaluateContractEnvironment, requireContractProviderEvidenceReadiness } from "./lib/contract-production-readiness";
@@ -148,6 +149,8 @@ export const handler = async (event: any) => {
   } catch {
     return json(403, { error: "Application write origin refused" });
   }
+  const writeRevoked = await sessionWriteRefusal(event);
+  if (writeRevoked) return writeRevoked;
 
   // Cheap, context-free: is this deployment even allowed to attempt a
   // contract-path read at all, before any body parsing or GHL access.

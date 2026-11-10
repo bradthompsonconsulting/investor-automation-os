@@ -6,6 +6,8 @@
  * forwards it: same-origin fetches carry it automatically, and nothing here
  * touches localStorage, sessionStorage or IndexedDB.
  */
+import { SESSION_UNAVAILABLE_EVENT, isSessionUnavailable, oneLoginActive } from "./one-login";
+
 export const READ_SESSION_ENDPOINT = "/.netlify/functions/app-read-session";
 /** Fired on window whenever a GHL read is refused for sign-in (401) or configuration (503). */
 export const READ_SESSION_LOST_EVENT = "iaos-read-session-lost";
@@ -37,6 +39,9 @@ export async function readFetch(url: string, init?: RequestInit): Promise<Respon
   const res = await fetch(url, { ...init, credentials: "same-origin" });
   if (typeof window !== "undefined" && await isReadAuthRefusal(res)) {
     window.dispatchEvent(new Event(READ_SESSION_LOST_EVENT));
+  } else if (typeof window !== "undefined" && oneLoginActive() && await isSessionUnavailable(res)) {
+    // B15-29 C1: IAOS could not confirm the session -- NOT a sign-out and NOT a sign-in request.
+    window.dispatchEvent(new Event(SESSION_UNAVAILABLE_EVENT));
   }
   return res;
 }

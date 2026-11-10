@@ -15,6 +15,7 @@
  * other read functions (lib/app-read-auth.ts). Personal data is never cached.
  */
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { sessionReadRefusal } from "./lib/session-revocation";
 import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 import { getConfig } from "../../shared/ghl-config";
 import { evaluateCallEligibility } from "./lib/call-eligibility-rule";
@@ -33,6 +34,8 @@ function json(statusCode: number, body: unknown) {
 export const handler = async (event: any) => {
   const refused = readAuthRefusal(event);
   if (refused) return refused;
+  const revoked = await sessionReadRefusal(event);
+  if (revoked) return revoked;
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: { "Cache-Control": "no-store" }, body: "" };
   if (event.httpMethod !== "GET") return json(405, { error: "Method Not Allowed" });
 

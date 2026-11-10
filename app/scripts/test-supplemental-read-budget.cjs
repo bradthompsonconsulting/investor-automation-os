@@ -26,6 +26,17 @@ Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
 const data = new Map(); const etags = new Map(); let seq = 0; let blobOps = 0;
 let faults = { readThrow: 0, writeThrow: 0, applyThenThrow: 0, neverModified: false, consistencyError: 0, oddAck: [] };
 const tick = () => new Promise((r) => setImmediate(r));
+// B15-29 H3 (Bones HOLD, 2026-11-04): the racing tests used `setTimeout(Math.random() * 3)` pauses, so their interleaving
+// depended on wall-clock timer clustering (GC, CPU load, module-load cost). Measured, 30 interleaved rounds: main 4/30,
+// candidate 16/30, candidate without its 20 call-site edits 5/30 failures (Fisher p=0.0022 / 0.0061). A seeded PRNG
+// choosing 1..4 setImmediate yields (no timers) makes each interleaving a pure function of the seed: same seed, same order,
+// on any machine. The assertions are unchanged; a bounded seed sweep checks the invariants over 50 interleavings.
+function seededPause(seed) {
+  let s = seed >>> 0;
+  const next = () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  return () => { let n = 1 + Math.floor(next() * 4); return (async () => { while (n-- > 0) await tick(); })(); };
+}
+const RACE_SEED = 20261104;
 const memStore = {
   async getWithMetadata(key, opts) {
     blobOps++; await tick();
@@ -209,6 +220,17 @@ test('budget: the loss predicate refuses anything but exhaustion or the explicit
   assert.equal(isAllowedLoss(new lib.SupplementalReadRefused('A supplemental read reservation returned an ambiguous acknowledgement. Nothing was sent.', 'unavailable')), false, 'an ambiguous acknowledgement');
   assert.equal(isAllowedLoss(new lib.SupplementalReadRefused(CONTENTION_TEXT, 'invalid')), false, 'the contention text under another code');
   assert.equal(isAllowedLoss(undefined), false);
+});
+test('budget: deterministic seed sweep -- 50 seeded interleavings of 40 racers on ceiling 25: always exactly 25 unique gap-free winners, never over the ceiling, refusals only exhausted/unavailable', async () => {
+  for (let seed = 1; seed <= 50; seed++) {
+    data.clear(); etags.clear();
+    const id = 'sweep-' + seed;
+    const res = await Promise.allSettled(Array.from({ length: 40 }, (_, i) => new lib.SupplementalReadBudget(memStore, SCOPE, id, 25, seededPause(seed * 64 + i)).reserve('fn', '/s' + i, T0)));
+    const won = res.filter((x) => x.status === 'fulfilled').map((x) => x.value).sort((a, b) => a - b);
+    assert.deepEqual(won, Array.from({ length: 25 }, (_, i) => i + 1), `seed ${seed}: unique, gap-free numbers`);
+    assert.ok(res.filter((x) => x.status === 'rejected').every((x) => ['exhausted', 'unavailable'].includes(x.reason.code)), `seed ${seed}: refusal kinds`);
+    const r = data.get(lib.readBudgetKey(SCOPE, id)); assert.equal(r.reserved, 25, `seed ${seed}: reserved`); assert.equal(r.receipts.length, 25, `seed ${seed}: receipts`);
+  }
 });
 test('budget: no automatic reset -- a fresh instance (a new invocation) of an exhausted budget still refuses', async () => {
   const b1 = new lib.SupplementalReadBudget(memStore, SCOPE, 'u3', 1); await b1.reserve('fn', '/a', T0);
@@ -476,7 +498,7 @@ test('a genesis claim that APPLIED but lost its acknowledgement leaves the budge
   assert.equal(data.get(b.key), undefined);
 });
 test('genesis: concurrent FIRST reservations on a new budget id (initialization race) give exactly the ceiling, no false refusal', async () => {
-  const res = await Promise.allSettled(Array.from({ length: 30 }, (_, i) => new lib.SupplementalReadBudget(memStore, SCOPE, 'g2', 10, () => new Promise((r) => setTimeout(r, Math.random() * 3))).reserve('fn', '/i' + i, T0)));
+  const res = await Promise.allSettled(Array.from({ length: 30 }, (_, i) => new lib.SupplementalReadBudget(memStore, SCOPE, 'g2', 10, seededPause(RACE_SEED * 64 + 4096 + i)).reserve('fn', '/i' + i, T0)));
   const won = res.filter((x) => x.status === 'fulfilled').map((x) => x.value).sort((a, b) => a - b);
   assert.deepEqual(won, Array.from({ length: 10 }, (_, i) => i + 1));
   assert.ok(res.filter((x) => x.status === 'rejected').every((x) => x.reason.code === 'exhausted' || (x.reason.code === 'unavailable' && /contention/.test(x.reason.message))), 'no "missing after opened" refusal during initialization');

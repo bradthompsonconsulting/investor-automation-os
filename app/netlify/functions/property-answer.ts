@@ -24,6 +24,7 @@ import { randomBytes } from "node:crypto";
 import { connectLambda, getStore } from "@netlify/blobs";
 import { getConfig, PROPERTY_ANSWER_EVALUATION_ENABLED } from "../../shared/ghl-config";
 import { requireAppWriter } from "./lib/app-write-auth";
+import { sessionWriteRefusal } from "./lib/session-revocation";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { exact, identifier, planWrite } from "./lib/write-contracts";
 import { configuredBoundary, digest } from "./lib/ghl-write-boundary";
@@ -104,6 +105,8 @@ export const handler = async (event: any) => {
   } catch { return json(401, { error: "Application write sign-in required" }); }
   echo = digest(writer);
   try { requireAppWriteOrigin(event); } catch { return json(403, { error: "Application write origin refused" }); }
+  const writeRevoked = await sessionWriteRefusal(event);
+  if (writeRevoked) return writeRevoked;
   let req: any;
   try {
     if (event.isBase64Encoded || Object.keys(event.queryStringParameters ?? {}).length) throw new Error("encoding");

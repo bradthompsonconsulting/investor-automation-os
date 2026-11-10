@@ -1,1 +1,23 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>IAOS read sign-in</title><body><h1>Sign in to read IAOS data</h1><p id="status" role="status">Loading sign-in…</p><div id="signin"></div><script src="/app-read-login.js"></script></body></html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in to IAOS</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;overflow-x:hidden;
+  background:radial-gradient(ellipse 80% 60% at 50% 0%,rgba(30,200,255,.12) 0%,rgba(30,200,255,0) 60%),#07142E;
+  color:#F5F7FA;font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif}
+.card{width:100%;max-width:420px;background:#1B2433;border:1px solid rgba(255,255,255,.08);border-radius:20px;padding:clamp(24px,7vw,40px);box-shadow:0 24px 60px rgba(0,0,0,.35)}
+.mark{display:flex;align-items:center;gap:12px}
+.tile{width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#a5f3fc 0%,#22d3ee 50%,#06b6d4 100%);
+  color:#07142E;font-family:"Space Grotesk",system-ui,sans-serif;font-weight:700;font-size:19px;box-shadow:0 0 20px rgba(0,217,255,.3),inset 0 1px 0 rgba(255,255,255,.45)}
+.word{display:flex;flex-direction:column;line-height:1.15;font-family:"Space Grotesk",system-ui,sans-serif;letter-spacing:.02em}
+.word b{font-size:15px;color:#F5F7FA}.word span{font-size:13px;color:#1EC8FF}
+h1{font-family:"Space Grotesk",system-ui,sans-serif;font-size:24px;font-weight:700;margin:28px 0 8px}
+#status{margin:0 0 20px;font-size:15px;line-height:1.5;color:rgba(245,247,250,.72);min-height:22px}
+#signin{display:flex;justify-content:center;min-height:44px}
+.foot{margin:24px 0 0;padding-top:16px;border-top:1px solid rgba(255,255,255,.08);font-size:12.5px;color:rgba(245,247,250,.6)}
+</style></head>
+<body><main class="card"><div class="mark"><div class="tile" aria-hidden="true">IA</div><div class="word"><b>INVESTOR</b><span>AUTOMATION OS</span></div></div>
+<h1>Sign in to IAOS</h1><p id="status" role="status">Loading sign-in…</p><div id="signin"></div>
+<p class="foot">Secure sign-in with your authorized Google account.</p></main>
+<script src="/app-read-login.js"></script></body></html>

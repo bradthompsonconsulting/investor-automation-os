@@ -222,6 +222,19 @@ export interface GhlConfig {
    * production-write-scope.ts. Enabling is its own reviewed config-only commit.
    */
   sellerConversationSave: string;
+  /**
+   * B15-29 (INV-137) one IAOS sign-in. SERVER-SIDE switch, mirrored to the
+   * browser ONLY as `oneLogin: { active: true }` in iaos-runtime-config (absent
+   * otherwise). Only `ONE_LOGIN_ENABLED` turns it on, per environment. When on:
+   * the read session carries a session id (sid); app-write-token issues the
+   * unchanged 900 s saving token from that session; Sign out (app-signout)
+   * records a server-side revocation of the sid, and token issue, every
+   * protected read and every write check it (lib/session-revocation.ts). When
+   * off -- BOTH environments carry `ONE_LOGIN_DISABLED` -- every function and
+   * the browser behave exactly as before (Enable saving popup, cookie DELETE).
+   * Enabling is its own reviewed config-only commit, never a runtime toggle.
+   */
+  oneLogin: string;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -478,6 +491,20 @@ export const SELLER_CONVERSATION_SAVE_DISABLED = "SELLER_CONVERSATION_SAVE_DISAB
 export function sellerConversationSaveEnabled(config: Pick<GhlConfig, "sellerConversationSave">): boolean {
   return config.sellerConversationSave === SELLER_CONVERSATION_SAVE_ENABLED;
 }
+/** B15-29 (INV-137) — the ONE value that turns on one IAOS sign-in with server-side Sign out revocation. */
+export const ONE_LOGIN_ENABLED = "ONE_LOGIN_ENABLED" as const;
+/** B15-29 (INV-137) — the value BOTH environments carry until a reviewed enable commit: behaviour exactly as before. */
+export const ONE_LOGIN_DISABLED = "ONE_LOGIN_DISABLED" as const;
+/**
+ * B15-29 (INV-137, Bones H2) -- the intended Session-revocation authority per environment: the public Netlify site id
+ * of each deployment (iaos-app-test / iaos-app). Pinned here (the one home for identifiers) and enforced by
+ * lib/session-revocation.ts against the configured store site id, the authority anchor and the runtime x-nf-site-id.
+ * Public identifiers, not credentials.
+ */
+export const SESSION_REVOCATION_SITE_IDS: Readonly<{ test: string; production: string }> = Object.freeze({
+  test: "07ca1f1a-60fd-4229-a076-528970957912",
+  production: "19fcbf6a-7c3c-40e3-af20-bd077f0f8ec8",
+});
 
 /**
  * INV-67 / B9-12 -- the literal placeholder value for a not-yet-provisioned
@@ -833,6 +860,8 @@ const PRODUCTION: GhlConfig = {
   productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED,
   // B15-03 slice C: DISABLED. Production also refuses the carrier unconditionally (production-write-scope.ts).
   sellerConversationSave: SELLER_CONVERSATION_SAVE_DISABLED,
+  // B15-29 (INV-137): one IAOS sign-in is OFF. Enabling is a separately reviewed config-only commit.
+  oneLogin: ONE_LOGIN_DISABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -1224,6 +1253,8 @@ const TEST: GhlConfig = {
   productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED,
   // B15-03 slice C: DISABLED pending the Captain's review and a separate enabling commit.
   sellerConversationSave: SELLER_CONVERSATION_SAVE_DISABLED,
+  // B15-29 (INV-137): one IAOS sign-in is OFF. Enabling is a separately reviewed config-only commit.
+  oneLogin: ONE_LOGIN_DISABLED,
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },
@@ -1396,6 +1427,18 @@ export function getConfig(selector: string | undefined): GhlConfig {
   }
 
   return config;
+}
+
+/**
+ * B15-29 (INV-137): whether one IAOS sign-in is on for THIS server's
+ * environment. True ONLY for IAOS_ENV "test" or "production" whose config
+ * carries exactly ONE_LOGIN_ENABLED. Anything else (absent/unknown env, any
+ * other value) is false and never throws, so a caller's existing behaviour is
+ * kept. Read per request, never cached.
+ */
+export function oneLoginActiveFor(environment: unknown): boolean {
+  if (environment !== "test" && environment !== "production") return false;
+  try { return getConfig(environment).oneLogin === ONE_LOGIN_ENABLED; } catch { return false; }
 }
 
 /**
