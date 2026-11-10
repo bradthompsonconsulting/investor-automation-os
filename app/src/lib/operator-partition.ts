@@ -47,8 +47,18 @@ export function operatorChangedSinceLastPage(operatorTag: string): boolean {
   try { const prev = s.getItem(OPERATOR_TAG_KEY); return prev !== null && prev !== operatorTag; } catch { return false; }
 }
 
+/**
+ * B15-29 (Jess 2026-11-10, draft ownership): the server-confirmed operator tag of THIS page, in memory. OneLoginAccess
+ * records it (rememberOperator) before the routed app mounts, so every draft store under one IAOS sign-in knows its
+ * owner from the first render: no "this-browser" interval and no late re-keying. A different operator remounts the
+ * app (the partition key) and so is read afresh. Never stored, never sent; not a credential.
+ */
+let confirmedTag: string | null = null;
+export function confirmedOperatorTag(): string | null { return confirmedTag; }
+
 /** Records the operator tag this tab now shows. */
 export function rememberOperator(operatorTag: string): void {
+  confirmedTag = operatorTag;
   const s = sessionStore();
   if (!s) return;
   try { s.setItem(OPERATOR_TAG_KEY, operatorTag); } catch { /* storage unavailable: the in-page partition still holds */ }

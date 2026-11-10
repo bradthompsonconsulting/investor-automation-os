@@ -603,8 +603,8 @@ const resetAll = async ({ signIn = true } = {}) => {
     assert.ok(!/fetch|XMLHttpRequest|sendBeacon|netlify\/functions|document\.cookie|import /.test(src));
   });
 
-  // =========================================================================== RS  (Jess 2026-11-10)
-  // RS: reminders on a server-issued Test-scaled lifetime.
+  // =========================================================================== RS / DO  (Jess 2026-11-10)
+  // RS: reminders on a server-issued Test-scaled lifetime. DO: draft ownership under the one confirmed identity.
   {
     const OL = require(path.join(APP, 'src/lib/one-login.ts'));
     const RMs = require(path.join(APP, 'src/lib/session-reminder.ts'));
@@ -641,11 +641,58 @@ const resetAll = async ({ signIn = true } = {}) => {
       for (const bad of [0, -1, 2, NaN, Infinity]) assert.equal(RMs.dueReminder(exp, exp - 5 * DAY, bad), 5, String(bad));
     });
 
+    const CD = require(path.join(APP, 'src/lib/contact-drafts.ts'));
+    const OP = require(path.join(APP, 'src/lib/operator-partition.ts'));
+    const W = { generation: 1, operator: 'brad@example.invalid', lastOperator: 'brad@example.invalid', active: true };
+    const mapStorage = () => { const m = new Map(); return { m, getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); }, removeItem: (k) => { m.delete(k); }, key: (i) => [...m.keys()][i] ?? null, get length() { return m.size; } }; };
+    const id = (operator) => ({ scope: 'note', env: 'loc-test', operator, contactId: 'fixtureContact' });
+    const draftOf = (operator, text) => ({ version: CD.CONTACT_DRAFT_VERSION, identity: id(operator), savedAt: new Date(T).toISOString(), values: { text }, notice: null });
+    await check('DO1 one sign-in OFF: draftOperator is exactly the previous rule (write operator, else last operator, else "this-browser")', async () => {
+      setFlag(false);
+      assert.equal(CD.draftOperator(W), 'brad@example.invalid');
+      assert.equal(CD.draftOperator({ ...W, operator: null }), 'brad@example.invalid');
+      assert.equal(CD.draftOperator({ ...W, operator: null, lastOperator: null }), 'this-browser');
+    });
+    await check('DO2 one sign-in ON before the server confirmed an operator: a placeholder owner that matches nothing -- never "this-browser", never an email', async () => {
+      setFlag(true);
+      assert.equal(OP.confirmedOperatorTag(), null);
+      for (const w of [W, { ...W, operator: null }, { ...W, operator: null, lastOperator: null }]) assert.equal(CD.draftOperator(w), CD.ONE_LOGIN_UNCONFIRMED_OPERATOR);
+    });
+    await check('DO3 one sign-in ON: the owner is the server-confirmed operator tag, the same whatever the saving token says (no late re-key when the mint lands) and never the email', async () => {
+      setFlag(true); OP.rememberOperator('tagA');
+      for (const w of [W, { ...W, operator: null }, { ...W, operator: null, lastOperator: null }, { ...W, operator: 'second@example.invalid' }]) assert.equal(CD.draftOperator(w), 'one-login:tagA');
+      assert.ok(!CD.contactDraftKey(id(CD.draftOperator(W))).includes('@'));
+    });
+    await check('DO4 retention: A keeps a draft through a reload and a re-login (same operator tag); B (another account) sees nothing and A\'s record is untouched; back to A it is intact; no "this-browser" key is ever written', async () => {
+      setFlag(true); const S = mapStorage();
+      OP.rememberOperator('tagA'); let store = CD.openContactDraftStore(() => S);
+      assert.equal(store.save(draftOf(CD.draftOperator(W), 'A unsaved note')), true);
+      // reload: a new page reads the same storage; the gate confirms the same operator before the app mounts
+      OP.rememberOperator('tagA'); store = CD.openContactDraftStore(() => S);
+      let got = store.load(id(CD.draftOperator({ ...W, operator: null, lastOperator: null })));
+      assert.ok(got.ok && got.draft && got.draft.values.text === 'A unsaved note', JSON.stringify(got));
+      // re-login, same account: a new session, the same operator tag
+      OP.rememberOperator('tagA'); got = store.load(id(CD.draftOperator(W))); assert.equal(got.ok && got.draft.values.text, 'A unsaved note');
+      // another account
+      OP.rememberOperator('tagB'); got = store.load(id(CD.draftOperator(W))); assert.ok(got.ok && got.draft === null, JSON.stringify(got));
+      assert.equal([...S.m.keys()].filter((k) => k.includes('one-login%3AtagA')).length, 1);
+      OP.rememberOperator('tagA'); got = store.load(id(CD.draftOperator(W))); assert.equal(got.ok && got.draft.values.text, 'A unsaved note');
+      assert.ok([...S.m.keys()].every((k) => !k.includes('this-browser') && !k.includes('%40')), [...S.m.keys()].join(','));
+    });
+    await check('DO5 one rule for every draft: DealCalculator delegates to contact-drafts draftOperator and carries no rule of its own; the partition clear never removes stored drafts', async () => {
+      const strip = (f) => fs.readFileSync(path.join(APP, f), 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
+      const dc = strip('src/pages/DealCalculator.tsx');
+      assert.ok(/function draftOperator\(\): string \{\s*return sharedDraftOperator\(appWriteIdentity\(\)\);\s*\}/.test(dc));
+      assert.ok(!/this-browser|lastOperator/.test(dc));
+      assert.equal((strip('src/lib/contact-drafts.ts').match(/"this-browser"/g) || []).length, 1);
+      const part = strip('src/lib/operator-partition.ts');
+      assert.ok(/const LOCAL_KEYS = \["iaos_dashboard_last_visit"\];/.test(part) && !/iaos-contact-draft|calculator/.test(part));
+    });
     setFlag(false);
   }
 
   Date.now = realNow; setFlag(false);
-  const FLOOR = 45;
+  const FLOOR = 50;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (client): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;

@@ -38,6 +38,8 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { AppWriteSignInRequired, appWriteIdentity, subscribeAppWriteSession, type AppWriteIdentity } from "./app-write-session";
+import { oneLoginActive } from "./one-login";
+import { confirmedOperatorTag } from "./operator-partition";
 
 export const CONTACT_DRAFT_VERSION = 1;
 export const CONTACT_DRAFT_PREFIX = "iaos-contact-draft:v1:";
@@ -90,8 +92,19 @@ export function isUncertainFailure(e: unknown): boolean {
   return !isDefiniteFailure(e);
 }
 
-/** The operator a draft belongs to: the write-session operator, else the last one seen, else this browser (B15-25 rule). */
+/** The owner a one-IAOS-sign-in draft gets if no confirmed operator is known: matches nothing stored, shows nothing. */
+export const ONE_LOGIN_UNCONFIRMED_OPERATOR = "one-login:unconfirmed";
+/**
+ * The operator a draft belongs to (B15-25 rule): the write-session operator, else the last one seen, else this browser.
+ * B15-29 (Jess 2026-11-10): while one IAOS sign-in is on, it is the server-confirmed operator of this page's session
+ * (operator-partition.ts), known before the app mounts and the same across reloads, renewals and re-logins of the same
+ * account; a different account never matches. Off: exactly the previous rule.
+ */
 export function draftOperator(w: AppWriteIdentity = appWriteIdentity()): string {
+  if (oneLoginActive()) {
+    const tag = confirmedOperatorTag();
+    return tag ? `one-login:${tag}` : ONE_LOGIN_UNCONFIRMED_OPERATOR;
+  }
   return w.operator ?? w.lastOperator ?? "this-browser";
 }
 
