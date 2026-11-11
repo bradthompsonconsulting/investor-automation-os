@@ -22,6 +22,7 @@
 import { getConfig } from "../../shared/ghl-config";
 import { REPAIR_APPROVAL_DISABLED, repairApprovalActiveFor } from "../../shared/repair-approval-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { sessionReadRefusal } from "./lib/session-revocation";
 import { createAuthorityClient, createProductionTargetTransport, readRepairApproval } from "./lib/blob-authority";
 import { approvalScope, approvalSetup } from "./lib/repair-approval-integration";
 import { identifier } from "./lib/write-contracts";
@@ -34,6 +35,8 @@ export const handler = async (event: any) => {
   if (event.httpMethod !== "GET") return json(405, { error: "Method not allowed" });
   const refusal = readAuthRefusal(event);
   if (refusal) return refusal;
+  const revoked = await sessionReadRefusal(event);
+  if (revoked) return revoked;
   const setup = approvalSetup();
   if (setup.kind !== "ready") return json(503, { error: "Repair approval is not configured", code: setup.code });
   const q = event.queryStringParameters ?? {};

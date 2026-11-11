@@ -1,0 +1,155 @@
+{
+  "purpose": "B15-29 One Login (INV-137) reviewed delta: Bones-accepted a5440a3 integrated onto main 319c983 as 9944cbe. Chained: each change applies only from the bytes main already carries. Updated for B15-29 C1 (b2db14f) on three already-listed files.",
+  "base": "319c983cf549e87332cb1e4e511c867aa512d7fa",
+  "candidate": "9944cbe5e1ea9109635253fab45ef7008ba5804b",
+  "changes": {
+    "netlify/functions/app-read-session.ts": {
+      "from": "a31cb6552ee8efee41b9e5be662e1b9e404e641283bb58909fb96a574bbe2d3e",
+      "to": "ca9d4e826e3c3d65a02fb931b005a20d81edd735f27326330d9e5f8f62f8e833",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/app-write-session.ts": {
+      "from": "ab34909b7029f9f9845674a42a94d63ccaaef30b718c957ec98850d78f2f6310",
+      "to": "548776ec6b8adb3e92a9dfdedecff964cf660ba860f8065bd862c1a9f5486110",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/call-eligibility.ts": {
+      "from": "e42dc5c9fcef501e03c3f64c4d8c59ccc0e6f503258033a9cfb968809df1a099",
+      "to": "618876dd33b250b4aa1aad2947114f632fa0888a28e0cf1a9821d338ba1ce341",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/call-log-barrier.ts": {
+      "from": "a0664da62629490c6d8cee04cf9c4c3d1709dc1d3cf0529e683fd2b75c7a8079",
+      "to": "04867dae5221863a0acb602d9ab9ea42121a26c16e69eae6cfb084c14307e415",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/current-offer-barrier.ts": {
+      "from": "b6b02606712f173b974d3a6e4fdc7e555301b03ff587319e8c258b2564fb6c68",
+      "to": "8b3a01469026d909a42e34e39dd6e937610d4b7f44b23e286d1189f6e7d37e61",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/generate-contract-pdf.ts": {
+      "from": "efb59b6d696742d42f744737a6200cf978b889ddceae2a629e9d2082d0ec1dc9",
+      "to": "1035305847b2cf1be7b72dbc6b51070c19311436a616e80e3d517efe3fc416c0",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/ghl-calendar-events.ts": {
+      "from": "1ec6e49ea381f0a2862f9ee2ca1285307cea3dc518b14d107504e92575237f6b",
+      "to": "f6a5dd043b1f5062c31607e68127807d490a1cf18f0e75d0e6a7107af0f32ca3",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/ghl-contact-conversations.ts": {
+      "from": "8c48aaf74f4c63b6e45b12e2d73ebbfecea0ba6b22ff04f9283c9e2c8ef4070e",
+      "to": "0452c4e174d0836bd3b70f4c30d990f64cd585041e92e2e8df90dc1d45d73839",
+      "reason": "B15-29 accepted change; same patch, applied onto main F5 R2 bytes"
+    },
+    "netlify/functions/ghl-contact.ts": {
+      "from": "9ef21986bfef98c335a1dfba04d4b4410dd40e6064c8a9bd6cdbbe8f0b62a032",
+      "to": "31cd10ca6f39113a382061a064256131ab12c3014c2bde1ce928b7edb863c729",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/ghl-contacts.ts": {
+      "from": "ad477384f734dab9da0842f639c31e06e2e32a66fb38c60a74e31fd4e20200e4",
+      "to": "942610bd4101c1f6653ed42d85a86d914ff0b33b8e1d4024f2445a3994b2a4ce",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/ghl-contract-send-readback.ts": {
+      "from": "de03306024891010f042d91853f69efb2a3cf8c8ebfebb7aae90a19f53316c48",
+      "to": "7d1edaa945f5f1e77f4582fd2b0702c2da52fc318ccc2fa75183ef8cb34bcce4",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/ghl-conversations.ts": {
+      "from": "b0652f501a19d035bf1c53318f659e39e58b54b4030da969ec3f1f93fc7c1677",
+      "to": "66050a35ecd2e7fff46a7f63e3a2957b54266c155f3b3a4b8c0fc51e692f32e6",
+      "reason": "B15-29 accepted change; merge conflict resolved as an import union (sessionReadRefusal added to main imports)"
+    },
+    "netlify/functions/ghl-documents-capability.ts": {
+      "from": "60fb7b94ba0193ea2af5d69bc9329d74869723b3b02b5b37eb95d69dc93646a3",
+      "to": "157b7f88e590594dd55e59f298e23da5c502a123256c8866d717c9282b0d4fc9",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/ghl-executed-artifact-upload.ts": {
+      "from": "c51fc763ce1742a8caafa707905583d6ef922d07476aeac73ce83f264ae63a51",
+      "to": "0195d364b392539a4aef1874d2576f79ebfc00341254ad3551de4629bcdb1ef5",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/ghl-mailers.ts": {
+      "from": "6859200c6ee1a8dacd4b17888934c271757a0b6d7dca1deeb4f81172537ceb21",
+      "to": "a2380e981d2c28b49f8a974e4edd34c0a76ec1b0602a8cacebb97edfd3d02491",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/ghl-opportunities.ts": {
+      "from": "fbb5f3050bb6a7dafe894321d65c140bbf3fef4e5aaccbeb7bc6c83ed1e8b9e7",
+      "to": "323fcfb02171600f52980fe9a8a75f97a93b48efb576d8aadb46f3235204aab0",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/ghl-proxy.ts": {
+      "from": "f211f898d1d031679f1a4a2019428c0dde070c9f8f3d3818e2a6857981ea6242",
+      "to": "911b02ab2a1dd9026dbc47929e8d22f3f3c7eca571717772f6dd702b30a8707c",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/ghl-underwriting-policy.ts": {
+      "from": "4989e039de7072f035867bef14cacb8d48082ed4edf942f7a4f4299eceb3f40c",
+      "to": "8f9da163643f5dd2c6a1af705119abc857d2e40b181543157c037be891953773",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/ghl-write.ts": {
+      "from": "d36f8dc872db3f7102a5c183b93a04e25bff2d1c7e8165e25a7775302c0a002a",
+      "to": "e773fe6b77dcc6f8a3d6bc4b5c6d23025cc43be931acb353801393245984e8cc",
+      "reason": "B15-29 accepted change; identical added/removed lines, context differs because main changed nearby lines"
+    },
+    "netlify/functions/iaos-runtime-config.ts": {
+      "from": "5a474121e0bb64b97481beae2ebc30065537e485d8c62612e078421b46156e5f",
+      "to": "c32bd32dfa30f52da63bb1e70c490dba3ef236fa25447f1187ff45af7c083546",
+      "reason": "B15-29 accepted change + B15-29 C1 (Scotty b2db14f, Test-only session lifetime; reviewed separately by Bones)"
+    },
+    "netlify/functions/lib/app-read-auth.ts": {
+      "from": "88593ab9c7559bf04b35b5299f469ea8bbfcb8879a5c151ef55cff5e82763e4a",
+      "to": "893aa992f898832d71758ecf5595d741b0e1916573880f039eb45b56b60f9858",
+      "reason": "B15-29 accepted change + B15-29 C1 (Scotty b2db14f, Test-only session lifetime; reviewed separately by Bones)"
+    },
+    "netlify/functions/lib/app-write-auth.ts": {
+      "from": "91c12b5092bc6aec0f6bf61892263b1389e34588c462ed76e09e982df6313c3a",
+      "to": "ac330ea4d1e75bd4993b157f1e61c369241b4171bc4bb590368cac1768476a39",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/property-answer.ts": {
+      "from": "30d6a586a562a88b33de09e168dd844abec0f2346112deacc6fa7cc1f3a23d17",
+      "to": "3e827ffd8fb60c83e0df015fdfbaeea7693c5007556bb102a6780503cee50b68",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/repair-approval-save.ts": {
+      "from": "6d5ba2e9c8b6e0311fdf30b7078abb7d073d39db98e6973b3c305c2760fe8f3b",
+      "to": "93bfb8bc0552b2cb3135b76868e7e215959393edab05a5575530f14a19a1c6e6",
+      "reason": "B15-29 accepted change"
+    },
+    "netlify/functions/repair-approval-status.ts": {
+      "from": "7e6fce93a1f3a5b14e3419eb458e77abc27dc594247e8c7cd6c384c22ced4b92",
+      "to": "ecbce890120e01d620cdd3f278fc2225709e9ccdfe3da3abe48bf12abe041904",
+      "reason": "B15-29 accepted change"
+    },
+    "shared/ghl-config.ts": {
+      "from": "6dda33bd08bc8107f72be6734dd5d785f9af62f28cf68de61df6012b9d7c105c",
+      "to": "c9e591416ad07a584ab9201d0e62c81d6f6be85fdbca9f3a64b5089d215770f3",
+      "reason": "B15-29 accepted change; merge conflict resolved additively (sellerConversationSave and oneLogin both kept, both DISABLED) + B15-29 C1 (Scotty b2db14f, Test-only session lifetime; reviewed separately by Bones)"
+    }
+  },
+  "additions": {
+    "netlify/functions/app-signout.ts": {
+      "to": "a7d4fe11145c6e1b3f8bd728dcdff07ff33e22224896660a945112ad01b78fed",
+      "reason": "B15-29 new file, byte-identical to a5440a3"
+    },
+    "netlify/functions/app-write-token.ts": {
+      "to": "eba90b33b19bef9788575bcd5574449da28eac1fda9c148a8c11ecfd733e604d",
+      "reason": "B15-29 new file, byte-identical to a5440a3"
+    },
+    "netlify/functions/lib/authorization.ts": {
+      "to": "ae9e77208a20cd340efbe95647614708413dd4580de0acf062b5427966b622bb",
+      "reason": "B15-29 new file, byte-identical to a5440a3"
+    },
+    "netlify/functions/lib/session-revocation.ts": {
+      "to": "5b3403af9073bc0540fe42afb5ba3ae97d34eb3f259747d4cbcedf43da4e7def",
+      "reason": "B15-29 new file, byte-identical to a5440a3"
+    }
+  }
+}

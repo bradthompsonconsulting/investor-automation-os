@@ -19,12 +19,13 @@
           method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ googleIdToken: credential }),
         });
-        if (!result.ok) throw new Error("This identity is not authorized to read IAOS data.");
+        if (result.status === 401) throw new Error("This Google account isn't authorized for IAOS.");
+        if (!result.ok) throw new Error("IAOS sign-in is temporarily unavailable. Try again.");
         window.opener.postMessage({ type: "iaos-app-read-signed-in" }, location.origin);
         status.textContent = "Signed in. You can close this window.";
       } catch (error) { status.textContent = error.message; }
     }});
     google.accounts.id.renderButton(document.getElementById("signin"), { theme: "outline", size: "large" });
-    status.textContent = "Use Brad’s authorized Google account.";
+    status.textContent = "Choose your authorized Google account to continue.";
   } catch (error) { status.textContent = error.message; }
 })();

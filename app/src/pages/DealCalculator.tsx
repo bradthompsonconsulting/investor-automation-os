@@ -32,6 +32,7 @@ import { DealCalculationSavePanel, type CalculatorFigures } from "../components/
 import { computeRepairEstimate } from "../lib/repair-estimation/compute";
 import type { AssignmentModeName } from "../lib/underwriting/resolver-types";
 import { appWriteIdentity, subscribeAppWriteSession } from "../lib/app-write-session";
+import { draftOperator as sharedDraftOperator } from "../lib/contact-drafts";
 import type { OpportunityRow } from "../lib/ghl";
 import {
   FIELDS as DRAFT_FIELDS, NO_GHL, assess, canResolve, keepMine, openStore, parseRepairItems, recordEdit,
@@ -221,10 +222,9 @@ const DRAFT_DEFAULTS: Record<DraftField, string> = {
   repairsMode: "quick", repairItems: serializeRepairItems({}, EMPTY_MISC),
 };
 const DRAFT_STATUS_STYLE: React.CSSProperties = { fontSize: "10px", color: "#F59E0B", marginTop: "4px" };
-/** The operator a draft belongs to: the write-session operator, else the last one seen, else this browser. */
+/** The operator a draft belongs to: one rule for every IAOS draft (lib/contact-drafts.ts; B15-29 one sign-in aware). */
 function draftOperator(): string {
-  const w = appWriteIdentity();
-  return w.operator ?? w.lastOperator ?? "this-browser";
+  return sharedDraftOperator(appWriteIdentity());
 }
 const scratchIdentity = (): DraftIdentity => ({ kind: "scratch", env: CONFIG.locationId, operator: draftOperator() });
 const ghlText = (g: FieldState["ghl"]) => (g.kind === "value" ? g.value : g.kind === "none" ? "nothing recorded" : "could not be read");

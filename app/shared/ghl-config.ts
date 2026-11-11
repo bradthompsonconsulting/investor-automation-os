@@ -222,6 +222,25 @@ export interface GhlConfig {
    * production-write-scope.ts. Enabling is its own reviewed config-only commit.
    */
   sellerConversationSave: string;
+  /**
+   * B15-29 (INV-137) one IAOS sign-in. SERVER-SIDE switch, mirrored to the
+   * browser ONLY as `oneLogin: { active: true }` in iaos-runtime-config (absent
+   * otherwise). Only `ONE_LOGIN_ENABLED` turns it on, per environment. When on:
+   * the read session carries a session id (sid); app-write-token issues the
+   * unchanged 900 s saving token from that session; Sign out (app-signout)
+   * records a server-side revocation of the sid, and token issue, every
+   * protected read and every write check it (lib/session-revocation.ts). When
+   * off -- BOTH environments carry `ONE_LOGIN_DISABLED` -- every function and
+   * the browser behave exactly as before (Enable saving popup, cookie DELETE).
+   * Enabling is its own reviewed config-only commit, never a runtime toggle.
+   */
+  oneLogin: string;
+  /**
+   * B15-29 (Jess 2026-11-10) -- TEST ONLY: a short one-sign-in session lifetime in seconds (600 .. 30 days), or null
+   * for the full 30 days. Read only by oneLoginSessionSecondsFor("test"). The PRODUCTION object never carries it, and
+   * that function never consults it for any other environment. Changing it is a reviewed, config-only commit.
+   */
+  oneLoginTestSessionSeconds?: number | null;
   /** Pipelines. PB-D51 scope extension, Gate 4B-2. */
   pipelines: {
     sellerLeads: string;
@@ -478,6 +497,20 @@ export const SELLER_CONVERSATION_SAVE_DISABLED = "SELLER_CONVERSATION_SAVE_DISAB
 export function sellerConversationSaveEnabled(config: Pick<GhlConfig, "sellerConversationSave">): boolean {
   return config.sellerConversationSave === SELLER_CONVERSATION_SAVE_ENABLED;
 }
+/** B15-29 (INV-137) — the ONE value that turns on one IAOS sign-in with server-side Sign out revocation. */
+export const ONE_LOGIN_ENABLED = "ONE_LOGIN_ENABLED" as const;
+/** B15-29 (INV-137) — the value BOTH environments carry until a reviewed enable commit: behaviour exactly as before. */
+export const ONE_LOGIN_DISABLED = "ONE_LOGIN_DISABLED" as const;
+/**
+ * B15-29 (INV-137, Bones H2) -- the intended Session-revocation authority per environment: the public Netlify site id
+ * of each deployment (iaos-app-test / iaos-app). Pinned here (the one home for identifiers) and enforced by
+ * lib/session-revocation.ts against the configured store site id, the authority anchor and the runtime x-nf-site-id.
+ * Public identifiers, not credentials.
+ */
+export const SESSION_REVOCATION_SITE_IDS: Readonly<{ test: string; production: string }> = Object.freeze({
+  test: "07ca1f1a-60fd-4229-a076-528970957912",
+  production: "19fcbf6a-7c3c-40e3-af20-bd077f0f8ec8",
+});
 
 /**
  * INV-67 / B9-12 -- the literal placeholder value for a not-yet-provisioned
@@ -833,6 +866,8 @@ const PRODUCTION: GhlConfig = {
   productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_ENABLED,
   // B15-03 slice C: DISABLED. Production also refuses the carrier unconditionally (production-write-scope.ts).
   sellerConversationSave: SELLER_CONVERSATION_SAVE_DISABLED,
+  // B15-29 (INV-137): one IAOS sign-in is OFF. Enabling is a separately reviewed config-only commit.
+  oneLogin: ONE_LOGIN_DISABLED,
   pipelines: {
     sellerLeads:         "GpUWK4YlhNqBzm5Hrm58",
   },
@@ -1224,6 +1259,10 @@ const TEST: GhlConfig = {
   productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED,
   // B15-03 slice C: DISABLED pending the Captain's review and a separate enabling commit.
   sellerConversationSave: SELLER_CONVERSATION_SAVE_DISABLED,
+  // B15-29 (INV-137): one IAOS sign-in is OFF. Enabling is a separately reviewed config-only commit.
+  oneLogin: ONE_LOGIN_DISABLED,
+  // B15-29 (Jess 2026-11-10): TEST ONLY. null = the full 30 days. A short value (e.g. 3600) is its own reviewed config-only commit.
+  oneLoginTestSessionSeconds: null,
   pipelines: {
     sellerLeads:         "wdvKMdPMxs38qoA6lkUa",
   },
@@ -1396,6 +1435,37 @@ export function getConfig(selector: string | undefined): GhlConfig {
   }
 
   return config;
+}
+
+/**
+ * B15-29 (INV-137): whether one IAOS sign-in is on for THIS server's
+ * environment. True ONLY for IAOS_ENV "test" or "production" whose config
+ * carries exactly ONE_LOGIN_ENABLED. Anything else (absent/unknown env, any
+ * other value) is false and never throws, so a caller's existing behaviour is
+ * kept. Read per request, never cached.
+ */
+export function oneLoginActiveFor(environment: unknown): boolean {
+  if (environment !== "test" && environment !== "production") return false;
+  try { return getConfig(environment).oneLogin === ONE_LOGIN_ENABLED; } catch { return false; }
+}
+
+/**
+ * B15-29 (INV-137; Jess decisions 1-2, 2026-11-10) -- the one IAOS sign-in session lifetime, per environment.
+ *
+ * Production is ALWAYS the Captain's fixed 30 days: for any environment other than the exact string "test" this
+ * returns the constant without reading any config object, variable or request, and the PRODUCTION config object has
+ * no lifetime field at all. Test may carry a short, server-honoured lifetime (TEST.oneLoginTestSessionSeconds) so
+ * expiry and the reminder checkpoints can be walked through without waiting 30 days. The server issues, verifies
+ * (exact exp - iat) and expires every one-sign-in session with this value, so a browser clock cannot change it.
+ * Absent, null or malformed falls back to 30 days (a valid value is a whole number from 600 s to 30 days).
+ */
+export const ONE_LOGIN_FULL_SESSION_SECONDS = 30 * 24 * 60 * 60;
+export function oneLoginSessionSecondsFor(environment: unknown): number {
+  if (environment !== "test") return ONE_LOGIN_FULL_SESSION_SECONDS;
+  let s: unknown;
+  try { s = TEST.oneLoginTestSessionSeconds; } catch { return ONE_LOGIN_FULL_SESSION_SECONDS; }
+  if (typeof s !== "number" || !Number.isInteger(s) || s < 600 || s > ONE_LOGIN_FULL_SESSION_SECONDS) return ONE_LOGIN_FULL_SESSION_SECONDS;
+  return s;
 }
 
 /**

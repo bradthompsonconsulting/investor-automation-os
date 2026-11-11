@@ -25,6 +25,7 @@
 import { connectLambda, getStore } from "@netlify/blobs";
 import { requireAppWriteOrigin } from "./lib/app-write-origin";
 import { requireAppWriter } from "./lib/app-write-auth";
+import { sessionReadRefusal, sessionWriteRefusal } from "./lib/session-revocation";
 import { readAuthRefusal } from "./lib/app-read-auth";
 import { getConfig } from "../../shared/ghl-config";
 import { configuredBoundary, WriteUncertain } from "./lib/ghl-write-boundary";
@@ -47,6 +48,8 @@ export const handler = async (event: any) => {
   if (event.httpMethod === "GET") {
     const refused = readAuthRefusal(event);
     if (refused) return refused;
+    const revoked = await sessionReadRefusal(event);
+    if (revoked) return revoked;
     const params = event.queryStringParameters ?? {};
     const opp = params.opportunityId;
     try {
@@ -65,6 +68,8 @@ export const handler = async (event: any) => {
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
   try { requireAppWriter(event); } catch { return json(401, { error: "Application write sign-in required" }); }
   try { requireAppWriteOrigin(event); } catch { return json(403, { error: "Application write origin refused" }); }
+  const writeRevoked = await sessionWriteRefusal(event);
+  if (writeRevoked) return writeRevoked;
 
   let request: any;
   let begin: ReturnType<typeof validateSteps> | null = null;

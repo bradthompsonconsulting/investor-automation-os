@@ -23,6 +23,7 @@
  */
 import { getConfig } from "../../shared/ghl-config";
 import { readAuthRefusal } from "./lib/app-read-auth";
+import { sessionReadRefusal } from "./lib/session-revocation";
 import { ghlReadFetch, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
@@ -32,6 +33,8 @@ const RESPONSE_HEADERS = { "Cache-Control": "no-store", "Content-Type": "applica
 export const handler = async (event: any) => {
   const refused = readAuthRefusal(event);
   if (refused) return refused;
+  const revoked = await sessionReadRefusal(event);
+  if (revoked) return revoked;
   if (event.httpMethod !== "GET") return { statusCode: 405, headers: RESPONSE_HEADERS, body: JSON.stringify({ error: "Method not allowed" }) };
 
   const token = process.env.GHL_PRIVATE_API_KEY;

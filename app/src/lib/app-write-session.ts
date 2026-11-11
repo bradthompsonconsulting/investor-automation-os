@@ -1,4 +1,6 @@
 /** Session stays in memory; it is neither business data nor a voice credential. */
+import { READ_SESSION_LOST_EVENT } from "./read-session";
+import { SESSION_UNAVAILABLE_EVENT, isSessionUnavailable, oneLoginActive } from "./one-login";
 let session: { token: string; expiresAt: string } | null = null;
 /**
  * B15-04 C1–C4 r4 A3 -- UI partitioning only, never authority (the server verifies every request itself).
@@ -32,6 +34,7 @@ export function subscribeAppWriteSession(fn: () => void): () => void { listeners
 export class AppWriteSignInRequired extends Error {}
 export function setAppWriteSession(value: typeof session) { changed(value); }
 export async function appWriteFetch(url: string, init: RequestInit): Promise<Response> {
+  if (oneLoginActive()) return oneLoginWriteFetch(url, init);
   if (!session || Date.parse(session.expiresAt) <= Date.now()) {
     if (session) changed(null);
     throw new AppWriteSignInRequired("Sign in for application writes before saving. Your edits have not been submitted.");
@@ -41,4 +44,129 @@ export async function appWriteFetch(url: string, init: RequestInit): Promise<Res
   // Only a 401 for the CURRENT session ends it; a late 401 for a replaced session changes nothing.
   if (response.status === 401 && session === sent) changed(null);
   return response;
+}
+
+// =====================================================================================================
+// B15-29 (INV-137) one IAOS sign-in -- ONLY while oneLoginActive() (the server's runtime configuration).
+// Off, nothing below runs and appWriteFetch above is unchanged.
+//
+// The short-lived saving token is issued automatically by app-write-token from the signed-in IAOS
+// session (the HttpOnly read cookie, which this module never sees). It stays in memory only.
+//   - A token is requested only when a save is about to be sent and none is held with more than
+//     RENEW_MARGIN_MS left (first save, after a reload, near expiry). Concurrent saves share one request.
+//     Renewal under the same operator is silent (no session-change notification).
+//   - If no token can be obtained, AppWriteSignInRequired is thrown BEFORE the save is sent: nothing
+//     reaches the server and the page's edits stay where they are.
+//   - A save is sent at most once. A refused or failed save is NEVER re-sent automatically.
+//   - Sign out on this page pauses saving here at the click, before any request, until an explicit
+//     sign-in. Every other tab is stopped by the SERVER (revocation checked at token issue and at every
+//     write), not by any browser signal.
+//   - r4 (Bones R3-2) SESSION REPLACEMENT. A deliberate reauthentication (Log In Again, the recovery
+//     overlay's sign-in -- resumeAppWriteAccess) or a replaced session seen by the read gate
+//     (replaceAppWriteSession) SYNCHRONOUSLY discards the cached token AND any pending token request:
+//     every mint is bound to the session generation (tokenEpoch) current when it was asked, and a mint
+//     from an earlier generation is never adopted or used. Saving then stays paused until the read gate
+//     has the NEW session confirmed by the server (confirmAppWriteSession); only then is a fresh token
+//     minted, under the new session's cookie.
+// =====================================================================================================
+export const SAVING_TOKEN_ENDPOINT = "/.netlify/functions/app-write-token";
+/** A token with less than this left is replaced before a save is sent. */
+export const RENEW_MARGIN_MS = 60_000;
+export const SAVE_SIGN_IN_ENDED_MESSAGE = "Saving paused: your IAOS sign-in has ended. Sign in again to save. Your edits have not been submitted.";
+export const SAVE_SIGNED_OUT_MESSAGE = "Saving paused: you signed out of IAOS on this page. Sign in again to save. Your edits have not been submitted.";
+export const SAVE_UNAVAILABLE_MESSAGE = "Saving paused: IAOS can't confirm your sign-in right now. Your edits have not been submitted. Try again.";
+export const SAVE_CONFIRMING_MESSAGE = "Saving paused: IAOS is confirming your new sign-in. Your edits have not been submitted. Try again in a moment.";
+
+let pending: Promise<{ token: string; expiresAt: string }> | null = null;
+/** The SESSION GENERATION: bumped whenever the token is discarded, so a token requested before that moment is never used. */
+let tokenEpoch = 0;
+let pausedBySignOut = false;
+/** r4: a session replacement is in progress -- no token is requested, adopted or used until the gate confirms the new session. */
+let awaitingSession = false;
+
+function signal(name: string) { if (typeof window !== "undefined") window.dispatchEvent(new Event(name)); }
+
+function discardToken() {
+  pending = null; tokenEpoch += 1;
+  if (session) changed(null);
+}
+
+function adopt(value: { token: string; expiresAt: string }) {
+  // Same operator: a silent renewal (generation unchanged). A different operator or no session: a session change.
+  if (session && claimSub(session.token) === claimSub(value.token)) { session = value; return; }
+  changed(value);
+}
+
+async function requestToken(): Promise<{ token: string; expiresAt: string }> {
+  let res: Response;
+  try {
+    res = await fetch(SAVING_TOKEN_ENDPOINT, { method: "POST", cache: "no-store", credentials: "same-origin", headers: { "X-IAOS-Session": "saving-token" } });
+  } catch { throw new AppWriteSignInRequired(SAVE_UNAVAILABLE_MESSAGE); }
+  if (res.status === 401) {
+    // The IAOS session itself is gone (expired, revoked, signed in before one sign-in): the read gate shows
+    // its recovery screen; the page stays mounted with its edits.
+    signal(READ_SESSION_LOST_EVENT);
+    throw new AppWriteSignInRequired(SAVE_SIGN_IN_ENDED_MESSAGE);
+  }
+  if (await isSessionUnavailable(res)) { signal(SESSION_UNAVAILABLE_EVENT); throw new AppWriteSignInRequired(SAVE_UNAVAILABLE_MESSAGE); }
+  if (!res.ok) throw new AppWriteSignInRequired(SAVE_UNAVAILABLE_MESSAGE);
+  const body = await res.json().catch(() => null);
+  // Timed from arrival with the server's stated lifetime, so a skewed computer clock cannot make a fresh token look expired.
+  // B15-29 r6: the server caps the lifetime at the session's fixed expiry (min(900 s, time left)), so in the session's
+  // last minutes a fresh token may be shorter than RENEW_MARGIN_MS; it is still used for the save that asked for it.
+  const lifetime = body?.expiresInSeconds;
+  if (typeof body?.token !== "string" || !body.token || typeof lifetime !== "number" || !Number.isFinite(lifetime) ||
+      lifetime <= 0 || lifetime > 900) {
+    throw new AppWriteSignInRequired(SAVE_UNAVAILABLE_MESSAGE);
+  }
+  return { token: body.token, expiresAt: new Date(Date.now() + lifetime * 1000).toISOString() };
+}
+
+async function savingToken(): Promise<string> {
+  if (pausedBySignOut) throw new AppWriteSignInRequired(SAVE_SIGNED_OUT_MESSAGE);
+  if (awaitingSession) throw new AppWriteSignInRequired(SAVE_CONFIRMING_MESSAGE);
+  if (session && Date.parse(session.expiresAt) - Date.now() > RENEW_MARGIN_MS) return session.token;
+  const asked = tokenEpoch;
+  if (!pending) {
+    const request = requestToken();
+    pending = request;
+    request.then(
+      (value) => { if (pending === request) pending = null; if (tokenEpoch === asked && !pausedBySignOut && !awaitingSession) adopt(value); },
+      () => { if (pending === request) pending = null; },
+    );
+  }
+  const value = await pending;
+  // Signed out, or the session ended, while the token was being issued: never use it.
+  if (pausedBySignOut) throw new AppWriteSignInRequired(SAVE_SIGNED_OUT_MESSAGE);
+  // A mint from an earlier session generation (replaced, ended or signed out while it was in flight): never used.
+  if (tokenEpoch !== asked) throw new AppWriteSignInRequired(awaitingSession ? SAVE_CONFIRMING_MESSAGE : SAVE_SIGN_IN_ENDED_MESSAGE);
+  return value.token;
+}
+
+async function oneLoginWriteFetch(url: string, init: RequestInit): Promise<Response> {
+  const token = await savingToken();   // throws before anything is sent
+  const response = await fetch(url, { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } });
+  // Refused: drop this token so the NEXT save asks again, and let the read gate re-check. This save is NOT re-sent.
+  if (response.status === 401) { if (session?.token === token) discardToken(); signal(READ_SESSION_LOST_EVENT); }
+  else if (await isSessionUnavailable(response)) signal(SESSION_UNAVAILABLE_EVENT);
+  return response;
+}
+
+/** One IAOS sign-in: the read session is not (or no longer) signed in -- drop the token; the next save asks again. */
+export function clearAppWriteToken() { discardToken(); }
+/** One IAOS sign-in: Sign out was clicked on this page -- refuse every later save here until an explicit sign-in. */
+export function pauseAppWriteForSignOut() { pausedBySignOut = true; discardToken(); }
+/**
+ * One IAOS sign-in: an explicit sign-in completed on this page (a NEW session). r4: the previous session's cached and
+ * pending saving tokens are discarded at once, and saving stays paused until confirmAppWriteSession().
+ */
+export function resumeAppWriteAccess() { pausedBySignOut = false; awaitingSession = true; discardToken(); }
+/** One IAOS sign-in, r4: the read gate saw a DIFFERENT session than the one it had (replaced in this or another tab). */
+export function replaceAppWriteSession() { awaitingSession = true; discardToken(); }
+/** One IAOS sign-in, r4: the read gate has the current session confirmed by the server -- saving may continue (a fresh token is minted on demand or by primeAppWriteSession). */
+export function confirmAppWriteSession() { awaitingSession = false; }
+/** One IAOS sign-in: obtain a token now so the operator identity is known before the first save. Failures are silent. */
+export function primeAppWriteSession(): void {
+  if (!oneLoginActive() || pausedBySignOut || awaitingSession) return;
+  savingToken().catch(() => { /* the next save reports it */ });
 }
