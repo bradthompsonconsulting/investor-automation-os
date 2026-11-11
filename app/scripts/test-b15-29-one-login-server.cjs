@@ -117,6 +117,10 @@ const blobAuthority = require(path.join(FUNCTIONS, 'lib/blob-authority.ts'));
 // This suite's subject is not the read budget; pin it OFF (as test-app-read-auth does).
 cfg.getConfig('test').supplementalReadBudget = { enabled: cfg.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'offline-disabled', ceiling: 0 };
 cfg.getConfig('test').oneLoginTestSessionSeconds = null;   // pinned in-process: these checks are 30-day checks, whatever the committed Test lifetime
+/* H5 (Test activation): the committed values are captured as loaded (F1 pins them), then this process starts from
+   OFF in both environments, as before. Every check turns the switch on only through flag(), unchanged. */
+const COMMITTED_ONE_LOGIN = Object.freeze({ test: cfg.getConfig('test').oneLogin, production: cfg.getConfig('production').oneLogin });
+cfg.getConfig('test').oneLogin = cfg.ONE_LOGIN_DISABLED; cfg.getConfig('production').oneLogin = cfg.ONE_LOGIN_DISABLED;
 const flag = (on, env = 'test') => { cfg.getConfig(env).oneLogin = on ? cfg.ONE_LOGIN_ENABLED : cfg.ONE_LOGIN_DISABLED; };
 function load(name) {
   for (const key of Object.keys(require.cache)) if (key.startsWith(FUNCTIONS + path.sep) && !key.includes(`${path.sep}lib${path.sep}`)) delete require.cache[key];
@@ -197,13 +201,19 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
 (async () => {
   // =========================================================================== F
   reset(); flag(false); flag(false, 'production');
-  await check('F1 committed config: BOTH environments carry ONE_LOGIN_DISABLED; the predicate is false for test, production and anything else', async () => {
+  await check('F1 committed config (H5 activation): TEST carries ONE_LOGIN_ENABLED, PRODUCTION carries ONE_LOGIN_DISABLED; with the in-process switch off the predicate is false for test, production and anything else', async () => {
+    const src = fs.readFileSync(path.join(APP, 'shared/ghl-config.ts'), 'utf8').replace(/\r\n/g, '\n');
+    const prodBlock = src.slice(src.indexOf('const PRODUCTION: GhlConfig = {'), src.indexOf('const TEST: GhlConfig = {'));
+    const testBlock = src.slice(src.indexOf('const TEST: GhlConfig = {'));
+    assert.ok(src.indexOf('const PRODUCTION: GhlConfig = {') >= 0 && src.indexOf('const PRODUCTION: GhlConfig = {') < src.indexOf('const TEST: GhlConfig = {'), 'PRODUCTION precedes TEST');
+    assert.equal((prodBlock.match(/^\s*oneLogin: ONE_LOGIN_[A-Z]+,$/mg) || []).join('|').trim(), 'oneLogin: ONE_LOGIN_DISABLED,', 'PRODUCTION: exactly one committed value, DISABLED');
+    assert.equal((testBlock.match(/^\s*oneLogin: ONE_LOGIN_[A-Z]+,$/mg) || []).join('|').trim(), 'oneLogin: ONE_LOGIN_ENABLED,', 'TEST: exactly one committed value, ENABLED');
+    assert.equal((src.match(/^\s*oneLogin: ONE_LOGIN_ENABLED,$/mg) || []).length, 1, 'exactly one committed ENABLED value in the file');
+    // The committed values as loaded, before this process's switch is used:
+    assert.equal(COMMITTED_ONE_LOGIN.test, cfg.ONE_LOGIN_ENABLED); assert.equal(COMMITTED_ONE_LOGIN.production, cfg.ONE_LOGIN_DISABLED);
     assert.equal(cfg.getConfig('test').oneLogin, cfg.ONE_LOGIN_DISABLED);
     assert.equal(cfg.getConfig('production').oneLogin, cfg.ONE_LOGIN_DISABLED);
     for (const e of ['test', 'production', undefined, '', 'staging', 'TEST']) assert.equal(cfg.oneLoginActiveFor(e), false, String(e));
-    const src = fs.readFileSync(path.join(APP, 'shared/ghl-config.ts'), 'utf8');
-    assert.equal((src.match(/^\s*oneLogin: ONE_LOGIN_DISABLED,$/mg) || []).length, 2, 'exactly two committed values, both DISABLED');
-    assert.ok(!/^\s*oneLogin: ONE_LOGIN_ENABLED/m.test(src), 'no committed ENABLED value');
   });
   await check('F2 off: app-write-token and app-signout answer 404 before anything, with zero outbound requests', async () => {
     const c = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now(), sid(1), EPOCH).token;

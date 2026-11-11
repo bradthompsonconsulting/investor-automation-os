@@ -38,7 +38,9 @@ const TMP = path.join(APP, '.tmp-b15-22-authoritative-test');
 const esbuild = require(path.join(APP, 'node_modules', '.pnpm', 'esbuild@0.25.12', 'node_modules', 'esbuild'));
 
 /** Literal check() call-site count in this file. */
-const FLOOR = 105;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta); B15-29 P-1 timing: + S8f (S8e was within 101); probe gate site id: + S8g; B15-29 probe verification (A1a): + S8-PV; B15-29 G1 race-409 probe: + S8-RC
+const FLOOR = 106;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta); B15-29 P-1 timing: + S8f (S8e was within 101); probe gate site id: + S8g; B15-29 probe verification (A1a): + S8-PV; B15-29 G1 race-409 probe: + S8-RC; B15-29 activation: + S8h
+/** S8h: the committed activation config steps, in order. H5 alone; the H7-only C3 commit pins ['H5', 'C3']. */
+const B29A_EXPECTED_STEPS = ['H5'];
 let checks = 0; let failures = 0;
 function check(name, actual, expected) {
   checks += 1;
@@ -489,6 +491,21 @@ check('S7 the label is backed by the resolver: Opportunity ARV first, Contact on
   check('S8-RC the B15-29 G1 race-409 probe delta is exactly its one chained change (lib/session-revocation.ts) and no addition',
     [Object.keys(B29R.changes || {}).sort(), b29rProblems],
     [['netlify/functions/lib/session-revocation.ts'], []]);
+  /* B15-29 One Login Test activation (Captain GO): ORDERED config-only steps on shared/ghl-config.ts, each chained from
+     the bytes expected after S8a-S8g and the steps before it. H5 turns TEST on; the temporary H7 profile (C3) is a
+     second step appended for H7 only and removed again by its restoration commit. Listed in
+     b15-22-b15-29-activation-delta.json. S8g and every earlier amendment are unchanged. */
+  const B29A = JSON.parse(fs.readFileSync(path.join(APP, 'scripts', 'fixtures', 'b15-22-b15-29-activation-delta.json'), 'utf8'));
+  const b29aProblems = [];
+  const b29aFile = B29A.file;
+  if (b29aFile !== 'shared/ghl-config.ts' || !(b29aFile in expected)) b29aProblems.push(`not the expected config file: ${b29aFile}`);
+  for (const s of (Array.isArray(B29A.steps) ? B29A.steps : [])) {
+    if (!s || s.from !== expected[b29aFile] || typeof s.to !== 'string' || !/^[0-9a-f]{64}$/.test(s.to) || s.to === s.from) b29aProblems.push(`not a chained step from the expected bytes: ${s && s.name}`);
+    else expected[b29aFile] = s.to;
+  }
+  check('S8h the B15-29 activation config steps change only shared/ghl-config.ts, each chained from the bytes expected before it (H5, then the H7-only C3 step when present)',
+    [b29aFile, (Array.isArray(B29A.steps) ? B29A.steps : []).map((s) => s && s.name), b29aProblems],
+    ['shared/ghl-config.ts', B29A_EXPECTED_STEPS, []]);
   const drift = [];
   for (const rel of seen) { if (!(rel in expected)) drift.push(`added ${rel}`); else if (hashOf(rel) !== expected[rel]) drift.push(`changed ${rel}`); }
   for (const rel of Object.keys(expected)) if (!seen.includes(rel)) drift.push(`removed ${rel}`);
