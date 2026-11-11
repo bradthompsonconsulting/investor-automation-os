@@ -91,7 +91,8 @@ check('F33 a stale decision says so in the panel summary',
 check('F32 the sticky deal bar still states ARV and Repairs (unchanged)',
   /* B15-22: the two cells may carry their approval note (withNote); label, value and wait text unchanged. */
   /(?:withNote\()?factCell\("arv", "ARV", input\.arv, "Not yet established"\)(?:, arvNote\))?,\r?\n\s+(?:withNote\()?factCell\("repairs", "Repairs", input\.repairs, "Not yet established"\)(?:, repairsNote\))?,/.test(read('src/lib/seller-call-deal-bar.ts'))
-    && /<DealBar cells=\{dealBarCells\}(?: compact)? \/>/.test(page), true);
+    /* B15-26 (INV-134): DealBar may also take the spread status (colors the Spread figure only). */
+    && /<DealBar cells=\{dealBarCells\}(?: compact)?(?: spreadStatus=\{spreadStatus\})? \/>/.test(page), true);
 check('F32 the operator checklist is unchanged',
   page.includes('data-testid="operator-underwriting-checklist"'), true);
 check('F32 with no ARV the ARV & Comps line names the next action (Jess, option B)',

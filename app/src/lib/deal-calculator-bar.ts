@@ -23,7 +23,7 @@
  * pages would couple them for no reason.
  */
 
-import type { Board8Economics, ExpectedSpread } from "./underwriting/board8-economics";
+import type { Board8Economics, ExpectedSpread, ReferenceKind } from "./underwriting/board8-economics";
 import type { AssignmentModeName } from "./underwriting/resolver-types";
 import {
   KNOWN_REPAIRS_INCOMPLETE_LABEL, PROVISIONAL_HEADLINE, PROVISIONAL_MAX_LABEL, PROVISIONAL_SPREAD_LABEL,
@@ -162,6 +162,12 @@ export function buildDealCalculatorBarCells(input: DealCalcBarInput): DealCalcBa
  * `short` keep their full warning, wrapped in the provisional headline and
  * supporting text; `neutral` (an Unknown input) is returned unchanged. The
  * classification itself and every number are unchanged.
+ *
+ * Seller Call (Jess GO, 2026-11-11): the same classifier, unchanged, checks
+ * Expected Spread @ Current Offer. Only the price's name follows the
+ * spread's own `referenceKind` ("this Current Offer" / "this Test Price");
+ * thresholds, wording otherwise and colors are shared. Seller Call has no
+ * repair-completeness flag, so it passes none.
  */
 export type SpreadRequirement = "standard_minimum" | "assignment_mode";
 
@@ -181,6 +187,26 @@ export type SpreadStatus =
 
 /** The active assignment mode and its resolved required spread (`figures.assignmentSpread`). */
 export type ActiveSpreadRequirement = { mode: AssignmentModeName; requiredSpread: number };
+
+/**
+ * B15-26 (INV-134, 2026-11-11): one color per spread status, always paired
+ * with the status text (never color alone). Moved here unchanged from the
+ * Deal Calculator page so Seller Call shows the same colors for the same
+ * classification.
+ */
+export const SPREAD_STATUS_COLOR: Record<SpreadStatus["kind"], string> = {
+  negative: "#EF4444",
+  short: "#F59E0B",
+  meets: "#22C55E",
+  neutral: "#64748B",
+  provisional: "#F59E0B",
+};
+
+/** The two named reference prices, as each surface labels its own. */
+const REFERENCE_PRICE_LABEL: Record<ReferenceKind, string> = {
+  test_price: "Test Price",
+  current_offer: "Current Offer",
+};
 
 /** What a green status does not claim -- stated on every green status. */
 export const MEETS_SCOPE_NOTE = "This is not a net-profit check.";
@@ -239,8 +265,11 @@ export function buildSpreadStatus(
   selectedMode: AssignmentModeName | null = null,
   /** The repair estimate's completeness; null/absent or complete leaves the status exactly as before. */
   repairs: RepairCompleteness | null = null,
+  /** B15-26 (INV-134, 2026-11-11): the surface's reference price, for the "enter a ..." text before a spread exists.
+   *  A calculated spread names its own `referenceKind`. Default: the calculator's Test Price (text unchanged). */
+  reference: ReferenceKind = "test_price",
 ): SpreadStatus {
-  const status = classifySpread(board8, expectedSpread, active, selectedMode);
+  const status = classifySpread(board8, expectedSpread, active, selectedMode, reference);
   if (!repairs || !repairs.incomplete || status.kind === "neutral") return status;
   const support = provisionalSupportText(money(repairs.knownRepairs));
   if (status.kind === "meets") return { kind: "provisional", text: `${PROVISIONAL_HEADLINE} ${support}` };
@@ -252,14 +281,16 @@ function classifySpread(
   expectedSpread: ExpectedSpread | null,
   active: ActiveSpreadRequirement | null,
   selectedMode: AssignmentModeName | null,
+  reference: ReferenceKind,
 ): SpreadStatus {
   if (!board8 || board8.status !== "calculated" || !active) {
     return { kind: "neutral", text: missingInputsText(board8, selectedMode) };
   }
   if (!expectedSpread || expectedSpread.status !== "calculated") {
-    return { kind: "neutral", text: "No spread check yet: enter a Test Price." };
+    return { kind: "neutral", text: `No spread check yet: enter a ${REFERENCE_PRICE_LABEL[reference]}.` };
   }
   const spread = expectedSpread.expectedSpread;
+  const priceLabel = REFERENCE_PRICE_LABEL[expectedSpread.referenceKind];
   const minimum = board8.standardMinimumAssignmentSpread;
   const modeLabel = MODE_SPREAD_LABEL[active.mode];
   const standardText = `the ${money(minimum)} standard minimum`;
@@ -271,7 +302,7 @@ function classifySpread(
   if (spread < 0) {
     return {
       kind: "negative",
-      text: `Negative spread: this Test Price is ${differenceText(-spread)} above the end buyer's maximum price, `
+      text: `Negative spread: this ${priceLabel} is ${differenceText(-spread)} above the end buyer's maximum price, `
         + `so there is no assignment spread. Required: ${standardText}`
         + (sameRequirement ? "." : ` and ${modeText}.`),
     };

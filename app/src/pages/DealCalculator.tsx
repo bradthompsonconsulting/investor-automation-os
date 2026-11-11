@@ -17,7 +17,7 @@ import {
   buildDealCalculatorInputs, parseNonNegativeAmountInput, DEFAULT_ASSIGNMENT_MODE,
   type DealCalculatorAssignment,
 } from "../lib/deal-calculator-inputs";
-import { buildDealCalculatorBarCells, buildSpreadStatus, type DealCalcBarCell, type SpreadStatus } from "../lib/deal-calculator-bar";
+import { buildDealCalculatorBarCells, buildSpreadStatus, SPREAD_STATUS_COLOR, type DealCalcBarCell } from "../lib/deal-calculator-bar";
 import type { RepairCompleteness } from "../lib/provisional-repairs";
 import { parseAcquisitionPriceInput } from "../lib/seller-call-negotiation";
 import {
@@ -183,14 +183,8 @@ function policyRow(
   );
 }
 
-/* B15-26: one color per spread status, always paired with the status text. */
-const SPREAD_STATUS_COLOR: Record<SpreadStatus["kind"], string> = {
-  negative: "#EF4444",
-  short: "#F59E0B",
-  meets: "#22C55E",
-  neutral: "#64748B",
-  provisional: "#F59E0B",
-};
+/* B15-26: one color per spread status, always paired with the status text
+   (SPREAD_STATUS_COLOR, shared with Seller Call from lib/deal-calculator-bar). */
 
 function BarCellView({ cell, valueColor }: { cell: DealCalcBarCell; valueColor?: string }) {
   return (
