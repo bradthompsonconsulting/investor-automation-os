@@ -8,6 +8,7 @@
  * write (so concurrent invocations really interleave) and injectable faults. global.fetch is a recorder: GHL
  * requests get a fixture answer, anything else fails the run. No credential, no network.
  */
+require('./lib/one-login-legacy-pin.cjs');   // H5a: this suite drives the real handlers with legacy sessions -- one IAOS sign-in OFF in-process (and in its child processes)
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

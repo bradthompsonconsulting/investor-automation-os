@@ -9,6 +9,7 @@
  * is acknowledged or already stored; UNKNOWN otherwise; manual repeat; admission fencing, not cancellation;
  * drafts saving and recovery preserved.
  */
+require('./lib/one-login-legacy-pin.cjs');   // H5a: this suite drives the real handlers with legacy sessions -- one IAOS sign-in OFF in-process (and in its child processes)
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

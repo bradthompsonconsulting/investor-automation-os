@@ -19,6 +19,7 @@
  * "Delivered"; the isolation itself is proven by the mutations that remove each page's guard (each fails only IC or IW).
  */
 'use strict';
+require('./lib/one-login-legacy-pin.cjs');   // H5a: this suite drives the real handlers with legacy sessions -- one IAOS sign-in OFF in-process (and in its child processes)
 const fs = require('node:fs');
 const path = require('node:path');
 const Module = require('node:module');

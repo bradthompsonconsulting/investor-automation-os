@@ -12,6 +12,7 @@
  *
  * Case ids are the approved acceptance matrix (section 12).
  */
+require('./lib/one-login-legacy-pin.cjs');   // H5a: this suite drives the real handlers with legacy sessions -- one IAOS sign-in OFF in-process (and in its child processes)
 const receiptShim = require('./lib/receipt-recorder-shim.cjs'); // the repaired receipt helpers' recorded fetch (test-only)
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
