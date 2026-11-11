@@ -1,0 +1,24 @@
+{
+  "_comment": "B15-22 S8 B15-29 probe-gate site-id amendment (Release 15-F dark check: the Test-only probe gate stayed closed on the real Test site because a platform event carries x-nf-site-id in both header maps). The original manifest and every earlier amendment, including the S8f P-1 timing fixture, are unchanged. Two changes CHAINED from the bytes S8e/S8f expect, and one addition; S8g pins this list.",
+  "candidate": "B15-29 probe gate platform-shaped site id (Scotty; see its package), on 92aeeb6",
+  "chainedFrom": "b15-22-b15-29-p1-timing-delta.json",
+  "review": "Pending Bones review of the probe-gate site-id correction",
+  "changes": {
+    "netlify/functions/lib/session-revocation.ts": {
+      "from": "94a3bc0f6207071e8c39afdb740a85964e659bd7c6a0d2c5be0a6e7347e3aeeb",
+      "to": "e8b290a5400cd7ba4e0698d4bb9e8c8e958f8681bb4168e31d51ade1f9c86523",
+      "reason": "headerValues and RUNTIME_SITE_HEADER move to lib/runtime-site.ts (imported and re-exported); context() calls runtimeSiteIs(opts.event, setup.siteID), the identical rule it applied inline (one distinct value across both maps, equal to the pin, under the lowercase key). No behaviour change; H5 and every session check unchanged."
+    },
+    "netlify/functions/lib/test-probe-gate.ts": {
+      "from": "21bc29e49ec83eb2d1b4b2d757eca18dd784cd76ea9c9fe685d1a54a0d1025a5",
+      "to": "943e5afee0096de8fab6562efa2c88939eab8a73dc80bbc7d7f5bc63c04bb8ef",
+      "reason": "The site check is runtimeSiteIs(event, SESSION_REVOCATION_SITE_IDS.test) -- de-duplicated, as the session authority already was -- instead of its own collector that counted the platform's duplicate. Env, query and base64 checks unchanged."
+    }
+  },
+  "additions": {
+    "netlify/functions/lib/runtime-site.ts": {
+      "to": "aaefc01248cdfdce91e59265c075f04c457784f1d4f953086096340bad64bd6a",
+      "reason": "The one header reader (headerValues, de-duplicated) and runtimeSiteIs, shared by the session authority and the probe gate so they cannot diverge. No imports; never throws."
+    }
+  }
+}

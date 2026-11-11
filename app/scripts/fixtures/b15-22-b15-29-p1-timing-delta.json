@@ -1,0 +1,19 @@
+{
+  "_comment": "B15-22 S8 B15-29 P-1 timing amendment (Jeff, Bones REVISE P2 on the activation plan: U3 timing). The original manifest and every earlier amendment, including the S8e probe-tooling fixture, are unchanged. Two changes, CHAINED from the bytes S8e expects; no additions. S8f pins this list.",
+  "candidate": "B15-29 P-1 timing and check-shape mode (Scotty; see its package), on f419c85",
+  "chainedFrom": "b15-22-b15-29-probes-delta.json",
+  "review": "Pending Bones review of the P-1 timing delta",
+  "changes": {
+    "netlify/functions/lib/session-revocation.ts": {
+      "from": "00e0ae705aad6f440c29e48e34866303d6a826ed58293cdab5e65a26f27d1b51",
+      "to": "94a3bc0f6207071e8c39afdb740a85964e659bd7c6a0d2c5be0a6e7347e3aeeb",
+      "reason": "P-1 section only: monotonic duration_ms per step, total_ms and a top-level ok on runAuthorityProbe; probeKey (the only probe key builder); the Test-only runCheckShapeProbe (the checkSession shape -- two identical-byte onlyIfMatch writes in parallel per sample under CHECK_BUDGET_MS -- on probe/<runId>/check-session and check-anchor in iaos-write-receipts only). Nothing above the P-1 section changes."
+    },
+    "netlify/functions/session-authority-probe.ts": {
+      "from": "e9b43000cc93653b4b96bbe5620324ede8a65def548fc2e6a09f45124809db7f",
+      "to": "0e4d8ef5c84ae59f5cb2ee2d9740c3ed544a30542e3a2f7c5f834be0276a6766",
+      "reason": "The fixed body also accepts probe \"check\" (same two keys, same gate and session chain) and dispatches to runCheckShapeProbe; the doc states ok:false on a stopped run."
+    }
+  },
+  "additions": {}
+}
