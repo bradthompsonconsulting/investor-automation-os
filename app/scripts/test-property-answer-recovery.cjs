@@ -7,6 +7,7 @@
  * Every recovery and read-only path asserts: zero GHL requests, no Set-Cookie, no new grant, a byte-identical
  * budget record and (for read-only Check) a byte-identical Blob store.
  */
+require('./lib/one-login-legacy-pin.cjs');   // H5a: this suite drives the real handlers with legacy sessions -- one IAOS sign-in OFF in-process (and in its child processes)
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

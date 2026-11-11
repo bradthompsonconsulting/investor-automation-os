@@ -9,6 +9,7 @@
  * The page wiring is checked by source text, following the repository's
  * convention for UI (see test-seller-call-workspace-wiring.cjs).
  */
+require('./lib/one-login-legacy-pin.cjs');   // H5a: this suite drives the real handlers with legacy sessions -- one IAOS sign-in OFF in-process (and in its child processes)
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');

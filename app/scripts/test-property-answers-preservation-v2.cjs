@@ -5,6 +5,7 @@
  * retired legacy v1 key), and freshState seeds valid empty ledgers for the other pinned fixture contacts
  * (Bones F3: drafts need clean evidence for them). All 37 behavioural assertions are the original's.
  */
+require('./lib/one-login-legacy-pin.cjs');   // H5a: this suite drives the real handlers with legacy sessions -- one IAOS sign-in OFF in-process (and in its child processes)
 /**
  * B15-04 answer preservation (Brad 2026-10-19/20; Bones follow-up 2026-10-19) --
  * the REAL PropertyAnswersPanel in headless Chromium against the REAL

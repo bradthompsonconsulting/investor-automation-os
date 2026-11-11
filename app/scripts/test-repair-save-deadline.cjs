@@ -14,6 +14,7 @@
  * Shows OUR behaviour against fakes only; nothing here proves Netlify, GHL or deployed-runtime behaviour.
  */
 'use strict';
+require('./lib/one-login-legacy-pin.cjs');   // H5a: this suite drives the real handlers with legacy sessions -- one IAOS sign-in OFF in-process (and in its child processes)
 delete process.env.NODE_ENV; // production SDK retry delay (5 s) -- set before the SDK loads
 const crypto = require('node:crypto');
 const fs = require('node:fs');

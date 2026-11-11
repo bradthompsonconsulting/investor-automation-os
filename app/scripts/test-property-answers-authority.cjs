@@ -12,6 +12,7 @@
  *
  * The unchanged 37-check reproducer (test-property-answers-preservation.cjs) is separate.
  */
+require('./lib/one-login-legacy-pin.cjs');   // H5a: this suite drives the real handlers with legacy sessions -- one IAOS sign-in OFF in-process (and in its child processes)
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

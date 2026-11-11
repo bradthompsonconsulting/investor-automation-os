@@ -1,4 +1,5 @@
 'use strict';
+require('./lib/one-login-legacy-pin.cjs');   // H5a: this suite drives the real handlers with legacy sessions -- one IAOS sign-in OFF in-process (and in its child processes)
 
 /**
  * Board #9 Phase B packaging correction -- proves the REAL, esbuild-bundled
@@ -153,14 +154,20 @@ function validToken() { return authLib.issueAppSession('brad@example.invalid').t
   console.log('Bundling ghl-write.ts with esbuild (mirrors Netlify\'s own bundler)...');
   execFileSync(process.execPath, [ESBUILD_BIN, GHL_WRITE_SOURCE, '--bundle', '--platform=node', '--format=cjs', '--target=node18', `--outfile=${ghlWriteBundlePath}`], { cwd: APP, stdio: 'inherit' });
   checkTrue('esbuild bundled ghl-write.ts with zero errors', fs.existsSync(ghlWriteBundlePath));
+  // H5a: the bundle inlines its own copy of the config; its committed ENABLED value (if any) is pinned OFF like the in-process one.
+  require('./lib/one-login-legacy-pin.cjs').pinBundle(ghlWriteBundlePath);
 
   console.log('Bundling generate-contract-pdf.ts with esbuild (WITH simulated included_files)...');
   execFileSync(process.execPath, [ESBUILD_BIN, GENERATE_PDF_SOURCE, '--bundle', '--platform=node', '--format=cjs', '--target=node18', `--outfile=${generatePdfBundlePath}`], { cwd: APP, stdio: 'inherit' });
   checkTrue('esbuild bundled generate-contract-pdf.ts with zero errors', fs.existsSync(generatePdfBundlePath));
+  // H5a: the bundle inlines its own copy of the config; its committed ENABLED value (if any) is pinned OFF like the in-process one.
+  require('./lib/one-login-legacy-pin.cjs').pinBundle(generatePdfBundlePath);
 
   console.log('Bundling generate-contract-pdf.ts with esbuild (WITHOUT the PDF asset, for the fail-closed proof)...');
   execFileSync(process.execPath, [ESBUILD_BIN, GENERATE_PDF_SOURCE, '--bundle', '--platform=node', '--format=cjs', '--target=node18', `--outfile=${generatePdfNoPdfBundlePath}`], { cwd: APP, stdio: 'inherit' });
   checkTrue('esbuild bundled the no-PDF variant with zero errors', fs.existsSync(generatePdfNoPdfBundlePath));
+  // H5a: the bundle inlines its own copy of the config; its committed ENABLED value (if any) is pinned OFF like the in-process one.
+  require('./lib/one-login-legacy-pin.cjs').pinBundle(generatePdfNoPdfBundlePath);
 
   // Simulates the REAL deployment asset layout netlify.toml's
   // `included_files = ["../docs/TREC Resale Home Contract.pdf"]` now
