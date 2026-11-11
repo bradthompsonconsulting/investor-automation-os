@@ -38,7 +38,7 @@ const TMP = path.join(APP, '.tmp-b15-22-authoritative-test');
 const esbuild = require(path.join(APP, 'node_modules', '.pnpm', 'esbuild@0.25.12', 'node_modules', 'esbuild'));
 
 /** Literal check() call-site count in this file. */
-const FLOOR = 101;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta)
+const FLOOR = 102;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta); B15-29 P-1 timing: + S8f (S8e was within 101)
 let checks = 0; let failures = 0;
 function check(name, actual, expected) {
   checks += 1;
@@ -426,6 +426,21 @@ check('S7 the label is backed by the resolver: Opportunity ARV first, Contact on
   check('S8e the B15-29 probe-tooling delta is exactly its one chained change and four Test-only additions',
     [Object.keys(B29P.changes || {}).sort(), Object.keys(B29P.additions || {}).sort(), b29pProblems],
     [['netlify/functions/lib/session-revocation.ts'], ['netlify/functions/lib/test-probe-gate.ts', 'netlify/functions/protected-noop-read.ts', 'netlify/functions/protected-noop.ts', 'netlify/functions/session-authority-probe.ts'], []]);
+  /* B15-29 P-1 timing (Bones REVISE P2 on the activation plan, U3): TWO changes, chained from the bytes S8e expects for
+     lib/session-revocation.ts and session-authority-probe.ts (duration_ms / total_ms / ok, and the Test-only check-shape
+     mode), no additions. Listed, with reasons, in b15-22-b15-29-p1-timing-delta.json. S8e and every earlier amendment are
+     unchanged. */
+  const B29T = JSON.parse(fs.readFileSync(path.join(APP, 'scripts', 'fixtures', 'b15-22-b15-29-p1-timing-delta.json'), 'utf8'));
+  const b29tProblems = [];
+  for (const [rel, c] of Object.entries(B29T.changes || {})) {
+    if (!(rel in expected)) b29tProblems.push(`not an expected protected file: ${rel}`);
+    else if (!c || c.from !== expected[rel] || typeof c.to !== 'string' || c.to === c.from) b29tProblems.push(`not a reviewed change from the expected bytes: ${rel}`);
+    else expected[rel] = c.to;
+  }
+  if (Object.keys(B29T.additions || {}).length) b29tProblems.push('additions are not part of this delta');
+  check('S8f the B15-29 P-1 timing delta is exactly its two chained changes (session-revocation.ts, session-authority-probe.ts) and no addition',
+    [Object.keys(B29T.changes || {}).sort(), b29tProblems],
+    [['netlify/functions/lib/session-revocation.ts', 'netlify/functions/session-authority-probe.ts'], []]);
   const drift = [];
   for (const rel of seen) { if (!(rel in expected)) drift.push(`added ${rel}`); else if (hashOf(rel) !== expected[rel]) drift.push(`changed ${rel}`); }
   for (const rel of Object.keys(expected)) if (!seen.includes(rel)) drift.push(`removed ${rel}`);

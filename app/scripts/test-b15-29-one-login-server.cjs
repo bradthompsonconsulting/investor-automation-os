@@ -1503,6 +1503,104 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
       assert.ok(!/leadconnectorhq|fetch\(/.test(s), n + ': no outbound call');
     }
   });
+  // ── PT / PC: P-1 timing and the check-shape mode (Bones REVISE P2 on the activation plan, U3; Jeff 2026-11-10) ──
+  const checkEv = (o = {}) => ev({ body: JSON.stringify({ probe: 'check', runId: RUN }), ...o });
+  const CK_S = 'probe/' + RUN + '/check-session'; const CK_A = 'probe/' + RUN + '/check-anchor';
+  const num = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  await check('PT1 authority probe: every step carries a server-measured, monotonic duration_ms (a 60 ms store delay on step 1 shows up in step 1), total_ms covers the steps, and ok:true', async () => {
+    reset(); flag(false); blobs.rule({ method: 'PUT', delayMs: 60, key: 'probe/' + RUN + '/record' });
+    const r = await PROBE()(probeEv({ cookie: legacyCookie() })); const out = parse(r);
+    assert.equal(r.statusCode, 200, r.body); assert.equal(out.mode, 'conditional-write'); assert.equal(out.ok, true, JSON.stringify(out.steps));
+    assert.ok(out.steps.length === 7 && out.steps.every((x) => num(x.duration_ms)), JSON.stringify(out.steps));
+    assert.ok(out.steps[0].duration_ms >= 55, 'step 1 measured the delayed write: ' + out.steps[0].duration_ms);
+    assert.ok(num(out.total_ms) && out.total_ms + 0.05 >= out.steps.reduce((a, x) => a + x.duration_ms, 0), 'total_ms >= sum of steps');
+  });
+  await check('PT2 the caller cannot miss a failure: every stopped run (ignored If-None-Match / ignored If-Match / per-write ETags) is HTTP 200 with a top-level ok:false and a stoppedAt; the passing run is ok:true', async () => {
+    const outcomes = [];
+    for (const [label, on, off] of [
+      ['ifNoneMatch ignored', () => blobs.setIgnoreConditions({ ifNoneMatch: true }), () => blobs.setIgnoreConditions({})],
+      ['ifMatch ignored', () => blobs.setIgnoreConditions({ ifMatch: true }), () => blobs.setIgnoreConditions({})],
+      ['per-write ETags', () => blobs.setEtagMode('per-write'), () => blobs.setEtagMode('content')],
+      ['passing', () => {}, () => {}]]) {
+      reset(); flag(false); on();
+      try { const r = await PROBE()(probeEv({ cookie: legacyCookie() })); const o = parse(r); outcomes.push([label, r.statusCode, o.ok, o.stoppedAt !== null]); }
+      finally { off(); }
+    }
+    assert.deepEqual(outcomes, [['ifNoneMatch ignored', 200, false, true], ['ifMatch ignored', 200, false, true], ['per-write ETags', 200, false, true], ['passing', 200, true, false]]);
+  });
+  await check('PC1 check mode positive: 200, ok:true, budget 3000 ms; 2 setup creates + 5 samples, each sample two 200s with the ETag unchanged, within budget, numeric durations; ONLY probe/<runId>/check-session and check-anchor in iaos-write-receipts, PUT only (12 writes), never the authority store, a session record or a delete; no ETag value in the transcript', async () => {
+    reset(); flag(false); const b0 = blobs.log.length; other = [];
+    const r = await PROBE()(checkEv({ cookie: legacyCookie() })); const out = parse(r);
+    assert.equal(r.statusCode, 200, r.body); assert.equal(out.mode, 'check-shape'); assert.equal(out.ok, true, r.body); assert.equal(out.stoppedAt, null);
+    assert.equal(out.budget_ms, 3000);
+    assert.deepEqual(out.setup.map((x) => x.ok), [true, true]);
+    assert.equal(out.samples.length, 5);
+    assert.ok(out.samples.every((x) => x.ok && x.withinBudget && num(x.duration_ms) && num(x.session.duration_ms) && num(x.anchor.duration_ms) &&
+      x.session.status === 200 && x.anchor.status === 200 && x.session.etagUnchanged === true && x.anchor.etagUnchanged === true), r.body);
+    assert.ok(num(out.max_sample_ms) && num(out.total_ms));
+    const touched = blobs.log.slice(b0);
+    assert.ok(touched.length === 12 && touched.every((e) => e.storeName === 'site:' + SSTORE && (e.key === CK_S || e.key === CK_A) && e.method === 'PUT'), JSON.stringify(keysTouched(b0)));
+    assert.equal(touched.filter((e) => e.ifMatch).length, 10, 'every sample write is onlyIfMatch');
+    assert.equal(other.length, 0);
+    assert.ok(!/"c-|"w-|Bearer|__Host|cookie|etag"\s*:\s*"/i.test(r.body), 'no ETag value, token or cookie in the transcript');
+  });
+  await check('PC2 check mode measures the PARALLEL pair, per write: two 200 ms writes -> each write ~200 ms, the sample ~200 ms (not ~400), so the 3 s check path is measured, not inferred', async () => {
+    reset(); flag(false);
+    blobs.rule({ method: 'PUT', delayMs: 200, key: CK_S }, { method: 'PUT', delayMs: 200, key: CK_A }, { method: 'PUT', delayMs: 200, key: CK_S }, { method: 'PUT', delayMs: 200, key: CK_A });
+    const out = parse(await PROBE()(checkEv({ cookie: legacyCookie() })));
+    assert.equal(out.ok, true, JSON.stringify(out));
+    const s1 = out.samples[0];
+    assert.ok(s1.session.duration_ms >= 190 && s1.anchor.duration_ms >= 190, JSON.stringify(s1));
+    assert.ok(s1.duration_ms >= 190 && s1.duration_ms < 380, 'parallel: ' + s1.duration_ms);
+    assert.ok(out.setup.every((x) => x.duration_ms >= 190), 'setup creates measured: ' + JSON.stringify(out.setup));
+  });
+  await check('PC3 check mode over budget -> ok:false, stopped at sample 1, withinBudget false, the late write reported as deadline (a 400 ms write against a 300 ms check budget)', async () => {
+    reset(); flag(false);
+    blobs.rule({ method: 'PUT', key: CK_S }, { method: 'PUT', delayMs: 400, key: CK_S });
+    const out = await rev.runCheckShapeProbe(RUN, 'test', { event: NF, checkBudgetMs: 300 });
+    assert.equal(out.ok, false); assert.deepEqual(out.stoppedAt, { phase: 'sample', n: 1 }); assert.equal(out.samples.length, 1);
+    assert.equal(out.samples[0].withinBudget, false); assert.equal(out.samples[0].session.why, 'deadline'); assert.equal(out.budget_ms, 300);
+  });
+  await check('PC4 check mode can FAIL through the handler: per-write ETags (the bound ETag changes) -> HTTP 200, ok:false, stopped at sample 1, etagUnchanged false', async () => {
+    reset(); flag(false); blobs.setEtagMode('per-write');
+    try {
+      const r = await PROBE()(checkEv({ cookie: legacyCookie() })); const out = parse(r);
+      assert.equal(r.statusCode, 200); assert.equal(out.ok, false); assert.deepEqual(out.stoppedAt, { phase: 'sample', n: 1 });
+      assert.equal(out.samples[0].session.etagUnchanged, false);
+    } finally { blobs.setEtagMode('content'); }
+  });
+  await check('PC5 a reused runId cannot overwrite: the second check run stops at setup step 1 (onlyIfNew 412), HTTP 200, ok:false, no sample written', async () => {
+    reset(); flag(false);
+    assert.equal(parse(await PROBE()(checkEv({ cookie: legacyCookie() }))).ok, true);
+    const b0 = blobs.log.length;
+    const out = parse(await PROBE()(checkEv({ cookie: legacyCookie() })));
+    assert.equal(out.ok, false); assert.deepEqual(out.stoppedAt, { phase: 'setup', n: 1 }); assert.equal(out.setup[0].status, 412); assert.equal(out.samples.length, 0);
+    assert.equal(blobs.log.slice(b0).filter((e) => e.method === 'PUT' && e.status === 200).length, 0);
+  });
+  await check('PC6 the gate is unchanged for check mode: Production env / no site / Production site / two sites / a query -> bare 404 with zero Blob or outbound; no session -> 401; a malformed check body -> 404', async () => {
+    for (const [label, prep, extra] of gateCases()) {
+      reset(); flag(true); prep(); const b0 = blobs.log.length; other = [];
+      const r = await PROBE()(checkEv({ cookie: legacyCookie(), ...extra }));
+      assert.equal(r.statusCode, 404, label); assert.equal(r.body, 'Not Found', label); assert.equal(blobs.log.length, b0, label); assert.equal(other.length, 0, label);
+      setEnv('test');
+    }
+    reset(); flag(false);
+    assert.equal((await PROBE()(checkEv())).statusCode, 401);
+    for (const body of [JSON.stringify({ probe: 'check' }), JSON.stringify({ probe: 'check', runId: 'short' }), JSON.stringify({ probe: 'check', runId: RUN, samples: 50 }), JSON.stringify({ probe: 'Check', runId: RUN })])
+      assert.equal((await PROBE()(ev({ cookie: legacyCookie(), body }))).statusCode, 404, body);
+    assert.equal(await rev.runCheckShapeProbe(RUN, 'production', { event: NF }).then((x) => x.refused), 'not_test');
+  });
+  await check('PC7 static: runCheckShapeProbe builds keys ONLY through probeKey (fixed leaves under probe/<runId>/), names no authority store / anchor / session-record key, never deletes or reads, and every write is onlyIfNew or onlyIfMatch', async () => {
+    const lib = fs.readFileSync(path.join(FUNCTIONS, 'lib/session-revocation.ts'), 'utf8').replace(/\r\n/g, '\n');
+    const body = lib.slice(lib.indexOf('export async function runCheckShapeProbe('));
+    assert.ok(body.length > 500);
+    assert.ok(!/onceAuthority|confirmAnchor|SESSION_AUTHORITY_STORE|AUTHORITY_KEY|SESSION_PREFIX|sessionKey\(|\.delete\(|getWithMetadata|\.get\(/.test(body), 'no authority / session key, no delete, no read');
+    assert.deepEqual(body.match(/probeKey\([^)]*\)/g), ['probeKey(runId, "check-session")', 'probeKey(runId, "check-anchor")']);
+    const sets = body.match(/\.set\([^)]*\)/g) || [];
+    assert.ok(sets.length === 2 && sets.every((x) => /onlyIfNew: true|onlyIfMatch: tag/.test(x)), sets.join(' | '));
+    const pk = lib.slice(lib.indexOf('function probeKey('), lib.indexOf('function probeKey(') + 400);
+    assert.ok(/PROBE_RUN_ID\.test\(runId\)/.test(pk) && /\$\{PROBE_KEY_PREFIX\}\$\{runId\}\/\$\{leaf\}/.test(pk) && /startsWith\(\x60\$\{PROBE_KEY_PREFIX\}\$\{runId\}\/\x60\)/.test(pk), 'probeKey: valid runId, the probe/ prefix, and the prefix re-checked');
+  });
   // ── N: protected-noop ──
   reset(); flag(true);
   await check('N1 protected-noop positive: valid session + fresh token -> 200 {ok:true,sent:false}; zero outbound', async () => {
@@ -1582,7 +1680,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal((await NOOP()(ev({ bearer: tok, body: JSON.stringify({ probe: 'a6' }) }))).statusCode, 401);
     assert.equal(storeImage(), before, 'byte-identical store'); assert.equal(blobs.mutations.length, m0);
   });
-  const FLOOR = 272;
+  const FLOOR = 281;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (server): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;

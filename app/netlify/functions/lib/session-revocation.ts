@@ -478,29 +478,47 @@ export async function sessionWriteRefusal(event: any, env: NodeJS.ProcessEnv = p
  * runbook section 7). Writes per run: at most 4 + concurrency. It stops at the first unexpected answer, so a store that
  * ignores conditions is reported as a U1/U2 FAILURE, never as a pass. The transcript carries no ETag value, cookie,
  * token or platform context -- only statuses, `modified` and ETag-equality booleans.
+ *
+ * U3 timing (Bones REVISE P2 on the activation plan, Jeff 2026-11-10): every step carries `duration_ms`, measured on the
+ * server with the monotonic clock (performance.now) around that step's Blob operations, and the run carries `total_ms`.
+ * `ok` is true ONLY when every step ran and passed; a stopped run answers 200 with ok:false (the caller reads `ok`).
+ * The deadline logic is unchanged (it still uses `now`); the monotonic clock only measures.
  */
 export const PROBE_KEY_PREFIX = "probe/";
 export const PROBE_RUN_ID = /^[A-Za-z0-9_-]{16,32}$/;
 export const PROBE_MAX_CONCURRENCY = 10;
-export type ProbeStep = { n: number; op: string; status: number | null; etagChanged: boolean | null; modified: boolean | null; ok: boolean };
-export type ProbeResult = {
-  runId: string; steps: ProbeStep[]; stoppedAt: number | null;
-  u4: { present: boolean; single: boolean; lowercase: boolean; equalsPinned: boolean };
-};
-export async function runAuthorityProbe(runId: string, deployment: string, opts: OpOpts & { concurrency?: number } = {}): Promise<ProbeResult | { refused: string }> {
-  if (deployment !== "test") return { refused: "not_test" };
-  if (typeof runId !== "string" || !PROBE_RUN_ID.test(runId)) return { refused: "refused_input" };
-  const n = Math.min(PROBE_MAX_CONCURRENCY, Math.max(2, Math.floor(opts.concurrency ?? 5)));
-  const site = headerValues(opts.event, RUNTIME_SITE_HEADER);
-  const u4 = {
+export type ProbeStep = { n: number; op: string; status: number | null; etagChanged: boolean | null; modified: boolean | null; ok: boolean; duration_ms: number };
+export type ProbeU4 = { present: boolean; single: boolean; lowercase: boolean; equalsPinned: boolean };
+export type ProbeResult = { mode: "conditional-write"; runId: string; ok: boolean; steps: ProbeStep[]; stoppedAt: number | null; total_ms: number; u4: ProbeU4 };
+const AUTHORITY_PROBE_STEPS = 7;
+/** Monotonic milliseconds since `t0`, to 0.01 ms. Measures only; never used for a deadline. */
+const elapsed = (t0: number): number => Math.round((performance.now() - t0) * 100) / 100;
+function probeU4(event: any): ProbeU4 {
+  const site = headerValues(event, RUNTIME_SITE_HEADER);
+  return {
     present: site.length > 0,
     single: site.length === 1,
     lowercase: site.length === 1 && typeof site[0] === "string" && site[0] === (site[0] as string).toLowerCase(),
     equalsPinned: site.length === 1 && site[0] === PINNED_REVOCATION_SITES.test,
   };
+}
+/** The ONLY way a probe builds a key: probe/<runId>/<leaf>, and only for a valid runId and a fixed leaf. */
+function probeKey(runId: string, leaf: "record" | "check-session" | "check-anchor"): string {
+  if (!PROBE_RUN_ID.test(runId)) throw new Error("probe key refused");
+  const key = `${PROBE_KEY_PREFIX}${runId}/${leaf}`;
+  if (!key.startsWith(`${PROBE_KEY_PREFIX}${runId}/`)) throw new Error("probe key refused");
+  return key;
+}
+export async function runAuthorityProbe(runId: string, deployment: string, opts: OpOpts & { concurrency?: number } = {}): Promise<ProbeResult | { refused: string }> {
+  if (deployment !== "test") return { refused: "not_test" };
+  if (typeof runId !== "string" || !PROBE_RUN_ID.test(runId)) return { refused: "refused_input" };
+  const n = Math.min(PROBE_MAX_CONCURRENCY, Math.max(2, Math.floor(opts.concurrency ?? 5)));
+  const u4 = probeU4(opts.event);
   const ctx = context(opts.env ?? process.env, "test", opts.budgetMs ?? 20_000, opts);
   if ("refused" in ctx) return { refused: ctx.refused };
-  const key = `${PROBE_KEY_PREFIX}${runId}/record`;
+  const key = probeKey(runId, "record");
+  const tRun = performance.now();
+  let tStep = tRun;
   const text = (label: string) => canonicalJson({ kind: "iaos-conditional-write-probe", label, runId, v: 1 });
   const steps: ProbeStep[] = [];
   const modifiedOf = (r: Recorded) => (r.data && typeof r.data === "object" && typeof (r.data as any).modified === "boolean" ? (r.data as any).modified : null);
@@ -508,11 +526,16 @@ export async function runAuthorityProbe(runId: string, deployment: string, opts:
     const r = await once(ctx, (s) => s.getWithMetadata(key, { type: "text" }));
     return r.status === 200 && r.data && typeof r.data === "object" ? String((r.data as any).data) : null;
   };
+  // A step's duration runs from the end of the previous step to this call: its write(s) and any verifying read.
   const step = (op: string, r: Recorded, ok: boolean, before?: string | null): boolean => {
-    steps.push({ n: steps.length + 1, op, status: r.status, etagChanged: before === undefined ? null : before === null || r.etag === null ? null : before !== r.etag, modified: modifiedOf(r), ok });
+    steps.push({ n: steps.length + 1, op, status: r.status, etagChanged: before === undefined ? null : before === null || r.etag === null ? null : before !== r.etag, modified: modifiedOf(r), ok, duration_ms: elapsed(tStep) });
+    tStep = performance.now();
     return ok;
   };
-  const done = (): ProbeResult => ({ runId, steps, stoppedAt: steps.some((s) => !s.ok) ? steps.find((s) => !s.ok)!.n : null, u4 });
+  const done = (): ProbeResult => {
+    const stoppedAt = steps.some((s) => !s.ok) ? steps.find((s) => !s.ok)!.n : null;
+    return { mode: "conditional-write", runId, ok: stoppedAt === null && steps.length === AUTHORITY_PROBE_STEPS, steps, stoppedAt, total_ms: elapsed(tRun), u4 };
+  };
   // 1. conditional create
   const created = await once(ctx, (s) => s.set(key, text("A"), { onlyIfNew: true }));
   if (!step("create onlyIfNew", created, created.status === 200 && isCanonicalEtag(created.etag)) ) return done();
@@ -540,4 +563,77 @@ export async function runAuthorityProbe(runId: string, deployment: string, opts:
   const replay = await once(ctx, (s) => s.set(key, text("A"), { onlyIfMatch: e1 }));
   step("replay of old bytes with old ETag refused (U2)", replay, replay.status === 412 && (await read()) === text("REVOKED"));
   return done();
+}
+
+/**
+ * B15-29 P-1 "check" mode (U3: is the 3 s check path real?). Times EXACTLY the shape of checkSession -- a fresh
+ * context per sample (environment, pinned site, connectLambda) and TWO identical-byte onlyIfMatch writes IN PARALLEL
+ * under one CHECK_BUDGET_MS deadline -- but on two probe records: probe/<runId>/check-session (session-record shaped)
+ * and probe/<runId>/check-anchor (anchor shaped), both in REVOCATION_STORE. It never opens the authority store, never
+ * builds a session or anchor key, never deletes. Setup: 2 onlyIfNew creates; then CHECK_PROBE_SAMPLES samples of 2
+ * writes each (at most 12 writes per run). It stops at the first failed sample. Per sample: each write's status, whether
+ * its ETag stayed the bound one (a boolean; never the value), its own duration, and the sample's duration (context +
+ * both writes), all on the monotonic clock, plus `withinBudget`. ok:false whenever anything failed or ran over budget.
+ *
+ * Limit (stated, not hidden): the real anchor write goes to the authority store; this measures the same request shape
+ * against iaos-write-receipts, so it bounds the transport and the parallel pair, not the authority store's own latency.
+ */
+export const CHECK_PROBE_SAMPLES = 5;
+export type CheckWrite = { status: number | null; etagUnchanged: boolean | null; why: string | null; duration_ms: number };
+export type CheckSample = { n: number; ok: boolean; withinBudget: boolean; duration_ms: number; session: CheckWrite; anchor: CheckWrite };
+export type CheckProbeResult = {
+  mode: "check-shape"; runId: string; ok: boolean; budget_ms: number; setup: ProbeStep[]; samples: CheckSample[];
+  stoppedAt: { phase: "setup" | "sample"; n: number } | null; max_sample_ms: number | null; total_ms: number; u4: ProbeU4;
+};
+export async function runCheckShapeProbe(runId: string, deployment: string, opts: OpOpts & { checkBudgetMs?: number } = {}): Promise<CheckProbeResult | { refused: string }> {
+  if (deployment !== "test") return { refused: "not_test" };
+  if (typeof runId !== "string" || !PROBE_RUN_ID.test(runId)) return { refused: "refused_input" };
+  const env = opts.env ?? process.env;
+  const budget = opts.checkBudgetMs ?? CHECK_BUDGET_MS;
+  const u4 = probeU4(opts.event);
+  const setupCtx = context(env, "test", opts.budgetMs ?? 20_000, opts);
+  if ("refused" in setupCtx) return { refused: setupCtx.refused };
+  const tRun = performance.now();
+  const sKey = probeKey(runId, "check-session");
+  const aKey = probeKey(runId, "check-anchor");
+  const sText = canonicalJson({ kind: "iaos-check-shape-probe", role: "session", runId, v: 1 });
+  const aText = canonicalJson({ kind: "iaos-check-shape-probe", role: "anchor", runId, v: 1 });
+  const setup: ProbeStep[] = [];
+  const samples: CheckSample[] = [];
+  const done = (stoppedAt: CheckProbeResult["stoppedAt"]): CheckProbeResult => ({
+    mode: "check-shape", runId, budget_ms: budget, setup, samples, stoppedAt, u4, total_ms: elapsed(tRun),
+    ok: stoppedAt === null && setup.length === 2 && samples.length === CHECK_PROBE_SAMPLES && samples.every((x) => x.ok),
+    max_sample_ms: samples.length ? Math.max(...samples.map((x) => x.duration_ms)) : null,
+  });
+  const etags: string[] = [];
+  for (const [i, key, text, label] of [[1, sKey, sText, "create session-shaped record onlyIfNew"], [2, aKey, aText, "create anchor-shaped record onlyIfNew"]] as const) {
+    const t0 = performance.now();
+    const r = await once(setupCtx, (st) => st.set(key, text, { onlyIfNew: true }));
+    const ok = r.status === 200 && isCanonicalEtag(r.etag);
+    setup.push({ n: i, op: label, status: r.status, etagChanged: null, modified: null, ok, duration_ms: elapsed(t0) });
+    if (!ok) return done({ phase: "setup", n: i });
+    etags.push(r.etag as string);
+  }
+  const [sTag, aTag] = etags;
+  for (let i = 1; i <= CHECK_PROBE_SAMPLES; i++) {
+    const t0 = performance.now();
+    const ctx = context(env, "test", budget, opts);
+    if ("refused" in ctx) {
+      const none: CheckWrite = { status: null, etagUnchanged: null, why: ctx.refused, duration_ms: 0 };
+      samples.push({ n: i, ok: false, withinBudget: false, duration_ms: elapsed(t0), session: none, anchor: none });
+      return done({ phase: "sample", n: i });
+    }
+    const timedWrite = async (key: string, text: string, tag: string): Promise<CheckWrite> => {
+      const w0 = performance.now();
+      const r = await once(ctx, (st) => st.set(key, text, { onlyIfMatch: tag }));
+      return { status: r.status, etagUnchanged: r.etag === null ? null : r.etag === tag, why: r.why, duration_ms: elapsed(w0) };
+    };
+    const [session, anchor] = await Promise.all([timedWrite(sKey, sText, sTag), timedWrite(aKey, aText, aTag)]);
+    const duration = elapsed(t0);
+    const withinBudget = duration <= budget && ctx.now() <= ctx.deadline;
+    const ok = withinBudget && session.status === 200 && anchor.status === 200 && session.etagUnchanged === true && anchor.etagUnchanged === true;
+    samples.push({ n: i, ok, withinBudget, duration_ms: duration, session, anchor });
+    if (!ok) return done({ phase: "sample", n: i });
+  }
+  return done(null);
 }
