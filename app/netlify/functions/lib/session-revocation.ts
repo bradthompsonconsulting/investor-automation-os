@@ -72,6 +72,7 @@ import {
 } from "./app-read-auth";
 import { appWriteSessionBinding, bearerHasOneLoginBinding } from "./app-write-auth";
 import { authorize } from "./authorization";
+import { RUNTIME_SITE_HEADER, headerValues, runtimeSiteIs } from "./runtime-site";
 
 /**
  * The EXISTING receipts store -- the same name as blob-authority.ts's AUTHORITY_STORE (asserted equal by the server
@@ -115,8 +116,8 @@ export const PINNED_REVOCATION_SITES: Readonly<Record<Deployment, string>> = Obj
   test: SESSION_REVOCATION_SITE_IDS.test,
   production: SESSION_REVOCATION_SITE_IDS.production,
 });
-/** The platform's runtime site id header (the one @netlify/blobs connectLambda reads). */
-export const RUNTIME_SITE_HEADER = "x-nf-site-id";
+/** The platform's runtime site id header (the one @netlify/blobs connectLambda reads); defined once, in lib/runtime-site.ts. */
+export { RUNTIME_SITE_HEADER };
 /**
  * The operator-provisioned authority anchor's key in SESSION_AUTHORITY_STORE. Never created, changed or deleted by
  * code (see the header). Only ever addressed through `onceAuthority`.
@@ -242,9 +243,9 @@ function context(env: NodeJS.ProcessEnv, deployment: string, budgetMs: number, o
   const setup = revocationSetup(env);
   if (setup.kind !== "ready") return { refused: setup.reason };
   if (setup.deployment !== deployment) return { refused: "environment_unbound" };
-  const runtime = headerValues(opts.event, RUNTIME_SITE_HEADER);
-  // connectLambda reads exactly event.headers["x-nf-site-id"]: it must be that one value, and equal to the pin.
-  if (runtime.length !== 1 || runtime[0] !== setup.siteID || opts.event?.headers?.[RUNTIME_SITE_HEADER] !== setup.siteID) return { refused: "runtime_site_mismatch" };
+  // connectLambda reads exactly event.headers["x-nf-site-id"]: it must be that one value, and equal to the pin
+  // (lib/runtime-site.ts runtimeSiteIs, the same rule the Test-only probe gate uses).
+  if (!runtimeSiteIs(opts.event, setup.siteID)) return { refused: "runtime_site_mismatch" };
   try { connectLambda(opts.event); } catch { return { refused: "blob_context" }; }
   const now = opts.now ?? Date.now;
   // The global fetch is read at call time (never captured at module load).
@@ -387,14 +388,6 @@ export function sessionViewTags(email: string, deployment: string, sid: string, 
 // ------------------------------------------------- same-site request shape ---
 
 export const SESSION_REQUEST_HEADER = "x-iaos-session";
-function headerValues(event: any, wanted: string): unknown[] {
-  const found: unknown[] = [];
-  for (const [name, value] of Object.entries(event?.headers ?? {})) if (name.toLowerCase() === wanted) found.push(value);
-  for (const [name, values] of Object.entries(event?.multiValueHeaders ?? {})) {
-    if (name.toLowerCase() === wanted) found.push(...(Array.isArray(values) ? values : [values]));
-  }
-  return [...new Set(found)];
-}
 /** Sec-Fetch-Site same-origin when sent, plus exactly one X-IAOS-Session header with the endpoint's own value. */
 export function requireSameSiteRequest(event: any, marker: string): void {
   const site = headerValues(event, "sec-fetch-site");
