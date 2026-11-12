@@ -511,6 +511,10 @@ const CONTRACT_CHECKLIST_ITEMS: { key: ContractReadyItemKey; label: string }[] =
   { key: "delivery_signing", label: "Delivery and signing information collected" },
 ];
 
+/** B15-17 (INV-126): what the disposition preview shows when no photos/documents exist. Display only -- the
+ *  handoff record's documentReferencesNote (written to GHL) is unchanged. */
+const DISPOSITION_NO_DOCUMENTS_TEXT = "not stored in IAOS yet.";
+
 /* ==================================================================== */
 /* Draft shapes for every group's entry form                             */
 /* ==================================================================== */
@@ -4420,7 +4424,8 @@ export default function ContractWorkspace() {
                             <div style={{ fontSize: "11px", fontWeight: 700, color: "#F59E0B", marginBottom: "6px" }}>Optional details IAOS does not have (listed here, never made up)</div>
                             <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: "11px", color: "#94A3B8", lineHeight: 1.8 }}>
                               {missingOptional.map((i) => <li key={i.label}>{i.label}: not yet recorded.</li>)}
-                              <li>Photos/documents: {pkg.documentReferencesNote}</li>
+                              {/* B15-17 (INV-126): operator wording; the persisted documentReferencesNote is unchanged. */}
+                              <li data-testid="disposition-handoff-preview-documents">Photos/documents: {pkg.documentReferences.length === 0 ? DISPOSITION_NO_DOCUMENTS_TEXT : pkg.documentReferencesNote}</li>
                             </ul>
                           </div>
                         ) : null}
