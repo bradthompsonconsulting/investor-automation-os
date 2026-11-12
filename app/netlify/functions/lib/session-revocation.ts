@@ -468,9 +468,19 @@ export async function sessionWriteRefusal(event: any, env: NodeJS.ProcessEnv = p
  *
  * It addresses ONLY keys `probe/<runId>/...` in REVOCATION_STORE (iaos-write-receipts). It never calls `onceAuthority`
  * (so never opens the authority store) and never builds a `session-revocation/` key. It never deletes (retention is
- * runbook section 7). Writes per run: at most 4 + concurrency. It stops at the first unexpected answer, so a store that
- * ignores conditions is reported as a U1/U2 FAILURE, never as a pass. The transcript carries no ETag value, cookie,
- * token or platform context -- only statuses, `modified` and ETag-equality booleans.
+ * runbook section 7). It stops at the first unexpected answer, so a store that ignores conditions is reported as a
+ * U1/U2 FAILURE, never as a pass. The transcript carries no ETag value, cookie, token or platform context -- only
+ * statuses, `modified`, ETag-equality booleans and (per step `detail`) the racers' statuses and the winner's index.
+ *
+ * VERIFICATION IS BY CONDITIONAL WRITE, NEVER BY READ (Gate A A1a, 2026-11-12; Bones 25). Under connectLambda the
+ * SDK (11.1.0) has no uncachedEdgeURL, so every read is an eventual edge read that can be up to 60 s stale, and a
+ * strong read throws. Each "bytes are X at ETag E" check (a CONFIRM, Bones 26) therefore re-writes the identical
+ * canonical bytes text(X) onlyIfMatch E and passes only on a raw 200 that answers exactly E. The two real transitions
+ * (A -> winner, winner -> REVOKED) must answer a canonical, CHANGED ETag and are confirmed at once; after the revoke,
+ * BOTH pre-revocation ETags (e1 with the old bytes, eW with the winner's bytes) must be refused. Requests per run:
+ * 12 + concurrency (17 at N = 5), all conditional writes, no read; the bytes change exactly 3 times (create, one
+ * winner, revoke). Proof limit (Bones 26): a confirm is evidence of matching origin state under the tested If-Match /
+ * ETag semantics, not an independent byte read; a service that lies consistently about status and ETag is not ruled out.
  *
  * U3 timing (Bones REVISE P2 on the activation plan, Jeff 2026-11-10): every step carries `duration_ms`, measured on the
  * server with the monotonic clock (performance.now) around that step's Blob operations, and the run carries `total_ms`.
@@ -480,7 +490,15 @@ export async function sessionWriteRefusal(event: any, env: NodeJS.ProcessEnv = p
 export const PROBE_KEY_PREFIX = "probe/";
 export const PROBE_RUN_ID = /^[A-Za-z0-9_-]{16,32}$/;
 export const PROBE_MAX_CONCURRENCY = 10;
-export type ProbeStep = { n: number; op: string; status: number | null; etagChanged: boolean | null; modified: boolean | null; ok: boolean; duration_ms: number };
+/** Safe diagnostics only (Bones 26 item 7; never an ETag value, token, signed URL or platform context): each confirmation's
+ *  status and ETag match, the racers' statuses, winner count and index, the replays' statuses, ETag validity and change
+ *  booleans, why a request had no answer (uncertain -- never read as not-applied), and the first failed assertion. */
+export type ProbeDetail = {
+  confirm?: { status: number | null; etagMatches: boolean | null } | null;
+  racers?: (number | null)[]; winners?: number; winner?: number | null; replays?: (number | null)[];
+  etagValid?: boolean; transitionEtagChanged?: boolean | null; uncertain?: string | null; failed?: string | null;
+};
+export type ProbeStep = { n: number; op: string; status: number | null; etagChanged: boolean | null; modified: boolean | null; ok: boolean; duration_ms: number; detail?: ProbeDetail };
 export type ProbeU4 = { present: boolean; single: boolean; lowercase: boolean; equalsPinned: boolean };
 export type ProbeResult = { mode: "conditional-write"; runId: string; ok: boolean; steps: ProbeStep[]; stoppedAt: number | null; total_ms: number; u4: ProbeU4 };
 const AUTHORITY_PROBE_STEPS = 7;
@@ -515,13 +533,18 @@ export async function runAuthorityProbe(runId: string, deployment: string, opts:
   const text = (label: string) => canonicalJson({ kind: "iaos-conditional-write-probe", label, runId, v: 1 });
   const steps: ProbeStep[] = [];
   const modifiedOf = (r: Recorded) => (r.data && typeof r.data === "object" && typeof (r.data as any).modified === "boolean" ? (r.data as any).modified : null);
-  const read = async () => {
-    const r = await once(ctx, (s) => s.getWithMetadata(key, { type: "text" }));
-    return r.status === 200 && r.data && typeof r.data === "object" ? String((r.data as any).data) : null;
+  /* CONFIRM (Bones 26): the record's bytes are exactly text(label) and its current ETag is exactly `etag` -- re-write
+     the identical canonical bytes onlyIfMatch `etag`; it passes ONLY on a raw 200 whose answer carries exactly `etag`.
+     A 412, any other status, a missing / invalid / different ETag, a timeout, a transport or SDK failure, or a late
+     answer fails it (closed). It is never retried, and an unanswered request is reported as uncertain, not as
+     not-applied. Passing changes no bytes. */
+  const confirm = async (label: string, etag: string) => {
+    const r = await once(ctx, (s) => s.set(key, text(label), { onlyIfMatch: etag }));
+    return { ok: r.status === 200 && r.etag === etag, status: r.status, etagMatches: r.status === 200 ? r.etag === etag : null, why: r.why };
   };
-  // A step's duration runs from the end of the previous step to this call: its write(s) and any verifying read.
-  const step = (op: string, r: Recorded, ok: boolean, before?: string | null): boolean => {
-    steps.push({ n: steps.length + 1, op, status: r.status, etagChanged: before === undefined ? null : before === null || r.etag === null ? null : before !== r.etag, modified: modifiedOf(r), ok, duration_ms: elapsed(tStep) });
+  // A step's duration runs from the end of the previous step to this call: its write(s) and confirmation write(s).
+  const step = (op: string, r: Recorded, ok: boolean, before?: string | null, detail?: ProbeDetail): boolean => {
+    steps.push({ n: steps.length + 1, op, status: r.status, etagChanged: before === undefined ? null : before === null || r.etag === null ? null : before !== r.etag, modified: modifiedOf(r), ok, duration_ms: elapsed(tStep), ...(detail ? { detail } : {}) });
     tStep = performance.now();
     return ok;
   };
@@ -529,32 +552,61 @@ export async function runAuthorityProbe(runId: string, deployment: string, opts:
     const stoppedAt = steps.some((s) => !s.ok) ? steps.find((s) => !s.ok)!.n : null;
     return { mode: "conditional-write", runId, ok: stoppedAt === null && steps.length === AUTHORITY_PROBE_STEPS, steps, stoppedAt, total_ms: elapsed(tRun), u4 };
   };
+  /* The first failed assertion of a step, in order, or null; and `uncertain` = why some request of the step got no
+     answer (deadline / transport / attempts). Safe diagnostics only: statuses, booleans, indices, names. */
+  const firstFailed = (checks: [string, boolean][]) => { const f = checks.find(([, ok]) => !ok); return f ? f[0] : null; };
+  const uncertainOf = (...rs: ({ status: number | null; why: string | null } | null)[]) => { const u = rs.find((x) => x && x.status === null); return u ? u.why ?? "no_answer" : null; };
+  const conf = (c: { status: number | null; etagMatches: boolean | null } | null) => (c ? { status: c.status, etagMatches: c.etagMatches } : null);
+
   // 1. conditional create
   const created = await once(ctx, (s) => s.set(key, text("A"), { onlyIfNew: true }));
-  if (!step("create onlyIfNew", created, created.status === 200 && isCanonicalEtag(created.etag)) ) return done();
+  const f1 = firstFailed([["create_status_200", created.status === 200], ["create_etag_canonical", isCanonicalEtag(created.etag)]]);
+  if (!step("create onlyIfNew", created, f1 === null, undefined, { etagValid: isCanonicalEtag(created.etag), uncertain: uncertainOf(created), failed: f1 })) return done();
   const e1 = created.etag as string;
-  // 2. duplicate create refused, bytes unchanged
+  // 2. duplicate create refused; the record is still exactly text("A") at e1
   const dup = await once(ctx, (s) => s.set(key, text("B"), { onlyIfNew: true }));
-  if (!step("duplicate create refused", dup, dup.status === 412 && (await read()) === text("A"))) return done();
+  const c2 = dup.status === 412 ? await confirm("A", e1) : null;
+  const f2 = firstFailed([["duplicate_status_412", dup.status === 412], ["confirm_A_e1", c2 !== null && c2.ok]]);
+  if (!step("duplicate create refused", dup, f2 === null, undefined, { confirm: conf(c2), uncertain: uncertainOf(dup, c2), failed: f2 })) return done();
   // 3. U1: identical bytes onlyIfMatch -> 200, ETag unchanged
   const same = await once(ctx, (s) => s.set(key, text("A"), { onlyIfMatch: e1 }));
-  if (!step("identical bytes onlyIfMatch (U1)", same, same.status === 200 && same.etag === e1, e1)) return done();
-  // 4. U2: a non-current ETag refused, bytes unchanged
+  const f3 = firstFailed([["identical_status_200", same.status === 200], ["identical_etag_unchanged", same.etag === e1]]);
+  if (!step("identical bytes onlyIfMatch (U1)", same, f3 === null, e1, { uncertain: uncertainOf(same), failed: f3 })) return done();
+  // 4. U2: a non-current ETag refused; the record is still exactly text("A") at e1
   const stale = await once(ctx, (s) => s.set(key, text("C"), { onlyIfMatch: "\"iaos-probe-not-current\"" }));
-  if (!step("stale onlyIfMatch refused (U2)", stale, stale.status === 412 && (await read()) === text("A"))) return done();
-  // 5. U2: N concurrent conflicting writers on the same ETag -> exactly one winner, whose bytes are stored
+  const c4 = stale.status === 412 ? await confirm("A", e1) : null;
+  const f4 = firstFailed([["stale_status_412", stale.status === 412], ["confirm_A_e1", c4 !== null && c4.ok]]);
+  if (!step("stale onlyIfMatch refused (U2)", stale, f4 === null, undefined, { confirm: conf(c4), uncertain: uncertainOf(stale, c4), failed: f4 })) return done();
+  // 5. U2: N concurrent conflicting writers on the same ETag -> exactly one raw 200 and every other raw 412; the winner's
+  //    ETag is canonical and CHANGED (A -> W<i>); the record is then exactly text(W<i>) at that ETag
   const racers = await Promise.all(Array.from({ length: n }, (_, i) => once(ctx, (s) => s.set(key, text(`W${i}`), { onlyIfMatch: e1 }))));
   const winners = racers.map((r, i) => ({ r, i })).filter((x) => x.r.status === 200);
   const losersOk = racers.every((r) => r.status === 200 || r.status === 412);
-  const stored = await read();
-  const raceOk = winners.length === 1 && losersOk && stored === text(`W${winners[0].i}`) && isCanonicalEtag(winners[0].r.etag);
-  if (!step(`concurrent onlyIfMatch x${n}: exactly one winner (U2)`, { status: winners.length === 1 ? 200 : null, etag: null, data: { modified: winners.length === 1 }, why: null }, raceOk)) return done();
-  const eW = winners[0].r.etag as string;
-  // 6. U2: revoke, then replaying the old bytes with the old ETag is refused and the record stays revoked
+  const w = winners.length === 1 ? winners[0] : null;
+  const eWValid = w !== null && isCanonicalEtag(w.r.etag);
+  const eWChanged = w !== null && w.r.etag !== null ? w.r.etag !== e1 : null;
+  const c5 = w !== null && losersOk && eWValid && eWChanged === true ? await confirm(`W${w.i}`, w.r.etag as string) : null;
+  const f5 = firstFailed([["exactly_one_winner", winners.length === 1], ["losers_412", losersOk], ["winner_etag_canonical", eWValid], ["winner_etag_changed", eWChanged === true], ["confirm_winner_eW", c5 !== null && c5.ok]]);
+  const raceDetail: ProbeDetail = { racers: racers.map((r) => r.status), winners: winners.length, winner: w ? w.i : null, etagValid: eWValid, transitionEtagChanged: eWChanged, confirm: conf(c5), uncertain: uncertainOf(...racers, c5), failed: f5 };
+  if (!step(`concurrent onlyIfMatch x${n}: exactly one winner (U2)`, { status: winners.length === 1 ? 200 : null, etag: null, data: { modified: winners.length === 1 }, why: null }, f5 === null, undefined, raceDetail)) return done();
+  const eW = (w as { r: Recorded; i: number }).r.etag as string;
+  const wLabel = `W${(w as { r: Recorded; i: number }).i}`;
+  // 6. U2: revoke onlyIfMatch eW -> raw 200, canonical ETag CHANGED (W<i> -> REVOKED); the record is then exactly
+  //    text("REVOKED") at that ETag
   const revoked = await once(ctx, (s) => s.set(key, text("REVOKED"), { onlyIfMatch: eW }));
-  if (!step("revoke onlyIfMatch", revoked, revoked.status === 200, eW)) return done();
+  const eRValid = isCanonicalEtag(revoked.etag);
+  const eRChanged = revoked.status === 200 && revoked.etag !== null ? revoked.etag !== eW : null;
+  const c6 = revoked.status === 200 && eRValid && eRChanged === true ? await confirm("REVOKED", revoked.etag as string) : null;
+  const f6 = firstFailed([["revoke_status_200", revoked.status === 200], ["revoke_etag_canonical", eRValid], ["revoke_etag_changed", eRChanged === true], ["confirm_REVOKED_eR", c6 !== null && c6.ok]]);
+  if (!step("revoke onlyIfMatch", revoked, f6 === null, eW, { etagValid: eRValid, transitionEtagChanged: eRChanged, confirm: conf(c6), uncertain: uncertainOf(revoked, c6), failed: f6 })) return done();
+  const eR = revoked.etag as string;
+  // 7. U2: every pre-revocation ETag is refused -- the old bytes with e1 and the winner's bytes with eW -- and the
+  //    record is still exactly text("REVOKED") at eR
   const replay = await once(ctx, (s) => s.set(key, text("A"), { onlyIfMatch: e1 }));
-  step("replay of old bytes with old ETag refused (U2)", replay, replay.status === 412 && (await read()) === text("REVOKED"));
+  const replayW = replay.status === 412 ? await once(ctx, (s) => s.set(key, text(wLabel), { onlyIfMatch: eW })) : null;
+  const c7 = replayW !== null && replayW.status === 412 ? await confirm("REVOKED", eR) : null;
+  const f7 = firstFailed([["replay_e1_412", replay.status === 412], ["replay_eW_412", replayW !== null && replayW.status === 412], ["confirm_REVOKED_eR", c7 !== null && c7.ok]]);
+  step("replay of old bytes with old ETag refused (U2)", replay, f7 === null, undefined, { replays: [replay.status, replayW ? replayW.status : null], confirm: conf(c7), uncertain: uncertainOf(replay, replayW, c7), failed: f7 });
   return done();
 }
 

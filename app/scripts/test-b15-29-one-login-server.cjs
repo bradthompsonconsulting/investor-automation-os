@@ -1457,7 +1457,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     for (const body of ['{}', JSON.stringify({ probe: 'authority' }), JSON.stringify({ probe: 'authority', runId: 'short' }), JSON.stringify({ probe: 'authority', runId: RUN, extra: 1 }), JSON.stringify({ probe: 'x', runId: RUN })])
       assert.equal((await PROBE()(ev({ cookie: legacyCookie(), body }))).statusCode, 404, body);
   });
-  await check('P2 probe positive (before activation: one sign-in OFF, legacy read session): 200; every step ok; U4 present/single/lowercase/pinned; only probe/<runId>/ keys in iaos-write-receipts; never the authority store, a session record or a delete; writes <= 4 + N', async () => {
+  await check('P2 probe positive (before activation: one sign-in OFF, legacy read session): 200; every step ok; U4 present/single/lowercase/pinned; only probe/<runId>/ keys in iaos-write-receipts; never the authority store, a session record or a delete; no read; bytes change exactly 3 times (A1a: verification by conditional write)', async () => {
     reset(); flag(false); const b0 = blobs.log.length; other = [];
     const r = await PROBE()(probeEv({ cookie: legacyCookie() })); const out = parse(r);
     assert.equal(r.statusCode, 200, r.body); assert.equal(out.stoppedAt, null, JSON.stringify(out.steps));
@@ -1466,7 +1466,10 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     const touched = blobs.log.slice(b0);
     assert.ok(touched.length > 0 && touched.every((e) => e.storeName === 'site:' + SSTORE && String(e.key).startsWith(`probe/${RUN}/`)), JSON.stringify(keysTouched(b0)));
     assert.ok(!touched.some((e) => e.method === 'DELETE'));
-    assert.ok(touched.filter((e) => e.method === 'PUT' && e.status === 200).length <= 4, 'applied writes <= 4 (create, identical, one winner, revoke); refused attempts change nothing');
+    assert.equal(touched.filter((e) => e.method === 'GET').length, 0, 'the probe never reads (an eventual edge read can be stale: A1a)');
+    assert.deepEqual(blobs.mutations.filter((m) => String(m.key).startsWith(`probe/${RUN}/`)).map((m) => m.conditional), ['if-none-match', 'if-match', 'if-match'], 'bytes change exactly 3 times: create, one winner, revoke; refused attempts and verifications change nothing');
+    assert.equal(touched.filter((e) => e.method === 'PUT' && e.status === 200).length, 9, 'accepted writes: create, U1 identical write, one winner, revoke, and 5 confirmations (steps 2, 4, 5, 6, 7)');
+    assert.equal(touched.length, 17, 'requests: 12 + N (N = 5): the 4 reads become confirmations, plus the step-6 REVOKED confirmation and the eW replay (Bones 26)');
     assert.equal(other.length, 0);
     assert.ok(!/"c-|"w-|Bearer|__Host|cookie/i.test(r.body), 'no ETag value, token or cookie in the transcript');
   });
@@ -1484,9 +1487,9 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     try { const out = parse(await PROBE()(probeEv({ cookie: legacyCookie() }))); assert.equal(out.stoppedAt, 4); assert.equal(out.steps[3].op, 'stale onlyIfMatch refused (U2)'); }
     finally { blobs.setIgnoreConditions({}); }
   });
-  await check('P6 the probe can FAIL: per-write ETags (U1 false) -> stopped at the identical-bytes step (3), etagChanged true', async () => {
+  await check('P6 the probe can FAIL: per-write ETags (U1 false) -> stopped at the first identical-bytes confirmation (step 2: it must answer exactly e1, Bones 26), ETag mismatch reported', async () => {
     reset(); flag(false); blobs.setEtagMode('per-write');
-    try { const out = parse(await PROBE()(probeEv({ cookie: legacyCookie() }))); assert.equal(out.stoppedAt, 3); assert.equal(out.steps[2].etagChanged, true); }
+    try { const out = parse(await PROBE()(probeEv({ cookie: legacyCookie() }))); assert.equal(out.stoppedAt, 2); assert.equal(out.steps[1].detail.failed, 'confirm_A_e1'); assert.deepEqual(out.steps[1].detail.confirm, { status: 200, etagMatches: false }); }
     finally { blobs.setEtagMode('content'); }
   });
   await check('P7 static: runAuthorityProbe names no authority store / anchor / session-record key and never deletes; the probe handler imports no GHL module', async () => {
@@ -1494,14 +1497,93 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     const body = lib.slice(lib.indexOf('export async function runAuthorityProbe('));
     assert.ok(body.length > 500);
     assert.ok(!/onceAuthority|SESSION_AUTHORITY_STORE|AUTHORITY_KEY|SESSION_PREFIX|sessionKey\(|\.delete\(/.test(body));
-    const reads = body.match(/getWithMetadata\(([^,)]+)/g) || [];
-    assert.ok(reads.length >= 1 && reads.every((r) => /getWithMetadata\(key$/.test(r)), 'the probe reads only its own key: ' + reads.join(','));
+    assert.equal((body.match(/getWithMetadata\(|\.get\(|\.list\(/g) || []).length, 0, 'the probe sections never read: verification is by conditional write (A1a)');
+    const writes = body.match(/\b(?:s|st)\.set\(([^,)]+)/g) || [];
+    assert.ok(writes.length >= 6 && writes.every((w) => /\.set\(key$/.test(w)), 'every probe write names only its own key: ' + writes.join(','));
     assert.ok(body.includes("probe/") || body.includes("PROBE_KEY_PREFIX"), 'the probe key is built from PROBE_KEY_PREFIX');
     for (const n of ['session-authority-probe', 'protected-noop', 'protected-noop-read', 'lib/test-probe-gate']) {
       const s = fs.readFileSync(path.join(FUNCTIONS, n + '.ts'), 'utf8');
       assert.ok(!/from "[^"]*(ghl-write-boundary|supplemental-read-budget|write-receipts|write-contracts|production-write-scope|src\/lib\/ghl|\/ghl-(?!config")[a-z-]+)"/.test(s), n);
       assert.ok(!/leadconnectorhq|fetch\(/.test(s), n + ': no outbound call');
     }
+  });
+  // ── PV: verification by conditional write (Gate A A1a W0, 2026-11-12; Bones 25) ──
+  const revokes = (from) => blobs.log.slice(from).filter((e) => e.method === 'PUT' && String(e.body).includes('"REVOKED"')).length;
+  const pv = async (setup) => { reset(); flag(false); setup(); const b0 = blobs.log.length; try { const r = await PROBE()(probeEv({ cookie: legacyCookie() })); return { r, out: parse(r), b0 }; } finally { blobs.setIgnoreConditions({}); blobs.setEtagMode('content'); } };
+  const crypto = require('node:crypto');
+  const cEtag = (text) => `"c-${crypto.createHash('sha256').update(text).digest('hex').slice(0, 24)}"`;
+  const recLog = (b0) => blobs.log.slice(b0).filter((e) => e.key === `probe/${RUN}/record`);
+  const stored = () => { const v = blobs.store.get(`${SITE}|site:${SSTORE}|probe/${RUN}/record`) || blobs.store.get(`${SITE}|${SSTORE}|probe/${RUN}/record`); return v ? JSON.parse(v.text).label : null; };
+  await check('PV1 cached (eventual) edge reads cannot affect the probe: no read; 7/7 with REVOKED stored; the exact transcript -- canonical payload, own key, requested condition and ETag of all 17 requests -- is the Bones 26 sequence', async () => {
+    const { r, out, b0 } = await pv(() => blobs.setReadMode('eventual'));
+    assert.equal(r.statusCode, 200); assert.equal(out.ok, true, JSON.stringify(out.steps)); assert.equal(out.stoppedAt, null);
+    const L = recLog(b0); assert.equal(L.length, blobs.log.slice(b0).length, 'every request is on the probe key');
+    assert.equal(L.filter((e) => e.method !== 'PUT').length, 0);
+    for (const e of L) { const o = JSON.parse(e.body); assert.deepEqual(Object.keys(o), ['kind', 'label', 'runId', 'v']); assert.equal(o.kind, 'iaos-conditional-write-probe'); assert.equal(o.runId, RUN); assert.equal(o.v, 1); assert.equal(e.body, JSON.stringify(o), 'canonical bytes'); }
+    const lab = (e) => JSON.parse(e.body).label;
+    const w = out.steps[4].detail.winner; const body = (label) => L.find((e) => lab(e) === label).body;
+    const sym = { [cEtag(body('A'))]: 'e1', [cEtag(body(`W${w}`))]: 'eW', [cEtag(body('REVOKED'))]: 'eR', '"iaos-probe-not-current"': 'stale' };
+    const seq = L.map((e) => [lab(e), e.ifNoneMatch ? 'new' : sym[e.ifMatch] || e.ifMatch, e.status]);
+    assert.deepEqual(seq, [['A', 'new', 200], ['B', 'new', 412], ['A', 'e1', 200], ['A', 'e1', 200], ['C', 'stale', 412], ['A', 'e1', 200],
+      ['W0', 'e1', 200], ['W1', 'e1', 412], ['W2', 'e1', 412], ['W3', 'e1', 412], ['W4', 'e1', 412], [`W${w}`, 'eW', 200],
+      ['REVOKED', 'eW', 200], ['REVOKED', 'eR', 200], ['A', 'e1', 412], [`W${w}`, 'eW', 412], ['REVOKED', 'eR', 200]]);
+    assert.equal(stored(), 'REVOKED');
+    assert.deepEqual(out.steps[4].detail, { racers: [200, 412, 412, 412, 412], winners: 1, winner: 0, etagValid: true, transitionEtagChanged: true, confirm: { status: 200, etagMatches: true }, uncertain: null, failed: null });
+    assert.deepEqual(out.steps[6].detail, { replays: [412, 412], confirm: { status: 200, etagMatches: true }, uncertain: null, failed: null });
+    assert.ok(!/"c-|"w-|"lie"|Bearer|__Host|cookie/i.test(r.body), 'diagnostics carry no ETag value, token or cookie');
+  });
+  await check('PV2 Bones 26 negative controls (eventual reads on; each fails CLOSED at its step with the precise assertion; no step after it runs; the fake origin\'s final bytes are inspected independently): false acknowledgements (fabricated / original ETag), actual wrong stored bytes, same ETag for changed content, changed ETag for identical content, refused-but-applied writes, successful stale replays (e1 and eW), a racing mutation before the confirmation', async () => {
+    const W0 = '"label":"W0"', A = '"label":"A"', B = '"label":"B"', C = '"label":"C"', REV = '"label":"REVOKED"';
+    const cases = [
+      ['dup applied, answered 412', () => blobs.rule({ method: 'PUT', bodyIncludes: B, status: 412, apply: true, force: true }), 2, 'confirm_A_e1', 'B'],
+      ['stale applied, answered 412', () => blobs.rule({ method: 'PUT', bodyIncludes: C, status: 412, apply: true, force: true }), 4, 'confirm_A_e1', 'C'],
+      ['changed ETag for identical content', () => blobs.setEtagMode('per-write'), 2, 'confirm_A_e1', 'A'],
+      ['same ETag for changed content', () => blobs.setEtagMode('sticky'), 5, 'exactly_one_winner', 'W4'],
+      ['second acknowledged winner (fabricated ETag)', () => blobs.rule({ method: 'PUT', bodyIncludes: '"label":"W1"', lie: true }), 5, 'exactly_one_winner', 'W0'],
+      ['winner acknowledged, not stored (fabricated ETag)', () => { blobs.rule({ method: 'PUT', bodyIncludes: W0, lie: true }); for (const i of [1, 2, 3, 4]) blobs.rule({ method: 'PUT', bodyIncludes: `"label":"W${i}"`, status: 412 }); }, 5, 'confirm_winner_eW', 'A'],
+      ['winner acknowledged, not stored (original ETag)', () => { blobs.rule({ method: 'PUT', bodyIncludes: W0, lie: true, lieEtag: 'current' }); for (const i of [1, 2, 3, 4]) blobs.rule({ method: 'PUT', bodyIncludes: `"label":"W${i}"`, status: 412 }); }, 5, 'winner_etag_changed', 'A'],
+      ['actual wrong stored bytes (honest ETag of what is stored)', () => blobs.rule({ method: 'PUT', bodyIncludes: W0, storeAs: 'WX' }), 5, 'confirm_winner_eW', 'W0'],
+      ['racing mutation before the confirmation', () => blobs.rule({ method: 'PUT', bodyIncludes: W0, skip: 1, interfere: 'W3' }), 5, 'confirm_winner_eW', 'W3'],
+      ['revoke acknowledged, not stored (original ETag)', () => blobs.rule({ method: 'PUT', bodyIncludes: REV, lie: true, lieEtag: 'current' }), 6, 'revoke_etag_changed', 'W0'],
+      ['revoke acknowledged, not stored (fabricated ETag)', () => blobs.rule({ method: 'PUT', bodyIncludes: REV, lie: true }), 6, 'confirm_REVOKED_eR', 'W0'],
+      ['stale replay with e1 succeeds', () => blobs.rule({ method: 'PUT', bodyIncludes: A, skip: 4, status: 200, apply: true, force: true }), 7, 'replay_e1_412', 'A'],
+      ['stale replay with eW succeeds', () => blobs.rule({ method: 'PUT', bodyIncludes: W0, skip: 2, status: 200, apply: true, force: true }), 7, 'replay_eW_412', 'W0'],
+    ];
+    const got = [];
+    for (const [label, setup, at, failed, finalLabel] of cases) {
+      const { r, out, b0 } = await pv(() => { blobs.setReadMode('eventual'); setup(); });
+      const s = out.steps[out.steps.length - 1];
+      got.push([label, r.statusCode, out.ok, out.stoppedAt, out.steps.length, s.detail && s.detail.failed, stored(), recLog(b0).filter((e) => String(e.body).includes(REV)).length, recLog(b0).filter((e) => e.method === 'GET').length]);
+      const exp = [label, 200, false, at, at, failed, finalLabel, at < 6 ? 0 : null, 0];
+      if (exp[7] === null) exp[7] = got[got.length - 1][7];
+      assert.deepEqual(got[got.length - 1], exp, label);
+    }
+    assert.ok(got.every((g) => g[2] === false), 'every adverse case fails closed');
+  });
+  await check('PV3 the fake models the A1a edge: in eventual mode a later GET of a changed key returns the FIRST answer (the cache the old read-back verification trusted); strong mode reads the store', async () => {
+    reset(); blobs.setReadMode('eventual');
+    const { getStore, connectLambda } = require('@netlify/blobs'); connectLambda(NF); const st = getStore({ name: SSTORE });
+    await st.set('probe/pv3-model-000000/record', 'A'); assert.equal(await st.get('probe/pv3-model-000000/record'), 'A');
+    await st.set('probe/pv3-model-000000/record', 'W0'); assert.equal(await st.get('probe/pv3-model-000000/record'), 'A', 'stale');
+    blobs.setReadMode('strong'); assert.equal(await st.get('probe/pv3-model-000000/record'), 'W0');
+    reset();
+  });
+  await check('PV4 proof limit made explicit (Bones 26 item 5): wrong bytes stored under a LYING ETag, then a confirm that ignores its If-Match and REPAIRS the record, answers exactly the supplied ETag -- the probe cannot see it (ok:true), but the fake origin inspection does: a 4th byte change, made by the confirmation itself', async () => {
+    const { out, b0 } = await pv(() => { blobs.setReadMode('eventual'); blobs.rule({ method: 'PUT', bodyIncludes: '"label":"W0"', storeAs: 'WX', answerEtagOf: 'body' }); blobs.rule({ method: 'PUT', bodyIncludes: '"label":"W0"', status: 200, apply: true, force: true }); });
+    assert.equal(out.ok, true, 'a service that lies about status and ETag is not detectable by acknowledgements alone (documented limit)');
+    const m = blobs.mutations.filter((x) => String(x.key) === `probe/${RUN}/record`);
+    assert.equal(m.length, 4, 'origin inspection: create, wrong winner bytes, the REPAIR by the confirmation, revoke -- a passing run must show exactly 3');
+    assert.equal(recLog(b0).length, 17);
+  });
+  await check('PV5 a timeout or transport failure STOPS the run as uncertain and is never retried: the winner confirmation hangs (aborted at the 2 s stage cap) -> stoppedAt 5, uncertain set, exactly one confirmation attempt, no REVOKED; a transport error on the revoke -> stoppedAt 6, uncertain set, no confirm, no replay', async () => {
+    let { out, b0 } = await pv(() => { blobs.rule({ method: 'PUT', bodyIncludes: '"label":"W0"', skip: 1, hang: true }); });
+    assert.equal(out.ok, false); assert.equal(out.stoppedAt, 5); assert.equal(out.steps[4].detail.failed, 'confirm_winner_eW'); assert.ok(out.steps[4].detail.uncertain, JSON.stringify(out.steps[4].detail));
+    assert.equal(recLog(b0).filter((e) => e.body.includes('"label":"W0"')).length, 2, 'the racer and ONE confirmation attempt: no retry');
+    assert.equal(recLog(b0).filter((e) => e.body.includes('"label":"REVOKED"')).length, 0);
+    ({ out, b0 } = await pv(() => { blobs.rule({ method: 'PUT', bodyIncludes: '"label":"REVOKED"', throw: true, apply: true }); }));
+    assert.equal(out.ok, false); assert.equal(out.stoppedAt, 6); assert.equal(out.steps[5].detail.failed, 'revoke_status_200'); assert.ok(out.steps[5].detail.uncertain);
+    assert.equal(recLog(b0).filter((e) => e.body.includes('"label":"REVOKED"')).length, 1, 'one revoke attempt, no confirm, no retry -- even though it was applied');
+    assert.equal(stored(), 'REVOKED', 'applied-but-unacknowledged stays uncertain: the run stopped instead of treating it as not applied');
   });
   // ── PT / PC: P-1 timing and the check-shape mode (Bones REVISE P2 on the activation plan, U3; Jeff 2026-11-10) ──
   const checkEv = (o = {}) => ev({ body: JSON.stringify({ probe: 'check', runId: RUN }), ...o });
@@ -1754,7 +1836,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal((await NOOP()(ev({ bearer: tok, body: JSON.stringify({ probe: 'a6' }) }))).statusCode, 401);
     assert.equal(storeImage(), before, 'byte-identical store'); assert.equal(blobs.mutations.length, m0);
   });
-  const FLOOR = 287;
+  const FLOOR = 292;
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (server): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;
