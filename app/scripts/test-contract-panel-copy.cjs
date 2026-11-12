@@ -71,6 +71,37 @@ const B15_22_UNDO = [
   ['<li data-testid="disposition-handoff-preview-repairs">{DISPOSITION_REPAIRS_LABEL}: ', '<li>Approved repairs: '],
 ];
 for (const [now, before] of B15_22_UNDO) if (count(undone, now) === 1) undone = undone.split(now).join(before);
+/* Later, separately reviewed changes to the same file, undone the same way
+   (each exact text expected once; absent -> skipped, so the sha256 below still
+   fails on anything not modelled here):
+   - B15-10 / INV-109 (f5683ec, merged 6188f97): the no-opportunity Notice became
+     the shared NoDealYet card (same test id).
+   - B15-17 / INV-126 (66980f5, pending integration): the disposition preview's
+     Photos/documents display line; the persisted documentReferencesNote is
+     unchanged and is still checked in section 3. */
+const LATER_REVIEWED_UNDO = [
+  ['import NoDealYet from "../components/NoDealYet";\n', ''],
+  ['      {/* B15-10 / Pass 1 F19 (INV-109): the same no-deal card as the Contact, Seller Call and Underwriting\n'
+    + '          pages, with the way to fix it: "Open this contact in GHL". Navigation only; IAOS creates no deal.\n'
+    + '          (F19 replaced the other pages\' "Create an opportunity in GHL" notices; this one was missed.) */}\n', ''],
+  ['        <div data-testid="contract-no-opportunity">\n'
+    + '          <NoDealYet contactId={contactId} reason="A seller contract belongs to the deal, not the person." />\n'
+    + '        </div>\n',
+   '        <Notice\n'
+    + '          testId="contract-no-opportunity"\n'
+    + '          tone="info"\n'
+    + '          title="No opportunity on this contact"\n'
+    + '          body="A seller contract belongs to the deal, not the person. Create an opportunity in GHL first."\n'
+    + '        />\n'],
+  ['/** B15-17 (INV-126): what the disposition preview shows when no photos/documents exist. Display only -- the\n'
+    + ' *  handoff record\'s documentReferencesNote (written to GHL) is unchanged. */\n'
+    + 'const DISPOSITION_NO_DOCUMENTS_TEXT = "not stored in IAOS yet.";\n'
+    + '\n', ''],
+  ['                              {/* B15-17 (INV-126): operator wording; the persisted documentReferencesNote is unchanged. */}\n'
+    + '                              <li data-testid="disposition-handoff-preview-documents">Photos/documents: {pkg.documentReferences.length === 0 ? DISPOSITION_NO_DOCUMENTS_TEXT : pkg.documentReferencesNote}</li>',
+   '                              <li>Photos/documents: {pkg.documentReferencesNote}</li>'],
+];
+for (const [now, before] of LATER_REVIEWED_UNDO) if (count(undone, now) === 1) undone = undone.split(now).join(before);
 for (const p of [...FX.pairs].reverse()) undone = undone.split(p.new).join(p.old);
 check('undoing the table reproduces the 2c07d75 file byte-for-byte (LF-normalized sha256)', sha(undone) === BASE_SHA256, sha(undone));
 const idPattern = /data-testid|testId|\bon[A-Z][a-zA-Z]+=|disabled=|setUnderContractWriteState|setDispositionWriteState|kind:/;
