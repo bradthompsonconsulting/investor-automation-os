@@ -1948,12 +1948,40 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.ok(s1.duration_ms >= 190 && s1.duration_ms < 380, 'parallel: ' + s1.duration_ms);
     assert.ok(out.setup.every((x) => x.duration_ms >= 190), 'setup creates measured: ' + JSON.stringify(out.setup));
   });
-  await check('PC3 check mode over budget -> ok:false, stopped at sample 1, withinBudget false, the late write reported as deadline (a 400 ms write against a 300 ms check budget)', async () => {
+  await check('PC3 check mode over budget (Bones REVISE, test only, 2026-11-13): (a) a 400 ms write against a 300 ms check budget, the delayed rule confirmed executed -> ok:false, stopped at sample 1, session status null, why "deadline" (each assertion separate, the safe result in every message; no assumption about WHEN a correctly rejected sample returns); (b) the withinBudget clock boundary decided deterministically with a frozen clock: a write answered at deadline - 1 and exactly at the deadline is within budget (the product rule is now <= deadline), 1 ms after it is not -- ok:false, sample 1, status null, why "deadline"', async () => {
+    // (a) real timers: the 400 ms rule must actually run on the first sample's session write
     reset(); flag(false);
-    blobs.rule({ method: 'PUT', key: CK_S }, { method: 'PUT', delayMs: 400, key: CK_S });
+    let delayedHit = 0;
+    blobs.rule({ method: 'PUT', key: CK_S }, { method: 'PUT', delayMs: 400, key: CK_S, before: () => { delayedHit += 1; } });
     const out = await rev.runCheckShapeProbe(RUN, 'test', { event: NF, checkBudgetMs: 300 });
-    assert.equal(out.ok, false); assert.deepEqual(out.stoppedAt, { phase: 'sample', n: 1 }); assert.equal(out.samples.length, 1);
-    assert.equal(out.samples[0].withinBudget, false); assert.equal(out.samples[0].session.why, 'deadline'); assert.equal(out.budget_ms, 300);
+    const safe = JSON.stringify({ ok: out.ok, stoppedAt: out.stoppedAt, budget_ms: out.budget_ms, samples: out.samples, setup: out.setup && out.setup.map((s) => [s.n, s.status, s.ok]) });
+    assert.equal(delayedHit, 1, 'the delayed rule executed exactly once: ' + safe);
+    if (out.ok !== false) throw new Error('STOP: ok:true despite the confirmed 400 ms delayed write -- investigate the product path: ' + safe);
+    assert.deepEqual(out.stoppedAt, { phase: 'sample', n: 1 }, 'stopped at sample 1: ' + safe);
+    assert.equal(out.samples.length, 1, 'exactly one sample: ' + safe);
+    assert.equal(out.samples[0].session.status, null, 'session status null (no answer inside the deadline): ' + safe);
+    assert.equal(out.samples[0].session.why, 'deadline', 'session why "deadline": ' + safe);
+    assert.equal(out.budget_ms, 300, 'budget 300: ' + safe);
+    // (b) frozen clock: time moves only when the fake origin answers the first sample's session write
+    const boundary = async (delta) => {
+      reset(); flag(false);
+      let T = 1_000_000; let creates = 0;
+      blobs.rule({ method: 'PUT', key: CK_S, before: () => { creates += 1; } }, { method: 'PUT', key: CK_S, before: () => { T += 300 + delta; } });
+      const o = await rev.runCheckShapeProbe(RUN, 'test', { event: NF, checkBudgetMs: 300, now: () => T });
+      return { o, creates, safe: JSON.stringify({ ok: o.ok, stoppedAt: o.stoppedAt, s1: o.samples[0] }) };
+    };
+    for (const delta of [-1, 0]) {
+      const { o, creates, safe: s } = await boundary(delta);
+      assert.equal(creates, 1, `delta ${delta}: setup create matched: ` + s);
+      assert.equal(o.samples[0].session.status, 200, `delta ${delta}: answered within the deadline: ` + s);
+      assert.equal(o.samples[0].withinBudget, true, `delta ${delta}: withinBudget true at deadline ${delta === 0 ? '(exact)' : '- 1'}: ` + s);
+    }
+    const { o: late, safe: sl } = await boundary(1);
+    assert.equal(late.ok, false, 'deadline + 1: ok false: ' + sl);
+    assert.deepEqual(late.stoppedAt, { phase: 'sample', n: 1 }, 'deadline + 1: stopped at sample 1: ' + sl);
+    assert.equal(late.samples[0].session.status, null, 'deadline + 1: session status null: ' + sl);
+    assert.equal(late.samples[0].session.why, 'deadline', 'deadline + 1: why "deadline": ' + sl);
+    assert.equal(late.samples[0].withinBudget, false, 'deadline + 1: withinBudget false: ' + sl);
   });
   await check('PC4 check mode can FAIL through the handler: per-write ETags (the bound ETag changes) -> HTTP 200, ok:false, stopped at sample 1, etagUnchanged false', async () => {
     reset(); flag(false); blobs.setEtagMode('per-write');
