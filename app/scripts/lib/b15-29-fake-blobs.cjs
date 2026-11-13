@@ -14,7 +14,9 @@
  * Shows OUR code's behaviour only. It cannot prove provider guarantees (U1-U4).
  *
  * Fault rules (consumed once each, first match wins): { method?, key?, status?, throw?, hang?, ignoreAbort?,
- * stallBody?, apply?, delayMs?, lie?, noEtag? }.
+ * stallBody?, apply?, delayMs?, lie?, noEtag?, headers?, errorBody?, before? }. (G1: `headers` adds response headers to a
+ * `status` answer; `errorBody` gives it a body -- see errorBodyOf; `before(entry)` runs when the rule matches, e.g. to move
+ * a test clock.)
  *   status    answer this status (for a PUT with apply:true the write is applied first)
  *   throw     reject (transport error); with apply:true a PUT is applied first (applied, acknowledgement lost)
  *   hang      never answer; rejects on abort unless ignoreAbort
@@ -59,6 +61,33 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
   const k = (site, s, key) => `${site}|${s}|${key}`;
   const etagFor = (text) => (mode === 'content' ? `"c-${crypto.createHash('sha256').update(text).digest('hex').slice(0, 24)}"` : `"w-${++n}"`);
 
+  /* G1 error bodies for a `status` rule (PV15-PV17): `errorBody` is a string, or
+     { bytes: n, chunks?: [sizes] }  n deterministic bytes (byte i = 97 + i % 26), as one chunk unless `chunks` given;
+     { stall: 'cancel' }             never enqueues; honours cancel (counted);
+     { stall: 'ignore' }             never enqueues; ignores abort; cancel() is counted and NEVER settles;
+     { stall: 'oneByte' }            enqueues one byte, then stalls (honours cancel).
+     { bytes: n, chunks: [sizes], pull: true }  the same bytes, one chunk per pull (pulls counted in `bodyPulls`);
+     `bodyCancels` counts cancel() calls on these bodies. */
+  let bodyCancels = 0;
+  let bodyPulls = 0;
+  const patternBytes = (n) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = 97 + (i % 26); return b; };
+  function errorBodyOf(rule) {
+    const eb = rule.errorBody;
+    if (eb == null) return null;
+    if (typeof eb === 'string') return eb;
+    if (typeof eb.bytes === 'number') {
+      const all = patternBytes(eb.bytes); const sizes = eb.chunks || [eb.bytes];
+      if (eb.pull) {
+        let i = 0; let at = 0;
+        return new ReadableStream({ pull(c) { bodyPulls += 1; if (i >= sizes.length) { c.close(); return; } c.enqueue(all.subarray(at, at + sizes[i])); at += sizes[i]; i += 1; }, cancel() { bodyCancels += 1; } }, { highWaterMark: 0 });
+      }
+      return new ReadableStream({ start(c) { let at = 0; for (const s of sizes) { c.enqueue(all.subarray(at, at + s)); at += s; } c.close(); } });
+    }
+    if (eb.stall === 'cancel') return new ReadableStream({ start() {}, cancel() { bodyCancels += 1; } });
+    if (eb.stall === 'ignore') return new ReadableStream({ start() {}, pull() { return new Promise(() => {}); }, cancel() { bodyCancels += 1; return new Promise(() => {}); } });
+    if (eb.stall === 'oneByte') return new ReadableStream({ start(c) { c.enqueue(patternBytes(1)); }, cancel() { bodyCancels += 1; } });
+    throw new Error('fake blobs: unknown errorBody');
+  }
   function abortable(signal, ignoreAbort) {
     return new Promise((_, reject) => {
       if (ignoreAbort || !signal) return;
@@ -66,14 +95,18 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
       signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
     });
   }
-  function applyPut(id, key, body, headers, entry, force = false) {
+  function applyPut(id, key, body, headers, entry, force = false, answered = null) {
     const cur = store.get(id);
     const inm = headers['if-none-match'];
     const im = headers['if-match'];
     if (inm === '*' && cur && !ignore.ifNoneMatch && !force) return { status: 412 };
     if (im && (!cur || cur.etag !== im) && !ignore.ifMatch && !force) return { status: 412 };
     const etag = cur && mode === 'sticky' ? cur.etag : cur && cur.text === body && mode === 'content' ? cur.etag : etagFor(body);   // 'sticky' (A1a control): a key keeps its first ETag even when its bytes change
-    if (!cur || cur.text !== body) mutations.push({ key, created: !cur, conditional: inm ? 'if-none-match' : im ? 'if-match' : null, at: clock() });
+    /* G1 (PV8, r4 U1): a FORCED application records what an independent inspection needs -- that it was forced, the
+       status it was answered with, the ETag stored before it (so a stale condition is provable) and the condition sent. */
+    const label = (/"label":"([^"]*)"/.exec(body) || [])[1] || null;
+    const forcedInfo = force ? { forced: true, answered, storedEtagBefore: cur ? cur.etag : null, ifMatch: im || null } : {};
+    if (!cur || cur.text !== body) mutations.push({ key, created: !cur, conditional: inm ? 'if-none-match' : im ? 'if-match' : null, at: clock(), label, ...forcedInfo });
     store.set(id, { text: body, etag });
     entry.applied = true;
     return { status: 200, etag };
@@ -98,6 +131,7 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
     });
     if (rule) rules = rules.filter((r) => r !== rule);
     const answer = (status, h = {}, b = null) => { entry.status = status; return new Response(b, { status, headers: h }); };
+    if (rule && typeof rule.before === 'function') rule.before(entry);
     if (headers.authorization !== `Bearer ${token}` || site !== siteID) return answer(401);
     const id = k(site, storeName, key);
     if (method === 'DELETE') { mutations.push({ key, deleted: true, at: clock() }); store.delete(id); return answer(204); }
@@ -129,7 +163,11 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
     }
     if (rule && rule.hang) { if (rule.apply) applyPut(id, key, body, headers, entry); return abortable(init.signal, rule.ignoreAbort); }
     if (rule && rule.throw) { if (rule.apply) applyPut(id, key, body, headers, entry); throw new TypeError('fetch failed (fixture)'); }
-    if (rule && rule.status) { const out = rule.apply ? applyPut(id, key, body, headers, entry, !!rule.force) : null; return answer(rule.status, rule.status === 200 && out && out.etag ? { etag: out.etag } : {}); }
+    if (rule && rule.status) {
+      const out = rule.apply ? applyPut(id, key, body, headers, entry, !!rule.force, rule.status) : null;
+      const h = { ...(rule.status === 200 && out && out.etag ? { etag: out.etag } : {}), ...(rule.headers || {}) };
+      return answer(rule.status, h, errorBodyOf(rule));
+    }
     const out = applyPut(id, key, body, headers, entry);
     if (rule && rule.noEtag && out.status === 200) return answer(200);
     return answer(out.status, out.etag ? { etag: out.etag } : {});
@@ -145,6 +183,9 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
     log,
     mutations,
     store,
+    patternBytes,
+    bodyCancels: () => bodyCancels,
+    bodyPulls: () => bodyPulls,
     setEtagMode: (m) => { mode = m; },
     /** B15-29 P-1 tests: { ifMatch?, ifNoneMatch? } -- the fake ignores that precondition (a provider defect). */
     /** B15-29 A1a: 'strong' (default) or 'eventual' (edge-cached GETs; see the header). reset() restores 'strong'. */
@@ -152,7 +193,7 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
     setIgnoreConditions: (o) => { ignore = { ifMatch: !!(o && o.ifMatch), ifNoneMatch: !!(o && o.ifNoneMatch) }; },
     rule: (...r) => { rules.push(...r); },
     clearRules: () => { rules = []; },
-    reset: () => { store.clear(); log.length = 0; mutations.length = 0; rules = []; mode = etagMode; ignore = { ifMatch: false, ifNoneMatch: false }; readMode = 'strong'; readCache.clear(); },
+    reset: () => { store.clear(); log.length = 0; mutations.length = 0; rules = []; bodyCancels = 0; bodyPulls = 0; mode = etagMode; ignore = { ifMatch: false, ifNoneMatch: false }; readMode = 'strong'; readCache.clear(); },
     /** Write a raw value at a key (test setup / operator action only, never through the module). */
     put: (storeName, key, text) => { store.set(k(siteID, 'site:' + storeName, key), { text, etag: etagFor(text) }); },
     /** Remove a value at a key (test setup only). */

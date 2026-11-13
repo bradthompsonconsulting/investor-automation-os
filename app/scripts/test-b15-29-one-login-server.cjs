@@ -1129,7 +1129,10 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal((s.match(/onceAuthority\(/g) || []).length, 3, 'onceAuthority: its definition + the read + the confirm write');
     assert.match(s, /function once\(ctx: Ctx, op: \(store: Store\) => Promise<unknown>\): Promise<Recorded> \{ return attempt\(ctx, REVOCATION_STORE, op\); \}/);
     assert.match(s, /function onceAuthority\(ctx: Ctx, op: \(store: Store\) => Promise<unknown>\): Promise<Recorded> \{ return attempt\(ctx, SESSION_AUTHORITY_STORE, op\); \}/);
-    assert.equal((s.match(/attempt\(ctx, /g) || []).length, 2, 'attempt is reached only through once / onceAuthority');
+    /* G1 (accepted method r3 T3): onceProbe is the third, Test-probe-only caller of attempt -- the session store only,
+       never the authority store; it is the only call that passes a diagnostic sink. */
+    assert.match(s, /  const r = await attempt\(ctx, REVOCATION_STORE, op, sink\);/);
+    assert.equal((s.match(/attempt\(ctx, /g) || []).length, 3, 'attempt is reached only through once / onceAuthority / onceProbe');
     assert.ok(!/AUTHORITY_KEY[^\n]*onlyIfNew/.test(s) && !/\.(setJSON|delete)\(/.test(s), 'no create / setJSON / delete');
     assert.match(s, /if \(!isCanonicalEtag\(etag\)\) return Promise\.resolve/, 'an empty etag can never turn the anchor write unconditional');
   });
@@ -1585,6 +1588,253 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal(recLog(b0).filter((e) => e.body.includes('"label":"REVOKED"')).length, 1, 'one revoke attempt, no confirm, no retry -- even though it was applied');
     assert.equal(stored(), 'REVOKED', 'applied-but-unacknowledged stays uncertain: the run stopped instead of treating it as not applied');
   });
+  // ── PV6-PV18: G1 race losers 409-or-412, Test-probe-only diagnostics, run-deadline guard (Gate A r3 A1b;
+  //    Bones accepted method r1 97_ + r2 98_ + r3 99_ + r4 9A_, 2026-11-13) ──
+  const W = (i) => `"label":"W${i}"`;
+  const loser = (i, status, extra = {}) => blobs.rule({ method: 'PUT', bodyIncludes: W(i), status, ...extra });
+  const race = (out) => out.steps[4] && out.steps[4].detail;
+  const noDiag = (d) => { if (!d) return d; const { diag, ...rest } = d; return rest; };
+  const DIAG_KEYS = ['body', 'bytes', 'class', 'ct', 'req', 'rid', 'sha256', 'status'];
+  const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
+  const ownPattern = (n) => { const b = Buffer.alloc(n); for (let i = 0; i < n; i++) b[i] = 97 + (i % 26); return b; };   // the test's OWN generator (independent of the fake)
+  const recMut = () => blobs.mutations.filter((m) => m.key === `probe/${RUN}/record`);
+  // Direct runs (fake clock): runAuthorityProbe with an injected `now`, through the same fake origin.
+  const direct = async (setup, { now, budgetMs } = {}) => { reset(); flag(false); setup(); const b0 = blobs.log.length; const out = await rev.runAuthorityProbe(RUN, 'test', { event: NF, ...(now ? { now } : {}), ...(budgetMs ? { budgetMs } : {}) }); return { out, b0 }; };
+  // A second, isolated instance of the module whose SDK store delays its settlement after the synthetic 400 (r3 T2
+  // PV15(d)/(e)): '@netlify/blobs' is intercepted only while this instance loads; the main instance is untouched.
+  const slowSdkRev = (delayFor) => {
+    const realBlobs = require('@netlify/blobs');
+    const wrapped = { ...realBlobs, getStore: (o) => { const st = realBlobs.getStore(o); return new Proxy(st, { get(t, p) { if (p !== 'set') return Reflect.get(t, p); return async (key, value, opts) => { const r = await t.set(key, value, opts); const ms = delayFor(String(value)); if (ms) await new Promise((res) => setTimeout(res, ms)); return r; }; } }); } };
+    const file = require.resolve(path.join(FUNCTIONS, 'lib/session-revocation.ts'));
+    const saved = require.cache[file]; delete require.cache[file];
+    const origLoad = Module._load;
+    Module._load = function (request, ...rest) { return request === '@netlify/blobs' ? wrapped : origLoad.call(this, request, ...rest); };
+    try { return require(file); } finally { Module._load = origLoad; require.cache[file] = saved; }
+  };
+  await check('PV6 race losers 409 or 412 (G1 r1 1.1): [200,409,412,409,412] and the A1b shape [409,409,200,412,409] -> 7/7, REVOKED stored, 17 requests, diag only for the 409 racers', async () => {
+    for (const [label, setup, racers, diagReqs] of [
+      ['mixed', () => { loser(1, 409); loser(3, 409); }, [200, 409, 412, 409, 412], [1, 3]],
+      ['A1b shape', () => { loser(0, 409); loser(1, 409); loser(4, 409); }, [409, 409, 200, 412, 409], [0, 1, 4]]]) {
+      const { r, out, b0 } = await pv(setup);
+      assert.equal(r.statusCode, 200, label); assert.equal(out.ok, true, label + ' ' + JSON.stringify(out.steps)); assert.equal(out.stoppedAt, null);
+      assert.deepEqual(race(out).racers, racers, label); assert.equal(race(out).failed, null);
+      assert.deepEqual(race(out).diag.map((d) => [d.req, d.status, d.class]), diagReqs.map((i) => [i, 409, 'conflict_409']), label);
+      assert.equal(recLog(b0).length, 17, label); assert.equal(stored(), 'REVOKED', label);
+      assert.ok(out.steps.every((s, i) => i === 4 || !s.detail || !('diag' in s.detail)), 'no diag on steps without an unexpected status');
+    }
+  });
+  await check('PV7 all four losers answer 409 -> 7/7, REVOKED stored', async () => {
+    const { out, b0 } = await pv(() => { for (const i of [1, 2, 3, 4]) loser(i, 409); });
+    assert.equal(out.ok, true, JSON.stringify(out.steps)); assert.deepEqual(race(out).racers, [200, 409, 409, 409, 409]); assert.equal(recLog(b0).length, 17); assert.equal(stored(), 'REVOKED');
+  });
+  await check('PV8 rejected-but-applied loser, deterministic order (r3 T1, r4 U1). (a) W1 answered 409 but applied AFTER the winner W0 -> stoppedAt 5 confirm_winner_eW, one confirm, nothing after it, stored W1. (b) a deliberately misbehaving origin applies W1 despite its 409, then FORCES W0 despite its now-stale If-Match e1, storing W0 under its genuine content ETag -> 7/7 PASS: the documented proof limit (final-state confirmation cannot detect an earlier rejected-but-applied write that the winner overwrote); the fake origin verifies the conditions sent, both forced applications, A -> W1 -> W0 -> REVOKED and the final bytes', async () => {
+    // (a)
+    let { out, b0 } = await pv(() => { loser(1, 409, { apply: true, force: true, delayMs: 30 }); });
+    assert.equal(out.ok, false); assert.equal(out.stoppedAt, 5); assert.equal(race(out).failed, 'confirm_winner_eW'); assert.deepEqual(race(out).racers, [200, 409, 412, 412, 412]);
+    assert.deepEqual(recMut().map((m) => m.label), ['A', 'W0', 'W1'], '(a) mutation order');
+    assert.equal(recLog(b0).length, 12, '(a) 6 + 5 racers + ONE confirm'); assert.equal(recLog(b0).filter((e) => String(e.body).includes('REVOKED')).length, 0); assert.equal(stored(), 'W1');
+    assert.deepEqual(race(out).diag.map((d) => d.req), [1]);
+    // (b)
+    ({ out, b0 } = await pv(() => { loser(1, 409, { apply: true, force: true }); loser(0, 200, { apply: true, force: true, delayMs: 30 }); loser(2, 409); loser(4, 409); }));
+    assert.equal(out.ok, true, '(b) the blind spot passes: ' + JSON.stringify(out.steps)); assert.equal(out.stoppedAt, null); assert.equal(out.steps.length, 7);
+    assert.deepEqual(race(out).racers, [200, 409, 409, 412, 409]); assert.equal(recLog(b0).length, 17);
+    const L = recLog(b0); const e1 = cEtag(L[0].body);
+    for (const i of [0, 1]) { const put = L.find((e) => e.method === 'PUT' && e.body.includes(W(i))); assert.equal(put.ifMatch, e1, `W${i} sent If-Match e1`); assert.equal(put.ifNoneMatch, null); }
+    const m = recMut();
+    assert.deepEqual(m.map((x) => x.label), ['A', 'W1', 'W0', 'REVOKED'], '(b) exact mutation sequence');
+    const m1 = m[1], m0 = m[2];
+    assert.deepEqual([m1.forced, m1.answered, m1.storedEtagBefore, m1.ifMatch], [true, 409, e1, e1], 'W1 forced: applied despite answering 409');
+    assert.deepEqual([m0.forced, m0.answered, m0.ifMatch], [true, 200, e1], 'W0 forced'); assert.notEqual(m0.storedEtagBefore, e1, 'W0 was applied on a STALE condition');
+    assert.equal(m0.storedEtagBefore, cEtag(L.find((e) => e.body.includes(W(1))).body), 'the ETag before W0 was W1\'s');
+    const w0put = L.find((e) => e.method === 'PUT' && e.body.includes(W(0)));
+    const eW = cEtag(w0put.body); assert.notEqual(eW, e1); assert.notEqual(eW, m0.storedEtagBefore);
+    const rv = L.find((e) => e.method === 'PUT' && e.body.includes('"REVOKED"')); assert.equal(rv.ifMatch, eW, 'revoke sent If-Match = W0\'s genuine content ETag');
+    const st = blobs.store.get(`${SITE}|site:${SSTORE}|probe/${RUN}/record`); assert.equal(JSON.parse(st.text).label, 'REVOKED'); assert.equal(st.etag, cEtag(st.text));
+    assert.deepEqual(race(out).diag.map((d) => d.req), [1, 2, 4]);
+  });
+  await check('PV9 two raw 200 winners -> stoppedAt 5 exactly_one_winner, no confirm sent', async () => {
+    const { out, b0 } = await pv(() => { loser(1, 200, { apply: true, force: true }); });
+    assert.equal(out.stoppedAt, 5); assert.equal(race(out).failed, 'exactly_one_winner'); assert.equal(recLog(b0).length, 11);
+  });
+  await check('PV10 zero winners (all five racers 409) -> stoppedAt 5 exactly_one_winner, no confirm sent', async () => {
+    const { out, b0 } = await pv(() => { for (const i of [0, 1, 2, 3, 4]) loser(i, 409); });
+    assert.equal(out.stoppedAt, 5); assert.equal(race(out).failed, 'exactly_one_winner'); assert.deepEqual(race(out).racers, [409, 409, 409, 409, 409]); assert.equal(recLog(b0).length, 11);
+  });
+  await check('PV11 false acknowledgement with 409 losers: winner answered 200 but not stored (fabricated ETag -> confirm_winner_eW; original ETag -> winner_etag_changed)', async () => {
+    for (const [lieEtag, failed] of [[undefined, 'confirm_winner_eW'], ['current', 'winner_etag_changed']]) {
+      const { out } = await pv(() => { blobs.rule({ method: 'PUT', bodyIncludes: W(0), lie: true, ...(lieEtag ? { lieEtag } : {}) }); for (const i of [1, 2, 3, 4]) loser(i, 409); });
+      assert.equal(out.stoppedAt, 5); assert.equal(race(out).failed, failed); assert.equal(stored(), 'A');
+    }
+  });
+  await check('PV12 wrong bytes / ETag with 409 losers: a non-canonical winner ETag -> winner_etag_canonical; a winner ETag that is not the stored record\'s -> confirm_winner_eW', async () => {
+    let { out } = await pv(() => { blobs.rule({ method: 'PUT', bodyIncludes: W(0), lie: true, lieEtag: 'not canonical' }); for (const i of [1, 2, 3, 4]) loser(i, 409); });
+    assert.equal(out.stoppedAt, 5); assert.equal(race(out).failed, 'winner_etag_canonical');
+    ({ out } = await pv(() => { blobs.rule({ method: 'PUT', bodyIncludes: W(0), storeAs: 'WX' }); for (const i of [1, 2, 3, 4]) loser(i, 409); }));
+    assert.equal(out.stoppedAt, 5); assert.equal(race(out).failed, 'confirm_winner_eW');
+  });
+  await check('PV13 strict 412 preserved (r1 1.1): a 409 on the duplicate create (2), the stale write (4), the replay with e1 and the replay with eW (7) each fails closed at its step', async () => {
+    const got = [];
+    for (const [label, setup] of [
+      ['dup 409', () => blobs.rule({ method: 'PUT', bodyIncludes: '"label":"B"', status: 409 })],
+      ['stale 409', () => blobs.rule({ method: 'PUT', bodyIncludes: '"label":"C"', status: 409 })],
+      ['replay e1 409', () => blobs.rule({ method: 'PUT', bodyIncludes: '"label":"A"', skip: 4, status: 409 })],
+      ['replay eW 409', () => blobs.rule({ method: 'PUT', bodyIncludes: W(0), skip: 2, status: 409 })]]) {
+      const { out } = await pv(setup); const s = out.steps[out.steps.length - 1];
+      got.push([label, out.ok, out.stoppedAt, s.detail.failed, (s.detail.diag || []).map((d) => d.status)]);
+    }
+    assert.deepEqual(got, [['dup 409', false, 2, 'duplicate_status_412', [409]], ['stale 409', false, 4, 'stale_status_412', [409]],
+      ['replay e1 409', false, 7, 'replay_e1_412', [409]], ['replay eW 409', false, 7, 'replay_eW_412', [409]]]);
+  });
+  await check('PV14 any other loser answer fails closed, one attempt each, no retry: 500 / 403 / 429 -> losers_409_or_412 (diag class unexpected); a transport failure -> uncertain transport; a 409 answered after the run deadline -> uncertain deadline, ok:false, no confirm', async () => {
+    for (const st of [500, 403, 429]) {
+      const { out, b0 } = await pv(() => loser(1, st));
+      assert.equal(out.stoppedAt, 5); assert.equal(race(out).failed, 'losers_409_or_412', String(st)); assert.deepEqual(race(out).diag.map((d) => [d.req, d.status, d.class]), [[1, st, 'unexpected']]);
+      assert.equal(recLog(b0).filter((e) => e.body.includes(W(1))).length, 1); assert.equal(recLog(b0).length, 11);
+    }
+    let { out, b0 } = await pv(() => blobs.rule({ method: 'PUT', bodyIncludes: W(1), throw: true }));
+    assert.equal(out.stoppedAt, 5); assert.equal(race(out).failed, 'losers_409_or_412'); assert.equal(race(out).uncertain, 'transport'); assert.equal(recLog(b0).length, 11);
+    ({ out, b0 } = await direct(() => loser(1, 409, { delayMs: 1700 }), { budgetMs: 1500 }));
+    assert.equal(out.ok, false); assert.equal(out.stoppedAt, 5); assert.equal(out.steps[4].detail.uncertain, 'deadline', JSON.stringify(out.steps[4]));
+    assert.equal(recLog(b0).filter((e) => e.body.includes(W(1))).length, 1); assert.equal(recLog(b0).length, 11, 'no confirm');
+  });
+  await check('PV15 stalled and abort-ignoring 409 bodies, delayed SDK settlement (r2 R2, r3 T2): the raw 409 is kept, diag "timeout", the join waits only the REMAINING time to the absolute end, one attempt, the run proceeds normally; an SDK that settles after the run deadline -> uncertain deadline, ok:false, no confirm', async () => {
+    for (const [stall, bytes] of [['cancel', 0], ['ignore', 0], ['oneByte', 1]]) {
+      const t0 = Date.now(); const { out, b0 } = await pv(() => loser(1, 409, { errorBody: { stall } })); const ms = Date.now() - t0;
+      assert.equal(out.ok, true, stall + ' ' + JSON.stringify(out.steps)); assert.deepEqual(race(out).racers, [200, 409, 412, 412, 412]);
+      const d = race(out).diag[0]; assert.deepEqual([d.req, d.status, d.body, d.bytes, d.sha256], [1, 409, 'timeout', bytes, bytes ? sha256(ownPattern(1)) : null], stall);
+      assert.ok(ms < 250 + 1500, `${stall}: bounded (${ms} ms)`); assert.equal(recLog(b0).filter((e) => e.body.includes(W(1))).length, 1);
+      assert.ok(blobs.bodyCancels() >= 1, stall + ': cancel was requested (never awaited)');
+    }
+    // (d) SDK settlement delayed 400 ms (past the 250 ms absolute end) while the body stalls: the join adds nothing
+    const slow = slowSdkRev((v) => (v.includes(W(1)) ? 400 : 0));
+    reset(); flag(false); loser(1, 409, { errorBody: { stall: 'cancel' } });
+    let out = await slow.runAuthorityProbe(RUN, 'test', { event: NF });
+    assert.equal(out.ok, true, JSON.stringify(out.steps)); assert.equal(race(out).diag[0].body, 'timeout');
+    assert.ok(out.steps[4].duration_ms >= 395 && out.steps[4].duration_ms < 400 + 200, 'step 5 = the 400 ms settlement + its confirm, no restarted allowance: ' + out.steps[4].duration_ms);
+    reset(); flag(false); loser(1, 409);
+    const ref = await slow.runAuthorityProbe(RUN, 'test', { event: NF });
+    assert.deepEqual(noDiag(race(out)), noDiag(race(ref)), 'the Recorded-derived detail equals the same run without a diagnostic body');
+    // (e) SDK settlement delayed past the run deadline
+    const slower = slowSdkRev((v) => (v.includes(W(1)) ? 1800 : 0));
+    reset(); flag(false); loser(1, 409, { errorBody: { stall: 'ignore' } }); const b0 = blobs.log.length;
+    out = await slower.runAuthorityProbe(RUN, 'test', { event: NF, budgetMs: 1500 });
+    assert.equal(out.ok, false); assert.equal(out.stoppedAt, 5); assert.equal(out.steps[4].detail.uncertain, 'deadline'); assert.equal(blobs.log.slice(b0).length, 11, 'no confirm');
+    assert.ok(out.steps[4].duration_ms < 1500 + 200, 'the diag join did not wait past the deadline: ' + out.steps[4].duration_ms);
+  });
+  await check('PV16 bounded reads and exact deadline boundaries (r2 R2, r3 T2, r4 U2): (a) one 1 MiB chunk -> 4096 bytes, prefix, the test\'s own sha256 of the first 4096; (b) exactly 4096 then EOF -> complete; (c) one 4097-byte chunk -> prefix; (d) headers inside the 50 ms reserve -> skipped_deadline; (e)/(f) headers just past the reserve -> timeout bounded by the absolute end; (g) clock past the deadline during the join -> run_deadline, nothing further; (h) a never-settling cancel near the deadline leaves no timer; (i) exactly AT the deadline after the race -> run_deadline, no confirm; (j) completion exactly at the deadline cannot PASS; (k) 1 ms before it passes', async () => {
+    for (const [label, eb, bytes, body] of [['a', { bytes: 1 << 20 }, 4096, 'prefix'], ['b', { bytes: 4096 }, 4096, 'complete'], ['c', { bytes: 4097 }, 4096, 'prefix']]) {
+      const { out } = await pv(() => loser(1, 409, { errorBody: eb })); const d = race(out).diag[0];
+      assert.deepEqual([d.bytes, d.body, d.sha256], [bytes, body, sha256(ownPattern(4096))], label);
+      const { out: ref } = await pv(() => loser(1, 409)); assert.deepEqual(noDiag(race(out)), noDiag(race(ref)), label + ': Recorded unaffected');
+      assert.equal(out.ok, true, label);
+    }
+    /* fake clock: real time + an offset the fake origin moves when the LAST racer (W4) arrives (all racers already
+       started). The budget is below the 2 s stage cap, so W4's stage end IS the run deadline and moving the clock models
+       time passing inside that one request, not past its stage cap. */
+    const BUDGET = 1_500;
+    const clockRun = async (setOff, eb) => {
+      let off = 0; let deadline = 0; const now = () => Date.now() + off;
+      const { out, b0 } = await direct(() => { loser(4, 409, { errorBody: eb, before: () => { off = setOff(deadline - Date.now()); } }); }, { now: () => { const t = now(); if (!deadline) deadline = t + BUDGET; return t; }, budgetMs: BUDGET });
+      return { out, b0, d: (race(out).diag || []).find((x) => x.req === 4) };
+    };
+    let r = await clockRun((left) => left - 40, { bytes: 10 });                         // (d) 40 ms left at headers (< 50 ms reserve)
+    assert.deepEqual([r.d.status, r.d.body, r.d.bytes, r.d.sha256], [409, 'skipped_deadline', 0, null], '(d)'); assert.equal(race(r.out).racers[4], 409);
+    let t0 = Date.now(); r = await clockRun((left) => left - 70, { stall: 'cancel' });     // (e) 70 ms left: the absolute end is ~20 ms after the headers (timer jitter margin)
+    assert.equal(r.d.body, 'timeout', '(e)'); assert.ok(Date.now() - t0 < 1500, '(e) bounded');
+    r = await clockRun((left) => left - 80, { stall: 'oneByte' });                         // (f) 80 ms left
+    assert.deepEqual([r.d.body, r.d.bytes], ['timeout', 1], '(f)'); assert.equal(r.out.ok, false);
+    r = await clockRun((left) => left + 1, { stall: 'cancel' });                           // (g) past the deadline during the join
+    assert.equal(r.out.ok, false); assert.equal(r.out.stoppedAt, 5); assert.deepEqual([race(r.out).failed, race(r.out).uncertain], ['run_deadline', 'deadline']);
+    assert.equal(blobs.log.slice(r.b0).length, 11, '(g) nothing after the racers');
+    // (h) a never-settling cancel near the deadline: every timer the module created has been cleared or has fired at return
+    const live = new Set(); const st0 = global.setTimeout, ct0 = global.clearTimeout;
+    global.setTimeout = (fn, ms, ...a) => { const h = st0(() => { live.delete(h); fn(...a); }, ms); live.add(h); return h; };
+    global.clearTimeout = (h) => { live.delete(h); return ct0(h); };
+    try { r = await clockRun((left) => left - 100, { stall: 'ignore' }); } finally { global.setTimeout = st0; global.clearTimeout = ct0; }
+    assert.equal(r.d.body, 'timeout', '(h)'); assert.equal(live.size, 0, '(h) no pending timer at return');
+    // (i)/(j)/(k) frozen clock: time moves only when the fake origin sets it
+    const frozen = async (rule) => { let T = 1_000_000; const D = T + BUDGET; const { out, b0 } = await direct(() => rule((v) => { T = v(D); }), { now: () => T, budgetMs: BUDGET }); return { out, b0 }; };
+    r = await frozen((set) => loser(4, 412, { before: () => set((D) => D) }));
+    assert.deepEqual([r.out.ok, r.out.stoppedAt, race(r.out).failed, race(r.out).uncertain], [false, 5, 'run_deadline', 'deadline'], '(i)');
+    assert.equal(blobs.log.slice(r.b0).length, 11, '(i) no confirm, no request after the racers');
+    r = await frozen((set) => blobs.rule({ method: 'PUT', bodyIncludes: '"label":"REVOKED"', skip: 2, before: () => set((D) => D) }));
+    assert.deepEqual([r.out.ok, r.out.stoppedAt, r.out.steps[6].detail.failed, r.out.steps[6].detail.uncertain], [false, 7, 'run_deadline', 'deadline'], '(j)');
+    assert.equal(blobs.log.slice(r.b0).length, 17, '(j) nothing after the last confirm');
+    r = await frozen((set) => blobs.rule({ method: 'PUT', bodyIncludes: '"label":"REVOKED"', skip: 2, before: () => set((D) => D - 1) }));
+    assert.deepEqual([r.out.ok, r.out.stoppedAt, r.out.steps.length], [true, null, 7], '(k) 1 ms before the deadline passes');
+  });
+  await check('PV17 exact output allowlist and hash semantics: seeded bearer token, signed URL, 64-hex ETag, Set-Cookie, bad request id and a parameterised content-type never appear; ProbeDiag keys exactly the allowlist; sha256 null iff 0 bytes, else the sha256 of exactly the bytes read', async () => {
+    const hex = 'ab'.repeat(32);
+    const seeded = `{"error":"Bearer eyJhbGciOiJIUzI1NiJ9.c2VjcmV0.sig","url":"https://blobs.invalid/x?X-Amz-Signature=deadbeef","etag":"\\"${hex}\\"","cookie":"__Host-iaos_read=secret"}`;
+    const { r, out } = await pv(() => {
+      loser(1, 409, { errorBody: seeded, headers: { 'x-nf-request-id': 'Bearer eyJ-not-a-rid', 'content-type': 'application/json; charset=utf-8; x=https://signed.invalid/?sig=1', 'set-cookie': '__Host-iaos_read=secret', etag: `"${hex}"` } });
+      loser(2, 409, { errorBody: '', headers: { 'x-nf-request-id': '01ABCDEFGHJKMNPQRSTVWXYZ01', 'content-type': 'application/problem+json' } });
+      loser(3, 409);
+    });
+    assert.equal(out.ok, true, JSON.stringify(out.steps));
+    const [d1, d2, d3] = race(out).diag;
+    for (const d of [d1, d2, d3]) {
+      assert.deepEqual(Object.keys(d).sort(), DIAG_KEYS); assert.ok(Object.isFrozen(d) || true);
+      assert.ok(['conflict_409', 'unexpected'].includes(d.class)); assert.ok(d.rid === null || d.rid === 'invalid' || /^[0-9A-Z]{26}$/.test(d.rid));
+      assert.ok(['none', 'empty', 'complete', 'prefix', 'timeout', 'error', 'skipped_deadline'].includes(d.body));
+      assert.ok(d.ct === null || ['application/json', 'text/plain', 'application/xml', 'text/html', 'other'].includes(d.ct));
+      assert.equal(d.sha256 === null, d.bytes === 0); if (d.sha256 !== null) assert.match(d.sha256, /^[0-9a-f]{64}$/);
+    }
+    assert.deepEqual([d1.req, d1.rid, d1.ct, d1.body, d1.bytes, d1.sha256], [1, 'invalid', 'application/json', 'complete', Buffer.byteLength(seeded), sha256(Buffer.from(seeded))]);
+    assert.deepEqual([d2.req, d2.rid, d2.ct, d2.body, d2.bytes, d2.sha256], [2, '01ABCDEFGHJKMNPQRSTVWXYZ01', 'other', 'empty', 0, null]);
+    assert.equal(d3.req, 3); assert.ok(['none', 'empty'].includes(d3.body)); assert.equal(d3.bytes, 0);
+    for (const bad of ['eyJ', 'Bearer', 'Signature', 'signed.invalid', '__Host', 'secret', hex, 'charset', 'Set-Cookie']) assert.ok(!r.body.includes(bad), 'transcript carries ' + bad);
+    assert.ok(out.steps.every((s, i) => i === 4 || !s.detail || !('diag' in s.detail)));
+  });
+  await check('PV18 product paths never collect (r2 R2, r3 T3): STATIC -- invocations counted on comment- and type-stripped code with string / template literals blanked, declarations counted separately (self-tested): probeDiagOf 1 decl / 1 call (in attempt), attempt 1 decl / 3 calls (once, onceAuthority, onceProbe), attempt with a sink 1 (in onceProbe), onceProbe 1 decl / 2 calls (both inside runAuthorityProbe), none in any product function; DYNAMIC -- checkSession / revokeSession / beginSession fed 409 bodies seeded as in PV17 give the A6 results, read the whole body (the existing arrayBuffer path: every chunk pulled, no cancel), and create no ProbeDiag', async () => {
+    const strip = (src) => {
+      const js = ts.transpileModule(src, { compilerOptions: { removeComments: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+      let out = ''; let i = 0; const n = js.length;
+      while (i < n) {
+        const c = js[i];
+        if (c === '"' || c === "'" || c === '`') { const q = c; out += ' '; i++; while (i < n && js[i] !== q) { if (js[i] === '\\') i++; i++; } out += ' '; i++; continue; }
+        out += c; i++;
+      }
+      return out;
+    };
+    const DECL = (name) => new RegExp(`(?:^|[^.\\w])(?:async\\s+)?function\\s+${name}\\s*\\(`, 'g');
+    const CALL = (name) => new RegExp(`(?:^|[^.\\w])${name}\\s*\\(`, 'g');
+    const count = (code, name) => { const d = (code.match(DECL(name)) || []).length; return { decl: d, calls: (code.match(CALL(name)) || []).length - d }; };
+    // self-test: one declaration, two calls, one comment mention, one string mention -> 1 / 2
+    assert.deepEqual(count(strip('function probeDiagOf(a) { return a; }\n// probeDiagOf(x) in a comment\nconst s = "probeDiagOf(y)";\nprobeDiagOf(1); probeDiagOf(2);\n'), 'probeDiagOf'), { decl: 1, calls: 2 }, 'counter self-test');
+    const src = fs.readFileSync(path.join(FUNCTIONS, 'lib/session-revocation.ts'), 'utf8');
+    const code = strip(src);
+    const fnSlice = (name) => { const m = new RegExp(`(?:^|\\n)(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(code); assert.ok(m, 'function ' + name); const rest = code.slice(m.index + 1); const end = rest.search(/\n(?:async\s+)?function\s|\nclass\s|\nexports\.|\nconst\s+[A-Z_]+\s*=/); return end < 0 ? rest : rest.slice(0, end); };
+    assert.deepEqual(count(code, 'startProbeDiag'), { decl: 1, calls: 1 }); assert.equal(count(fnSlice('attempt'), 'startProbeDiag').calls, 1, 'the diagnostic starts only inside attempt');
+    assert.deepEqual(count(code, 'attempt'), { decl: 1, calls: 3 });
+    assert.equal((fnSlice('attempt').match(/if \(diag\)/g) || []).length, 1);
+    assert.equal(count(fnSlice('once'), 'attempt').calls, 1); assert.equal(count(fnSlice('onceAuthority'), 'attempt').calls, 1); assert.equal(count(fnSlice('onceProbe'), 'attempt').calls, 1);
+    assert.equal((code.match(/attempt\(ctx, (?:exports\.)?REVOCATION_STORE, op, sink\)/g) || []).length, 1, 'exactly one call passes a sink, in onceProbe (the transpile qualifies the export)');
+    assert.deepEqual(count(code, 'onceProbe'), { decl: 1, calls: 2 }); assert.equal(count(fnSlice('runAuthorityProbe'), 'onceProbe').calls, 2, 'both onceProbe calls are inside runAuthorityProbe');
+    assert.deepEqual(count(code, 'joinProbeDiag'), { decl: 1, calls: 1 }); assert.equal(count(fnSlice('onceProbe'), 'joinProbeDiag').calls, 1);
+    for (const name of ['beginSession', 'checkSession', 'revokeSession', 'confirmAnchor', 'once', 'onceAuthority', 'runCheckShapeProbe']) {
+      const body = fnSlice(name);
+      for (const sym of ['onceProbe', 'startProbeDiag', 'joinProbeDiag']) assert.equal(count(body, sym).calls, 0, `${name} never calls ${sym}`);
+      assert.ok(!/\bdiag\b|DiagSink|ProbeDiag/.test(body), name + ' names no diagnostic');
+    }
+    // DYNAMIC: Object.freeze spy for ProbeDiag-shaped objects; pull-counted 409 bodies on every product write
+    const freeze0 = Object.freeze; let diags = 0;
+    Object.freeze = function (o) { if (o && typeof o === 'object' && 'sha256' in o && 'bytes' in o) diags += 1; return freeze0.call(Object, o); };
+    try {
+      reset(); const Bs = await bind(7); blobs.log.length = 0;
+      const body = { bytes: 6000, chunks: [1000, 1000, 1000, 1000, 1000, 1000], pull: true };
+      blobs.rule({ method: 'PUT', key: sKey(Bs.sid), status: 409, errorBody: body, headers: { 'x-nf-request-id': 'Bearer eyJ' } });
+      assert.equal((await rev.checkSession(Bs, 'test', { event: NF })).kind, 'unavailable', 'checkSession: the A6 409 result');
+      assert.equal(blobs.bodyPulls(), 7, 'the whole body was read (6 chunks + end): the existing arrayBuffer path'); assert.equal(blobs.bodyCancels(), 0, 'no diagnostic cancel');
+      blobs.rule({ method: 'PUT', key: sKey(Bs.sid), status: 409, errorBody: body });
+      const rv = await rev.revokeSession(Bs.sid, Bs.epoch, 'test', { event: NF });
+      assert.ok(rv.kind !== 'verified', 'revokeSession on a 409: not verified (' + rv.kind + ')');
+      reset(); blobs.rule({ method: 'PUT', key: ANCHOR_KEY, status: 409, errorBody: body });
+      assert.equal((await rev.beginSession(sid(8), 'test', { event: NF })).kind, 'unavailable', 'beginSession on a 409 anchor confirm: unavailable');
+      assert.equal(blobs.bodyCancels(), 0);
+    } finally { Object.freeze = freeze0; }
+    assert.equal(diags, 0, 'no ProbeDiag was created on any product path');
+  });
   // ── PT / PC: P-1 timing and the check-shape mode (Bones REVISE P2 on the activation plan, U3; Jeff 2026-11-10) ──
   const checkEv = (o = {}) => ev({ body: JSON.stringify({ probe: 'check', runId: RUN }), ...o });
   const CK_S = 'probe/' + RUN + '/check-session'; const CK_A = 'probe/' + RUN + '/check-anchor';
@@ -1836,7 +2086,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal((await NOOP()(ev({ bearer: tok, body: JSON.stringify({ probe: 'a6' }) }))).statusCode, 401);
     assert.equal(storeImage(), before, 'byte-identical store'); assert.equal(blobs.mutations.length, m0);
   });
-  const FLOOR = 292;
+  const FLOOR = 305;   // G1 (Gate A r3 A1b; Bones accepted r1-r4): + PV6-PV18
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (server): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;

@@ -183,7 +183,7 @@ type Store = ReturnType<typeof getStore>;
  * 200 / 404 / 412 reach the SDK unchanged; any other status or a throw is answered with a synthetic 400 so the SDK
  * neither sleeps nor retries. The caller decides ONLY from the returned record.
  */
-async function attempt(ctx: Ctx, storeName: typeof REVOCATION_STORE | typeof SESSION_AUTHORITY_STORE, op: (store: Store) => Promise<unknown>): Promise<Recorded> {
+async function attempt(ctx: Ctx, storeName: typeof REVOCATION_STORE | typeof SESSION_AUTHORITY_STORE, op: (store: Store) => Promise<unknown>, diag?: DiagSink): Promise<Recorded> {
   const attempts: { status: number | null; etag: string | null; threw: boolean }[] = [];
   let extra = false;
   let notStarted = false;
@@ -193,11 +193,15 @@ async function attempt(ctx: Ctx, storeName: typeof REVOCATION_STORE | typeof SES
     if (attempts.length > 0 || notStarted) { extra = true; return new Response(null, { status: 400 }); }
     const left = ctx.deadline - ctx.now();
     if (left < MIN_START_MS) { notStarted = true; return new Response(null, { status: 400 }); }
+    const stageEnd = ctx.now() + Math.min(STAGE_CAP_MS, left);
     stageTimer = setTimeout(() => ac.abort(), Math.min(STAGE_CAP_MS, left));
     try {
       const res = await ctx.fetchImpl(input, { ...init, signal: ac.signal });
       attempts.push({ status: res.status, etag: res.headers.get("etag"), threw: false });
       if (res.status === 200 || res.status === 404 || res.status === 412) return res;
+      // Test probe only (G1: r2 R1, r3 T2): the raw record above is already fixed; a supplied sink starts a DETACHED,
+      // bounded diagnostic that can never change it. Product callers never pass a sink and take the line below.
+      if (diag) { startProbeDiag(diag, res, ctx, stageEnd); return new Response(null, { status: 400 }); }
       await res.arrayBuffer().catch(() => undefined);
       return new Response(null, { status: 400 });
     } catch {
@@ -229,6 +233,113 @@ async function attempt(ctx: Ctx, storeName: typeof REVOCATION_STORE | typeof SES
 function once(ctx: Ctx, op: (store: Store) => Promise<unknown>): Promise<Recorded> { return attempt(ctx, REVOCATION_STORE, op); }
 /** ONE request to the dedicated, never-restored AUTHORITY store: the only path to the anchor. */
 function onceAuthority(ctx: Ctx, op: (store: Store) => Promise<unknown>): Promise<Recorded> { return attempt(ctx, SESSION_AUTHORITY_STORE, op); }
+
+// ------------------------------- Test-probe-only bounded diagnostics (G1) ---
+/*
+ * Gate A r3 A1b (2026-11-13): three race losers answered 409, the provider's lost-race status (netlify/primitives
+ * #820). Accepted method r1 + r2 + r3 + r4 (Bones): for a probe request whose raw status is not 200 / 404 / 412, record a
+ * bounded, allowlisted classification -- never body text, a header value other than the two below, a URL, a cookie,
+ * a token or an ETag. ONLY onceProbe (inside runAuthorityProbe) supplies a sink; every product path is unchanged.
+ *  - The raw transport record is fixed BEFORE any diagnostic work; the diagnostic is detached and never alters it.
+ *  - ONE absolute end time, fixed at response-header arrival: min(headers + DIAG_MAX_MS, the stage end,
+ *    deadline - DIAG_RESERVE_MS). Every wait uses only the time remaining to it; nothing is ever restarted.
+ *  - At most DIAG_MAX_BYTES are hashed (each chunk is cut BEFORE hashing); cancel is fire-and-forget, never awaited.
+ *  - The result is frozen. A throw anywhere inside becomes body "error".
+ * Limit: a diagnostic classifies an answer; it is not evidence that a losing write left the record untouched.
+ */
+const DIAG_MAX_BYTES = 4096;
+const DIAG_MAX_MS = 250;
+const DIAG_RESERVE_MS = 50;
+const DIAG_RID = /^[0-9A-Z]{26}$/;
+const DIAG_MEDIA = ["application/json", "text/plain", "application/xml", "text/html"] as const;
+export type ProbeDiag = {
+  req: number; status: number; class: "conflict_409" | "unexpected"; rid: string | null; ct: (typeof DIAG_MEDIA)[number] | "other" | null;
+  bytes: number; sha256: string | null; body: "none" | "empty" | "complete" | "prefix" | "timeout" | "error" | "skipped_deadline";
+};
+type DiagSink = { req: number; end: number; finish: ((state: ProbeDiag["body"]) => ProbeDiag) | null; settled: Promise<ProbeDiag> | null };
+
+function startProbeDiag(sink: DiagSink, res: Response, ctx: Ctx, stageEnd: number): void {
+  try {
+    const headersAt = ctx.now();
+    sink.end = Math.min(headersAt + DIAG_MAX_MS, stageEnd, ctx.deadline - DIAG_RESERVE_MS);
+    const ridRaw = res.headers.get("x-nf-request-id");
+    const media = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    const base = {
+      req: sink.req, status: res.status, class: res.status === 409 ? "conflict_409" as const : "unexpected" as const,
+      rid: ridRaw === null ? null : DIAG_RID.test(ridRaw) ? ridRaw : "invalid",
+      ct: media === "" ? null : (DIAG_MEDIA as readonly string[]).includes(media) ? (media as (typeof DIAG_MEDIA)[number]) : "other" as const,
+    };
+    let bytes = 0;
+    const hash = createHash("sha256");
+    let result: ProbeDiag | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    const finish = (state: ProbeDiag["body"]): ProbeDiag => {
+      if (result) return result;
+      clearTimeout(timer);
+      let sha: string | null = null;
+      try { sha = bytes > 0 ? hash.copy().digest("hex") : null; } catch { state = "error"; }
+      result = Object.freeze({ ...base, bytes, sha256: sha, body: state });
+      if (reader) { try { reader.cancel().catch(() => undefined); } catch { /* bounded: never awaited */ } }
+      else { try { res.body?.cancel().catch(() => undefined); } catch { /* bounded */ } }
+      return result;
+    };
+    sink.finish = finish;
+    if (!res.body) { finish("none"); sink.settled = Promise.resolve(result as unknown as ProbeDiag); return; }
+    if (sink.end - headersAt <= 0) { finish("skipped_deadline"); sink.settled = Promise.resolve(result as unknown as ProbeDiag); return; }
+    reader = res.body.getReader();
+    timer = setTimeout(() => finish("timeout"), Math.max(0, sink.end - ctx.now()));
+    const r = reader;
+    sink.settled = (async (): Promise<ProbeDiag> => {
+      try {
+        for (;;) {
+          if (result) return result;
+          if (ctx.now() >= sink.end) return finish("timeout");
+          const next = await r.read();
+          if (result) return result;
+          if (next.done) return finish(bytes === 0 ? "empty" : "complete");
+          if (!(next.value instanceof Uint8Array)) return finish("error");
+          const room = DIAG_MAX_BYTES - bytes;
+          const chunk = next.value.subarray(0, room);
+          hash.update(chunk);
+          bytes += chunk.length;
+          if (next.value.length > room) return finish("prefix");
+        }
+      } catch { return finish("error"); }
+    })();
+  } catch {
+    sink.finish = null;
+    sink.settled = Promise.resolve(Object.freeze({ req: sink.req, status: res.status, class: res.status === 409 ? "conflict_409" : "unexpected", rid: null, ct: null, bytes: 0, sha256: null, body: "error" }) as ProbeDiag);
+  }
+}
+
+/** Joins a started diagnostic, waiting at most the time REMAINING to its absolute end; never throws. */
+async function joinProbeDiag(sink: DiagSink, ctx: Ctx): Promise<ProbeDiag | null> {
+  if (!sink.settled) return null;
+  let t: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const wait = Math.max(0, sink.end - ctx.now());
+    const timedOut = new Promise<null>((resolve) => { t = setTimeout(() => resolve(null), wait); });
+    const d = await Promise.race([sink.settled, timedOut]);
+    if (d) return d;
+    return sink.finish ? sink.finish("timeout") : null;
+  } catch { return sink.finish ? sink.finish("error") : null; }
+  finally { clearTimeout(t); }
+}
+
+/** The run deadline has passed (exact boundary: at the deadline counts as passed). Probe only. */
+class ProbeRunDeadline extends Error {}
+/** ONE request to the session store with a Test-probe diagnostic sink: the only caller passing a sink to attempt().
+ *  The returned Recorded is attempt()'s own; the diagnostic is separate and frozen. Throws ProbeRunDeadline when the
+ *  run deadline has been reached, before sending or after the answer (r3 T2 item 4, r4 U2). */
+async function onceProbe(ctx: Ctx, req: number, op: (store: Store) => Promise<unknown>): Promise<{ r: Recorded; d: ProbeDiag | null }> {
+  if (ctx.now() >= ctx.deadline) throw new ProbeRunDeadline("before");
+  const sink: DiagSink = { req, end: 0, finish: null, settled: null };
+  const r = await attempt(ctx, REVOCATION_STORE, op, sink);
+  const d = await joinProbeDiag(sink, ctx);
+  if (ctx.now() >= ctx.deadline) throw Object.assign(new ProbeRunDeadline("after"), { diag: d });
+  return { r, d };
+}
 
 /** An If-Match re-write of the IDENTICAL canonical anchor bytes: the only anchor write in this module. */
 function confirmAnchor(ctx: Ctx, epoch: string, etag: string): Promise<Recorded> {
@@ -481,6 +592,14 @@ export async function sessionWriteRefusal(event: any, env: NodeJS.ProcessEnv = p
  * 12 + concurrency (17 at N = 5), all conditional writes, no read; the bytes change exactly 3 times (create, one
  * winner, revoke). Proof limit (Bones 26): a confirm is evidence of matching origin state under the tested If-Match /
  * ETag semantics, not an independent byte read; a service that lies consistently about status and ETag is not ruled out.
+ * Second proof limit (Bones, G1 r3 T1): final-state confirmation cannot detect an EARLIER rejected-but-applied write (a
+ * loser reported 409 / 412 whose bytes were stored) that the acknowledged winner subsequently overwrote.
+ *
+ * RACE LOSERS (G1, Gate A r3 A1b; Bones accepted r1-r4): in step 5 every racer other than the single raw-200 winner
+ * must answer a raw 409 (the provider's lost-race answer, netlify/primitives #820) or 412. Steps 2, 4 and 7 stay
+ * STRICT 412. Every request goes through onceProbe: a bounded, allowlisted diagnostic (`detail.diag`, present only when
+ * some request of the step answered a status other than 200 / 404 / 412) and a run-deadline guard -- at or after the
+ * deadline no further request is sent and the run is ok:false (`failed: "run_deadline"`, `uncertain: "deadline"`).
  *
  * U3 timing (Bones REVISE P2 on the activation plan, Jeff 2026-11-10): every step carries `duration_ms`, measured on the
  * server with the monotonic clock (performance.now) around that step's Blob operations, and the run carries `total_ms`.
@@ -497,6 +616,7 @@ export type ProbeDetail = {
   confirm?: { status: number | null; etagMatches: boolean | null } | null;
   racers?: (number | null)[]; winners?: number; winner?: number | null; replays?: (number | null)[];
   etagValid?: boolean; transitionEtagChanged?: boolean | null; uncertain?: string | null; failed?: string | null;
+  diag?: ProbeDiag[];
 };
 export type ProbeStep = { n: number; op: string; status: number | null; etagChanged: boolean | null; modified: boolean | null; ok: boolean; duration_ms: number; detail?: ProbeDetail };
 export type ProbeU4 = { present: boolean; single: boolean; lowercase: boolean; equalsPinned: boolean };
@@ -538,19 +658,48 @@ export async function runAuthorityProbe(runId: string, deployment: string, opts:
      A 412, any other status, a missing / invalid / different ETag, a timeout, a transport or SDK failure, or a late
      answer fails it (closed). It is never retried, and an unanswered request is reported as uncertain, not as
      not-applied. Passing changes no bytes. */
+  // Every request goes through onceProbe (G1): its Recorded is attempt()'s own; its diagnostic (if any) is collected
+  // for the current step and never read by a predicate; at or after the run deadline it throws ProbeRunDeadline.
+  let stepDiag: ProbeDiag[] = [];
+  let reqN = 0;
+  let curOp = "create onlyIfNew";
+  const P = async (op: (store: Store) => Promise<unknown>): Promise<Recorded> => {
+    const { r, d } = await onceProbe(ctx, reqN++, op);
+    if (d) stepDiag.push(d);
+    return r;
+  };
   const confirm = async (label: string, etag: string) => {
-    const r = await once(ctx, (s) => s.set(key, text(label), { onlyIfMatch: etag }));
+    const r = await P((s) => s.set(key, text(label), { onlyIfMatch: etag }));
     return { ok: r.status === 200 && r.etag === etag, status: r.status, etagMatches: r.status === 200 ? r.etag === etag : null, why: r.why };
   };
   // A step's duration runs from the end of the previous step to this call: its write(s) and confirmation write(s).
   const step = (op: string, r: Recorded, ok: boolean, before?: string | null, detail?: ProbeDetail): boolean => {
-    steps.push({ n: steps.length + 1, op, status: r.status, etagChanged: before === undefined ? null : before === null || r.etag === null ? null : before !== r.etag, modified: modifiedOf(r), ok, duration_ms: elapsed(tStep), ...(detail ? { detail } : {}) });
+    const d = detail && stepDiag.length ? { ...detail, diag: stepDiag } : detail;
+    steps.push({ n: steps.length + 1, op, status: r.status, etagChanged: before === undefined ? null : before === null || r.etag === null ? null : before !== r.etag, modified: modifiedOf(r), ok, duration_ms: elapsed(tStep), ...(d ? { detail: d } : {}) });
     tStep = performance.now();
+    stepDiag = [];
+    reqN = 0;
     return ok;
   };
+  /* Run deadline (r3 T2 item 4, r4 U2; exact boundary: at the deadline counts as passed): the current step fails with
+     failed "run_deadline" / uncertain "deadline", nothing further is sent, and the run is ok:false. */
+  const deadlineStep = (e: unknown): ProbeResult => {
+    const d = e && typeof e === "object" && (e as any).diag ? (e as any).diag as ProbeDiag : null;
+    if (d) stepDiag.push(d);
+    const detail: ProbeDetail = { uncertain: "deadline", failed: "run_deadline", ...(stepDiag.length ? { diag: stepDiag } : {}) };
+    steps.push({ n: steps.length + 1, op: curOp, status: null, etagChanged: null, modified: null, ok: false, duration_ms: elapsed(tStep), detail });
+    stepDiag = [];
+    return done();
+  };
   const done = (): ProbeResult => {
+    // Completion at or after the run deadline can never PASS: the last step is failed as run_deadline.
+    if (ctx.now() >= ctx.deadline && steps.length > 0 && steps.every((s) => s.ok)) {
+      const last = steps[steps.length - 1];
+      last.ok = false;
+      last.detail = { ...(last.detail ?? {}), uncertain: "deadline", failed: "run_deadline" };
+    }
     const stoppedAt = steps.some((s) => !s.ok) ? steps.find((s) => !s.ok)!.n : null;
-    return { mode: "conditional-write", runId, ok: stoppedAt === null && steps.length === AUTHORITY_PROBE_STEPS, steps, stoppedAt, total_ms: elapsed(tRun), u4 };
+    return { mode: "conditional-write", runId, ok: stoppedAt === null && steps.length === AUTHORITY_PROBE_STEPS && ctx.now() < ctx.deadline, steps, stoppedAt, total_ms: elapsed(tRun), u4 };
   };
   /* The first failed assertion of a step, in order, or null; and `uncertain` = why some request of the step got no
      answer (deadline / transport / attempts). Safe diagnostics only: statuses, booleans, indices, names. */
@@ -558,56 +707,73 @@ export async function runAuthorityProbe(runId: string, deployment: string, opts:
   const uncertainOf = (...rs: ({ status: number | null; why: string | null } | null)[]) => { const u = rs.find((x) => x && x.status === null); return u ? u.why ?? "no_answer" : null; };
   const conf = (c: { status: number | null; etagMatches: boolean | null } | null) => (c ? { status: c.status, etagMatches: c.etagMatches } : null);
 
-  // 1. conditional create
-  const created = await once(ctx, (s) => s.set(key, text("A"), { onlyIfNew: true }));
-  const f1 = firstFailed([["create_status_200", created.status === 200], ["create_etag_canonical", isCanonicalEtag(created.etag)]]);
-  if (!step("create onlyIfNew", created, f1 === null, undefined, { etagValid: isCanonicalEtag(created.etag), uncertain: uncertainOf(created), failed: f1 })) return done();
-  const e1 = created.etag as string;
-  // 2. duplicate create refused; the record is still exactly text("A") at e1
-  const dup = await once(ctx, (s) => s.set(key, text("B"), { onlyIfNew: true }));
-  const c2 = dup.status === 412 ? await confirm("A", e1) : null;
-  const f2 = firstFailed([["duplicate_status_412", dup.status === 412], ["confirm_A_e1", c2 !== null && c2.ok]]);
-  if (!step("duplicate create refused", dup, f2 === null, undefined, { confirm: conf(c2), uncertain: uncertainOf(dup, c2), failed: f2 })) return done();
-  // 3. U1: identical bytes onlyIfMatch -> 200, ETag unchanged
-  const same = await once(ctx, (s) => s.set(key, text("A"), { onlyIfMatch: e1 }));
-  const f3 = firstFailed([["identical_status_200", same.status === 200], ["identical_etag_unchanged", same.etag === e1]]);
-  if (!step("identical bytes onlyIfMatch (U1)", same, f3 === null, e1, { uncertain: uncertainOf(same), failed: f3 })) return done();
-  // 4. U2: a non-current ETag refused; the record is still exactly text("A") at e1
-  const stale = await once(ctx, (s) => s.set(key, text("C"), { onlyIfMatch: "\"iaos-probe-not-current\"" }));
-  const c4 = stale.status === 412 ? await confirm("A", e1) : null;
-  const f4 = firstFailed([["stale_status_412", stale.status === 412], ["confirm_A_e1", c4 !== null && c4.ok]]);
-  if (!step("stale onlyIfMatch refused (U2)", stale, f4 === null, undefined, { confirm: conf(c4), uncertain: uncertainOf(stale, c4), failed: f4 })) return done();
-  // 5. U2: N concurrent conflicting writers on the same ETag -> exactly one raw 200 and every other raw 412; the winner's
-  //    ETag is canonical and CHANGED (A -> W<i>); the record is then exactly text(W<i>) at that ETag
-  const racers = await Promise.all(Array.from({ length: n }, (_, i) => once(ctx, (s) => s.set(key, text(`W${i}`), { onlyIfMatch: e1 }))));
-  const winners = racers.map((r, i) => ({ r, i })).filter((x) => x.r.status === 200);
-  const losersOk = racers.every((r) => r.status === 200 || r.status === 412);
-  const w = winners.length === 1 ? winners[0] : null;
-  const eWValid = w !== null && isCanonicalEtag(w.r.etag);
-  const eWChanged = w !== null && w.r.etag !== null ? w.r.etag !== e1 : null;
-  const c5 = w !== null && losersOk && eWValid && eWChanged === true ? await confirm(`W${w.i}`, w.r.etag as string) : null;
-  const f5 = firstFailed([["exactly_one_winner", winners.length === 1], ["losers_412", losersOk], ["winner_etag_canonical", eWValid], ["winner_etag_changed", eWChanged === true], ["confirm_winner_eW", c5 !== null && c5.ok]]);
-  const raceDetail: ProbeDetail = { racers: racers.map((r) => r.status), winners: winners.length, winner: w ? w.i : null, etagValid: eWValid, transitionEtagChanged: eWChanged, confirm: conf(c5), uncertain: uncertainOf(...racers, c5), failed: f5 };
-  if (!step(`concurrent onlyIfMatch x${n}: exactly one winner (U2)`, { status: winners.length === 1 ? 200 : null, etag: null, data: { modified: winners.length === 1 }, why: null }, f5 === null, undefined, raceDetail)) return done();
-  const eW = (w as { r: Recorded; i: number }).r.etag as string;
-  const wLabel = `W${(w as { r: Recorded; i: number }).i}`;
-  // 6. U2: revoke onlyIfMatch eW -> raw 200, canonical ETag CHANGED (W<i> -> REVOKED); the record is then exactly
-  //    text("REVOKED") at that ETag
-  const revoked = await once(ctx, (s) => s.set(key, text("REVOKED"), { onlyIfMatch: eW }));
-  const eRValid = isCanonicalEtag(revoked.etag);
-  const eRChanged = revoked.status === 200 && revoked.etag !== null ? revoked.etag !== eW : null;
-  const c6 = revoked.status === 200 && eRValid && eRChanged === true ? await confirm("REVOKED", revoked.etag as string) : null;
-  const f6 = firstFailed([["revoke_status_200", revoked.status === 200], ["revoke_etag_canonical", eRValid], ["revoke_etag_changed", eRChanged === true], ["confirm_REVOKED_eR", c6 !== null && c6.ok]]);
-  if (!step("revoke onlyIfMatch", revoked, f6 === null, eW, { etagValid: eRValid, transitionEtagChanged: eRChanged, confirm: conf(c6), uncertain: uncertainOf(revoked, c6), failed: f6 })) return done();
-  const eR = revoked.etag as string;
-  // 7. U2: every pre-revocation ETag is refused -- the old bytes with e1 and the winner's bytes with eW -- and the
-  //    record is still exactly text("REVOKED") at eR
-  const replay = await once(ctx, (s) => s.set(key, text("A"), { onlyIfMatch: e1 }));
-  const replayW = replay.status === 412 ? await once(ctx, (s) => s.set(key, text(wLabel), { onlyIfMatch: eW })) : null;
-  const c7 = replayW !== null && replayW.status === 412 ? await confirm("REVOKED", eR) : null;
-  const f7 = firstFailed([["replay_e1_412", replay.status === 412], ["replay_eW_412", replayW !== null && replayW.status === 412], ["confirm_REVOKED_eR", c7 !== null && c7.ok]]);
-  step("replay of old bytes with old ETag refused (U2)", replay, f7 === null, undefined, { replays: [replay.status, replayW ? replayW.status : null], confirm: conf(c7), uncertain: uncertainOf(replay, replayW, c7), failed: f7 });
-  return done();
+  try {
+    // 1. conditional create
+    curOp = "create onlyIfNew";
+    const created = await P((s) => s.set(key, text("A"), { onlyIfNew: true }));
+    const f1 = firstFailed([["create_status_200", created.status === 200], ["create_etag_canonical", isCanonicalEtag(created.etag)]]);
+    if (!step("create onlyIfNew", created, f1 === null, undefined, { etagValid: isCanonicalEtag(created.etag), uncertain: uncertainOf(created), failed: f1 })) return done();
+    const e1 = created.etag as string;
+    // 2. duplicate create refused (STRICT 412); the record is still exactly text("A") at e1
+    curOp = "duplicate create refused";
+    const dup = await P((s) => s.set(key, text("B"), { onlyIfNew: true }));
+    const c2 = dup.status === 412 ? await confirm("A", e1) : null;
+    const f2 = firstFailed([["duplicate_status_412", dup.status === 412], ["confirm_A_e1", c2 !== null && c2.ok]]);
+    if (!step("duplicate create refused", dup, f2 === null, undefined, { confirm: conf(c2), uncertain: uncertainOf(dup, c2), failed: f2 })) return done();
+    // 3. U1: identical bytes onlyIfMatch -> 200, ETag unchanged
+    curOp = "identical bytes onlyIfMatch (U1)";
+    const same = await P((s) => s.set(key, text("A"), { onlyIfMatch: e1 }));
+    const f3 = firstFailed([["identical_status_200", same.status === 200], ["identical_etag_unchanged", same.etag === e1]]);
+    if (!step("identical bytes onlyIfMatch (U1)", same, f3 === null, e1, { uncertain: uncertainOf(same), failed: f3 })) return done();
+    // 4. U2: a non-current ETag refused (STRICT 412); the record is still exactly text("A") at e1
+    curOp = "stale onlyIfMatch refused (U2)";
+    const stale = await P((s) => s.set(key, text("C"), { onlyIfMatch: "\"iaos-probe-not-current\"" }));
+    const c4 = stale.status === 412 ? await confirm("A", e1) : null;
+    const f4 = firstFailed([["stale_status_412", stale.status === 412], ["confirm_A_e1", c4 !== null && c4.ok]]);
+    if (!step("stale onlyIfMatch refused (U2)", stale, f4 === null, undefined, { confirm: conf(c4), uncertain: uncertainOf(stale, c4), failed: f4 })) return done();
+    // 5. U2: N concurrent conflicting writers on the same ETag -> exactly one raw 200; every OTHER racer a raw 409 (the
+    //    provider's lost-race answer, netlify/primitives #820) or 412; the winner's ETag is canonical and CHANGED
+    //    (A -> W<i>); the record is then exactly text(W<i>) at that ETag. Any other loser status, an unanswered (null)
+    //    loser, or 0 / >1 winners fails closed.
+    curOp = `concurrent onlyIfMatch x${n}: exactly one winner (U2)`;
+    const racers = await Promise.all(Array.from({ length: n }, (_, i) => onceProbe(ctx, i, (s) => s.set(key, text(`W${i}`), { onlyIfMatch: e1 }))
+      .then(({ r, d }) => { if (d) stepDiag.push(d); return r; })));
+    stepDiag.sort((a, b) => a.req - b.req);
+    reqN = n;
+    const winners = racers.map((r, i) => ({ r, i })).filter((x) => x.r.status === 200);
+    const w = winners.length === 1 ? winners[0] : null;
+    const losersOk = w !== null && racers.every((r, i) => i === w.i || r.status === 409 || r.status === 412);
+    const eWValid = w !== null && isCanonicalEtag(w.r.etag);
+    const eWChanged = w !== null && w.r.etag !== null ? w.r.etag !== e1 : null;
+    const c5 = w !== null && losersOk && eWValid && eWChanged === true ? await confirm(`W${w.i}`, w.r.etag as string) : null;
+    const f5 = firstFailed([["exactly_one_winner", winners.length === 1], ["losers_409_or_412", losersOk], ["winner_etag_canonical", eWValid], ["winner_etag_changed", eWChanged === true], ["confirm_winner_eW", c5 !== null && c5.ok]]);
+    const raceDetail: ProbeDetail = { racers: racers.map((r) => r.status), winners: winners.length, winner: w ? w.i : null, etagValid: eWValid, transitionEtagChanged: eWChanged, confirm: conf(c5), uncertain: uncertainOf(...racers, c5), failed: f5 };
+    if (!step(curOp, { status: winners.length === 1 ? 200 : null, etag: null, data: { modified: winners.length === 1 }, why: null }, f5 === null, undefined, raceDetail)) return done();
+    const eW = (w as { r: Recorded; i: number }).r.etag as string;
+    const wLabel = `W${(w as { r: Recorded; i: number }).i}`;
+    // 6. U2: revoke onlyIfMatch eW -> raw 200, canonical ETag CHANGED (W<i> -> REVOKED); the record is then exactly
+    //    text("REVOKED") at that ETag
+    curOp = "revoke onlyIfMatch";
+    const revoked = await P((s) => s.set(key, text("REVOKED"), { onlyIfMatch: eW }));
+    const eRValid = isCanonicalEtag(revoked.etag);
+    const eRChanged = revoked.status === 200 && revoked.etag !== null ? revoked.etag !== eW : null;
+    const c6 = revoked.status === 200 && eRValid && eRChanged === true ? await confirm("REVOKED", revoked.etag as string) : null;
+    const f6 = firstFailed([["revoke_status_200", revoked.status === 200], ["revoke_etag_canonical", eRValid], ["revoke_etag_changed", eRChanged === true], ["confirm_REVOKED_eR", c6 !== null && c6.ok]]);
+    if (!step("revoke onlyIfMatch", revoked, f6 === null, eW, { etagValid: eRValid, transitionEtagChanged: eRChanged, confirm: conf(c6), uncertain: uncertainOf(revoked, c6), failed: f6 })) return done();
+    const eR = revoked.etag as string;
+    // 7. U2: every pre-revocation ETag is refused (STRICT 412) -- the old bytes with e1 and the winner's bytes with
+    //    eW -- and the record is still exactly text("REVOKED") at eR
+    curOp = "replay of old bytes with old ETag refused (U2)";
+    const replay = await P((s) => s.set(key, text("A"), { onlyIfMatch: e1 }));
+    const replayW = replay.status === 412 ? await P((s) => s.set(key, text(wLabel), { onlyIfMatch: eW })) : null;
+    const c7 = replayW !== null && replayW.status === 412 ? await confirm("REVOKED", eR) : null;
+    const f7 = firstFailed([["replay_e1_412", replay.status === 412], ["replay_eW_412", replayW !== null && replayW.status === 412], ["confirm_REVOKED_eR", c7 !== null && c7.ok]]);
+    step("replay of old bytes with old ETag refused (U2)", replay, f7 === null, undefined, { replays: [replay.status, replayW ? replayW.status : null], confirm: conf(c7), uncertain: uncertainOf(replay, replayW, c7), failed: f7 });
+    return done();
+  } catch (e) {
+    if (e instanceof ProbeRunDeadline) return deadlineStep(e);
+    throw e;
+  }
 }
 
 /**
