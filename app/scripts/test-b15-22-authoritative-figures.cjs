@@ -38,7 +38,7 @@ const TMP = path.join(APP, '.tmp-b15-22-authoritative-test');
 const esbuild = require(path.join(APP, 'node_modules', '.pnpm', 'esbuild@0.25.12', 'node_modules', 'esbuild'));
 
 /** Literal check() call-site count in this file. */
-const FLOOR = 103;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta); B15-29 P-1 timing: + S8f (S8e was within 101); probe gate site id: + S8g
+const FLOOR = 104;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta); B15-29 P-1 timing: + S8f (S8e was within 101); probe gate site id: + S8g; B15-29 probe verification (A1a): + S8-PV
 let checks = 0; let failures = 0;
 function check(name, actual, expected) {
   checks += 1;
@@ -459,6 +459,21 @@ check('S7 the label is backed by the resolver: Opportunity ARV first, Contact on
   check('S8g the B15-29 probe-gate site-id delta is exactly its two chained changes and one addition (lib/runtime-site.ts)',
     [Object.keys(B29G.changes || {}).sort(), Object.keys(B29G.additions || {}).sort(), b29gProblems],
     [['netlify/functions/lib/session-revocation.ts', 'netlify/functions/lib/test-probe-gate.ts'], ['netlify/functions/lib/runtime-site.ts'], []]);
+  /* B15-29 P-1 probe verification (Gate A A1a W0, 2026-11-12; Bones 25): ONE change to the Test-only probe section of
+     lib/session-revocation.ts (read-back checks become identical-bytes conditional writes), chained from the bytes
+     S8g expects; no addition. Listed, with its reason, in b15-22-b15-29-probe-verify-delta.json. S8g and every earlier
+     amendment are unchanged. */
+  const B29V = JSON.parse(fs.readFileSync(path.join(APP, 'scripts', 'fixtures', 'b15-22-b15-29-probe-verify-delta.json'), 'utf8'));
+  const b29vProblems = [];
+  for (const [rel, c] of Object.entries(B29V.changes || {})) {
+    if (!(rel in expected)) b29vProblems.push(`not an expected protected file: ${rel}`);
+    else if (!c || c.from !== expected[rel] || typeof c.to !== 'string' || c.to === c.from) b29vProblems.push(`not a reviewed change from the expected bytes: ${rel}`);
+    else expected[rel] = c.to;
+  }
+  if (Object.keys(B29V.additions || {}).length) b29vProblems.push('additions are not part of this delta');
+  check('S8-PV the B15-29 probe-verification delta is exactly its one chained change (lib/session-revocation.ts) and no addition',
+    [Object.keys(B29V.changes || {}).sort(), b29vProblems],
+    [['netlify/functions/lib/session-revocation.ts'], []]);
   const drift = [];
   for (const rel of seen) { if (!(rel in expected)) drift.push(`added ${rel}`); else if (hashOf(rel) !== expected[rel]) drift.push(`changed ${rel}`); }
   for (const rel of Object.keys(expected)) if (!seen.includes(rel)) drift.push(`removed ${rel}`);

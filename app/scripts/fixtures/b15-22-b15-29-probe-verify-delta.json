@@ -1,0 +1,12 @@
+{
+  "_comment": "B15-22 S8 amendment for the B15-29 P-1 probe verification correction (Gate A A1a W0, 2026-11-12; Bones 25). Test-only probe section of lib/session-revocation.ts: every read-back verification in runAuthorityProbe becomes an identical-canonical-byte onlyIfMatch confirmation (raw 200, exactly the supplied ETag; Bones 26), evaluated at the store's origin, because under connectLambda every read is an eventual edge read. Product session logic (sign-in, checkSession, sign-out, recovery) and runCheckShapeProbe are unchanged. ONE change, chained from the bytes S8a-S8g expect; no addition. Earlier manifests and amendments are unchanged. Hashes are LF-normalized.",
+  "candidate": "b15-29-probe-verify-writes on main a92f784",
+  "changes": {
+    "netlify/functions/lib/session-revocation.ts": {
+      "from": "e8b290a5400cd7ba4e0698d4bb9e8c8e958f8681bb4168e31d51ade1f9c86523",
+      "to": "8ae4d9a0420f5198d495421d89025ccc3ec9f550ea069e519f1a3b08c0d2eb0e",
+      "reason": "runAuthorityProbe only (Bones 26): the four read-back checks (steps 2, 4, 5, 7) become identical-canonical-byte onlyIfMatch CONFIRMS that pass only on a raw 200 answering exactly the supplied ETag; the A->winner and winner->REVOKED transitions must answer canonical CHANGED ETags; REVOKED is confirmed after its write; both pre-revocation ETags (e1, eW) must be refused; every existing status / single-winner / loser-412 / canonical-ETag condition is kept; safe per-step diagnostics (no ETag value). The read helper is removed. No other function changes."
+    }
+  },
+  "additions": {}
+}
