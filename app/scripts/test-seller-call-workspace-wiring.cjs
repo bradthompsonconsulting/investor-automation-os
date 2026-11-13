@@ -114,7 +114,8 @@ const dealBarTs = readSrc('src/lib/seller-call-deal-bar.ts');
     && stickyWrapperFull.indexOf('<DealBar') < stickyWrapperFull.indexOf('<ReadinessBadge'),
     true);
   check('ReadinessBadge is a sibling element, not a prop of DealBar (still adjacent, not folded in)',
-    /<DealBar cells=\{dealBarCells\}(?: compact)? \/>/.test(stickyWrapperFull), true);
+    /* B15-26 (INV-134): DealBar may also take the spread status (colors the Spread figure); still no readiness prop. */
+    /<DealBar cells=\{dealBarCells\}(?: compact)?(?: spreadStatus=\{spreadStatus\})? \/>/.test(stickyWrapperFull), true);
 }
 
 // ============================================================

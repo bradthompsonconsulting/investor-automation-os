@@ -369,6 +369,8 @@ jobs:
         run: node app/scripts/test-b15-01-repair-policy.cjs
       - name: Wholesaler net proceeds (INV-134, B15-26)
         run: node app/scripts/test-wholesaler-net-proceeds.cjs
+      - name: Spread warnings at the Current Offer -- shared classifier, Seller Call wiring, mutation controls (INV-134, B15-26) — 34 checks
+        run: node app/scripts/test-b15-26-spread-warnings.cjs
       - name: Count labels and accounting (INV-128, B15-19)
         run: node app/scripts/test-b15-19-count-accounting.cjs
       - name: Contacts stage and last call attempt columns (INV-129, B15-20)
@@ -474,6 +476,8 @@ jobs:
         run: node app/scripts/test-b15-27b-drafts.cjs
       - name: Seller Call -- recovery and note appends bound to their contact (B15-27b P3, P4) — 34 checks
         run: node app/scripts/test-b15-27b-seller-call.cjs
+      - name: Seller Call spread warnings, rendered -- adequate, below minimum, negative, typed offer, sticky-bar layout (INV-134, B15-26) — 21 checks
+        run: node app/scripts/test-b15-26-seller-call-spread.cjs
       - name: Notice isolation and deal-bound outcomes (B15-27b r2) — 23 checks
         run: node app/scripts/test-b15-27b-r2.cjs
       - name: Reconciliation bound to the exact contact; call-log operator bound before the reservation (B15-27b r3) — 13 checks
