@@ -1649,7 +1649,16 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     const w0put = L.find((e) => e.method === 'PUT' && e.body.includes(W(0)));
     const eW = cEtag(w0put.body); assert.notEqual(eW, e1); assert.notEqual(eW, m0.storedEtagBefore);
     const rv = L.find((e) => e.method === 'PUT' && e.body.includes('"REVOKED"')); assert.equal(rv.ifMatch, eW, 'revoke sent If-Match = W0\'s genuine content ETag');
-    const st = blobs.store.get(`${SITE}|site:${SSTORE}|probe/${RUN}/record`); assert.equal(JSON.parse(st.text).label, 'REVOKED'); assert.equal(st.etag, cEtag(st.text));
+    // Bones HOLD on 637a972 item 4: independent replay conditions, exact canonical REVOKED bytes and the expected ETag
+    const REVOKED_TEXT = JSON.stringify({ kind: 'iaos-conditional-write-probe', label: 'REVOKED', runId: RUN, v: 1 });
+    const eR = cEtag(REVOKED_TEXT);
+    const iRv = L.indexOf(rv); const after = L.slice(iRv + 1);
+    assert.deepEqual(after.map((e) => [JSON.parse(e.body).label, e.ifMatch, e.ifNoneMatch, e.status]),
+      [['REVOKED', eR, null, 200], ['A', e1, null, 412], ['W0', eW, null, 412], ['REVOKED', eR, null, 200]],
+      'after the revoke: its confirm at eR, the replay of A with If-Match e1, the replay of W0 with If-Match eW, the final confirm at eR');
+    const st = blobs.store.get(`${SITE}|site:${SSTORE}|probe/${RUN}/record`);
+    assert.equal(st.text, REVOKED_TEXT, 'exact canonical REVOKED bytes, read from the fake store'); assert.equal(st.etag, eR, 'the expected canonical revoked ETag');
+    assert.notEqual(eR, eW); assert.notEqual(eR, e1);
     assert.deepEqual(race(out).diag.map((d) => d.req), [1, 2, 4]);
   });
   await check('PV9 two raw 200 winners -> stoppedAt 5 exactly_one_winner, no confirm sent', async () => {
@@ -1721,7 +1730,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal(out.ok, false); assert.equal(out.stoppedAt, 5); assert.equal(out.steps[4].detail.uncertain, 'deadline'); assert.equal(blobs.log.slice(b0).length, 11, 'no confirm');
     assert.ok(out.steps[4].duration_ms < 1500 + 200, 'the diag join did not wait past the deadline: ' + out.steps[4].duration_ms);
   });
-  await check('PV16 bounded reads and exact deadline boundaries (r2 R2, r3 T2, r4 U2): (a) one 1 MiB chunk -> 4096 bytes, prefix, the test\'s own sha256 of the first 4096; (b) exactly 4096 then EOF -> complete; (c) one 4097-byte chunk -> prefix; (d) headers inside the 50 ms reserve -> skipped_deadline; (e)/(f) headers just past the reserve -> timeout bounded by the absolute end; (g) clock past the deadline during the join -> run_deadline, nothing further; (h) a never-settling cancel near the deadline leaves no timer; (i) exactly AT the deadline after the race -> run_deadline, no confirm; (j) completion exactly at the deadline cannot PASS; (k) 1 ms before it passes', async () => {
+  await check('PV16 bounded reads and exact deadline boundaries (r2 R2, r3 T2, r4 U2): (a) one 1 MiB chunk -> 4096 bytes, prefix, the test\'s own sha256 of the first 4096; (b) exactly 4096 then EOF -> complete; (c) one 4097-byte chunk -> prefix; (d) headers inside the 50 ms reserve -> skipped_deadline; (e)/(f) headers just past the reserve -> timeout bounded by the absolute end; (g) clock past the deadline during the join -> run_deadline, nothing further; (h) a never-settling cancel near the deadline leaves no timer; (i) exactly AT the deadline after the race -> run_deadline, no confirm; (j) completion exactly at the deadline cannot PASS; (k) 1 ms before it passes; the deadline step keeps its safe projection (racer statuses, request statuses, ETag booleans); (l)-(o) a read resolving at or after the absolute end is rejected independent of the timer (1 ms before is accepted); (p)-(r) done() itself decides at deadline - 1 ms / exactly / after', async () => {
     for (const [label, eb, bytes, body] of [['a', { bytes: 1 << 20 }, 4096, 'prefix'], ['b', { bytes: 4096 }, 4096, 'complete'], ['c', { bytes: 4097 }, 4096, 'prefix']]) {
       const { out } = await pv(() => loser(1, 409, { errorBody: eb })); const d = race(out).diag[0];
       assert.deepEqual([d.bytes, d.body, d.sha256], [bytes, body, sha256(ownPattern(4096))], label);
@@ -1757,11 +1766,46 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     r = await frozen((set) => loser(4, 412, { before: () => set((D) => D) }));
     assert.deepEqual([r.out.ok, r.out.stoppedAt, race(r.out).failed, race(r.out).uncertain], [false, 5, 'run_deadline', 'deadline'], '(i)');
     assert.equal(blobs.log.slice(r.b0).length, 11, '(i) no confirm, no request after the racers');
+    // Bones HOLD item 2: the deadline step keeps its safe projection -- racer statuses, winner, ETag booleans -- no ETag value
+    assert.deepEqual(noDiag(race(r.out)), { racers: [200, 412, 412, 412, 412], winners: 1, winner: 0, etagValid: true, transitionEtagChanged: true, requests: [], uncertain: 'deadline', failed: 'run_deadline' }, '(i) evidence kept');
+    assert.ok(!/"c-|"w-/.test(JSON.stringify(r.out)), '(i) no ETag value');
     r = await frozen((set) => blobs.rule({ method: 'PUT', bodyIncludes: '"label":"REVOKED"', skip: 2, before: () => set((D) => D) }));
     assert.deepEqual([r.out.ok, r.out.stoppedAt, r.out.steps[6].detail.failed, r.out.steps[6].detail.uncertain], [false, 7, 'run_deadline', 'deadline'], '(j)');
     assert.equal(blobs.log.slice(r.b0).length, 17, '(j) nothing after the last confirm');
+    assert.deepEqual([r.out.steps.length, r.out.steps[6].status, r.out.steps[6].detail.requests], [7, 412, [{ status: 412 }, { status: 412 }, { status: 200, etagMatches: true }]], '(j) step 7 reported with its requests\' statuses');
     r = await frozen((set) => blobs.rule({ method: 'PUT', bodyIncludes: '"label":"REVOKED"', skip: 2, before: () => set((D) => D - 1) }));
     assert.deepEqual([r.out.ok, r.out.stoppedAt, r.out.steps.length], [true, null, 7], '(k) 1 ms before the deadline passes');
+    // (l)-(o) Bones HOLD item 1: the read is re-checked AFTER it resolves, independent of the timer (frozen clock: the
+    // 250 ms timer has not fired when the read resolves). The clock moves exactly as the pull answers.
+    const readAt = async (dt, eb) => {
+      let T = 1_000_000; const D = T + 20_000;
+      const { out } = await direct(() => loser(4, 409, { errorBody: { ...eb, pull: true, onPull: (i) => { if (i === 0) T = T0 + dt; } }, before: () => { T0 = T; } }), { now: () => T, budgetMs: 20_000 });
+      void D; return race(out).diag.find((x) => x.req === 4);
+    };
+    let T0 = 0;
+    let dg = await readAt(250, { bytes: 10, chunks: [10] });          // (l) a chunk that resolves EXACTLY at the absolute end
+    assert.deepEqual([dg.body, dg.bytes, dg.sha256], ['timeout', 0, null], '(l) bytes at the end are not accepted');
+    dg = await readAt(400, { bytes: 10, chunks: [10] });               // (m) late resolution
+    assert.deepEqual([dg.body, dg.bytes, dg.sha256], ['timeout', 0, null], '(m) late bytes are not accepted');
+    dg = await readAt(250, { bytes: 0, chunks: [] });                  // (n) EOF exactly at the end
+    assert.deepEqual([dg.body, dg.bytes], ['timeout', 0], '(n) EOF at the end is not accepted as "empty"');
+    dg = await readAt(249, { bytes: 10, chunks: [10] });               // (o) control: 1 ms before the end
+    assert.deepEqual([dg.body, dg.bytes, dg.sha256], ['complete', 10, sha256(ownPattern(10))], '(o) 1 ms before the end is accepted');
+    // (p)-(r) Bones HOLD item 3: finalization in done() itself. The LAST clock read of a run is done()'s; every earlier
+    // read (every guard) sees the unchanged clock. Calibrate the count, then move only that read.
+    const finalAt = async (offset) => {
+      let calls = 0; const T = 1_000_000; const D = T + 20_000; let target = Infinity;
+      const run = async () => { calls = 0; return (await direct(() => {}, { now: () => { calls += 1; return calls === target ? D + offset : T; }, budgetMs: 20_000 })).out; };
+      target = Infinity; const cal = await run(); assert.equal(cal.ok, true); const N = calls;
+      target = N; const out = await run(); assert.equal(calls, N, 'same number of clock reads'); return out;
+    };
+    let fo = await finalAt(-1);
+    assert.deepEqual([fo.ok, fo.stoppedAt], [true, null], '(p) finalization at deadline - 1 ms passes');
+    for (const [lab, off] of [['(q) exactly at the deadline', 0], ['(r) after the deadline', 1]]) {
+      fo = await finalAt(off);
+      assert.deepEqual([fo.ok, fo.stoppedAt, fo.steps.length, fo.steps[6].detail.failed, fo.steps[6].detail.uncertain], [false, 7, 7, 'run_deadline', 'deadline'], lab);
+      assert.ok(!('requests' in fo.steps[6].detail) && Array.isArray(fo.steps[6].detail.replays), lab + ': decided by done(), not by an earlier guard (step 7 completed normally)');
+    }
   });
   await check('PV17 exact output allowlist and hash semantics: seeded bearer token, signed URL, 64-hex ETag, Set-Cookie, bad request id and a parameterised content-type never appear; ProbeDiag keys exactly the allowlist; sha256 null iff 0 bytes, else the sha256 of exactly the bytes read', async () => {
     const hex = 'ab'.repeat(32);

@@ -297,6 +297,9 @@ function startProbeDiag(sink: DiagSink, res: Response, ctx: Ctx, stageEnd: numbe
           if (ctx.now() >= sink.end) return finish("timeout");
           const next = await r.read();
           if (result) return result;
+          // Re-checked AFTER every awaited read (Bones HOLD on 637a972, item 1): a read that resolves at or after the
+          // absolute end is never accepted -- neither its EOF nor its bytes -- whether or not the timer has fired.
+          if (ctx.now() >= sink.end) return finish("timeout");
           if (next.done) return finish(bytes === 0 ? "empty" : "complete");
           if (!(next.value instanceof Uint8Array)) return finish("error");
           const room = DIAG_MAX_BYTES - bytes;
@@ -330,15 +333,15 @@ async function joinProbeDiag(sink: DiagSink, ctx: Ctx): Promise<ProbeDiag | null
 /** The run deadline has passed (exact boundary: at the deadline counts as passed). Probe only. */
 class ProbeRunDeadline extends Error {}
 /** ONE request to the session store with a Test-probe diagnostic sink: the only caller passing a sink to attempt().
- *  The returned Recorded is attempt()'s own; the diagnostic is separate and frozen. Throws ProbeRunDeadline when the
- *  run deadline has been reached, before sending or after the answer (r3 T2 item 4, r4 U2). */
-async function onceProbe(ctx: Ctx, req: number, op: (store: Store) => Promise<unknown>): Promise<{ r: Recorded; d: ProbeDiag | null }> {
-  if (ctx.now() >= ctx.deadline) throw new ProbeRunDeadline("before");
+ *  The returned Recorded is attempt()'s own; the diagnostic is separate and frozen. `late` is true when the run
+ *  deadline had been reached before sending (then nothing is sent: `sent` false) or after the answer (r3 T2 item 4,
+ *  r4 U2). It never throws: the caller records the safe projection and stops (Bones HOLD on 637a972, item 2). */
+async function onceProbe(ctx: Ctx, req: number, op: (store: Store) => Promise<unknown>): Promise<{ r: Recorded; d: ProbeDiag | null; late: boolean; sent: boolean }> {
+  if (ctx.now() >= ctx.deadline) return { r: { status: null, etag: null, data: undefined, why: "deadline" }, d: null, late: true, sent: false };
   const sink: DiagSink = { req, end: 0, finish: null, settled: null };
   const r = await attempt(ctx, REVOCATION_STORE, op, sink);
   const d = await joinProbeDiag(sink, ctx);
-  if (ctx.now() >= ctx.deadline) throw Object.assign(new ProbeRunDeadline("after"), { diag: d });
-  return { r, d };
+  return { r, d, late: ctx.now() >= ctx.deadline, sent: true };
 }
 
 /** An If-Match re-write of the IDENTICAL canonical anchor bytes: the only anchor write in this module. */
@@ -616,7 +619,7 @@ export type ProbeDetail = {
   confirm?: { status: number | null; etagMatches: boolean | null } | null;
   racers?: (number | null)[]; winners?: number; winner?: number | null; replays?: (number | null)[];
   etagValid?: boolean; transitionEtagChanged?: boolean | null; uncertain?: string | null; failed?: string | null;
-  diag?: ProbeDiag[];
+  diag?: ProbeDiag[]; requests?: { status: number | null; etagMatches?: boolean | null }[];
 };
 export type ProbeStep = { n: number; op: string; status: number | null; etagChanged: boolean | null; modified: boolean | null; ok: boolean; duration_ms: number; detail?: ProbeDetail };
 export type ProbeU4 = { present: boolean; single: boolean; lowercase: boolean; equalsPinned: boolean };
@@ -659,17 +662,22 @@ export async function runAuthorityProbe(runId: string, deployment: string, opts:
      answer fails it (closed). It is never retried, and an unanswered request is reported as uncertain, not as
      not-applied. Passing changes no bytes. */
   // Every request goes through onceProbe (G1): its Recorded is attempt()'s own; its diagnostic (if any) is collected
-  // for the current step and never read by a predicate; at or after the run deadline it throws ProbeRunDeadline.
+  // for the current step and never read by a predicate. At or after the run deadline the step stops with its SAFE
+  // projection kept -- raw statuses, ETag-equality booleans, racer statuses -- and nothing further is sent.
   let stepDiag: ProbeDiag[] = [];
+  let stepReqs: { status: number | null; etagMatches?: boolean | null }[] = [];
+  let stepRace: ProbeDetail | null = null;
   let reqN = 0;
   let curOp = "create onlyIfNew";
-  const P = async (op: (store: Store) => Promise<unknown>): Promise<Recorded> => {
-    const { r, d } = await onceProbe(ctx, reqN++, op);
+  const P = async (op: (store: Store) => Promise<unknown>, confirmEtag?: string): Promise<Recorded> => {
+    const { r, d, late, sent } = await onceProbe(ctx, reqN++, op);
     if (d) stepDiag.push(d);
+    if (sent) stepReqs.push(confirmEtag === undefined ? { status: r.status } : { status: r.status, etagMatches: r.status === 200 ? r.etag === confirmEtag : null });
+    if (late) throw new ProbeRunDeadline(sent ? "after" : "before");
     return r;
   };
   const confirm = async (label: string, etag: string) => {
-    const r = await P((s) => s.set(key, text(label), { onlyIfMatch: etag }));
+    const r = await P((s) => s.set(key, text(label), { onlyIfMatch: etag }), etag);
     return { ok: r.status === 200 && r.etag === etag, status: r.status, etagMatches: r.status === 200 ? r.etag === etag : null, why: r.why };
   };
   // A step's duration runs from the end of the previous step to this call: its write(s) and confirmation write(s).
@@ -677,29 +685,31 @@ export async function runAuthorityProbe(runId: string, deployment: string, opts:
     const d = detail && stepDiag.length ? { ...detail, diag: stepDiag } : detail;
     steps.push({ n: steps.length + 1, op, status: r.status, etagChanged: before === undefined ? null : before === null || r.etag === null ? null : before !== r.etag, modified: modifiedOf(r), ok, duration_ms: elapsed(tStep), ...(d ? { detail: d } : {}) });
     tStep = performance.now();
-    stepDiag = [];
+    stepDiag = []; stepReqs = []; stepRace = null;
     reqN = 0;
     return ok;
   };
-  /* Run deadline (r3 T2 item 4, r4 U2; exact boundary: at the deadline counts as passed): the current step fails with
-     failed "run_deadline" / uncertain "deadline", nothing further is sent, and the run is ok:false. */
-  const deadlineStep = (e: unknown): ProbeResult => {
-    const d = e && typeof e === "object" && (e as any).diag ? (e as any).diag as ProbeDiag : null;
-    if (d) stepDiag.push(d);
-    const detail: ProbeDetail = { uncertain: "deadline", failed: "run_deadline", ...(stepDiag.length ? { diag: stepDiag } : {}) };
-    steps.push({ n: steps.length + 1, op: curOp, status: null, etagChanged: null, modified: null, ok: false, duration_ms: elapsed(tStep), detail });
-    stepDiag = [];
+  /* Run deadline (r3 T2 item 4, r4 U2; exact boundary: at the deadline counts as passed): the AFFECTED step fails with
+     failed "run_deadline" / uncertain "deadline", keeping its safe projection (Bones HOLD on 637a972, item 2): the raw
+     status of every request it sent (`requests`, with each confirmation's ETag-equality boolean) and, in step 5, the
+     racers' statuses, winner count / index and the winner-ETag booleans. No ETag value; nothing further is sent. */
+  const deadlineStep = (): ProbeResult => {
+    const detail: ProbeDetail = { ...(stepRace ?? {}), requests: stepReqs, uncertain: "deadline", failed: "run_deadline", ...(stepDiag.length ? { diag: stepDiag } : {}) };
+    steps.push({ n: steps.length + 1, op: curOp, status: stepRace ? null : stepReqs.length ? stepReqs[0].status : null, etagChanged: null, modified: null, ok: false, duration_ms: elapsed(tStep), detail });
+    stepDiag = []; stepReqs = []; stepRace = null;
     return done();
   };
+  /* Finalization (Bones HOLD on 637a972, item 3): ONE completion-time decision. Completion at or after the run
+     deadline can never PASS: if no step has failed, the last step is failed as run_deadline. */
   const done = (): ProbeResult => {
-    // Completion at or after the run deadline can never PASS: the last step is failed as run_deadline.
-    if (ctx.now() >= ctx.deadline && steps.length > 0 && steps.every((s) => s.ok)) {
+    const late = ctx.now() >= ctx.deadline;
+    if (late && steps.length > 0 && steps.every((s) => s.ok)) {
       const last = steps[steps.length - 1];
       last.ok = false;
       last.detail = { ...(last.detail ?? {}), uncertain: "deadline", failed: "run_deadline" };
     }
     const stoppedAt = steps.some((s) => !s.ok) ? steps.find((s) => !s.ok)!.n : null;
-    return { mode: "conditional-write", runId, ok: stoppedAt === null && steps.length === AUTHORITY_PROBE_STEPS && ctx.now() < ctx.deadline, steps, stoppedAt, total_ms: elapsed(tRun), u4 };
+    return { mode: "conditional-write", runId, ok: !late && stoppedAt === null && steps.length === AUTHORITY_PROBE_STEPS, steps, stoppedAt, total_ms: elapsed(tRun), u4 };
   };
   /* The first failed assertion of a step, in order, or null; and `uncertain` = why some request of the step got no
      answer (deadline / transport / attempts). Safe diagnostics only: statuses, booleans, indices, names. */
@@ -736,12 +746,17 @@ export async function runAuthorityProbe(runId: string, deployment: string, opts:
     //    (A -> W<i>); the record is then exactly text(W<i>) at that ETag. Any other loser status, an unanswered (null)
     //    loser, or 0 / >1 winners fails closed.
     curOp = `concurrent onlyIfMatch x${n}: exactly one winner (U2)`;
-    const racers = await Promise.all(Array.from({ length: n }, (_, i) => onceProbe(ctx, i, (s) => s.set(key, text(`W${i}`), { onlyIfMatch: e1 }))
-      .then(({ r, d }) => { if (d) stepDiag.push(d); return r; })));
+    const answers = await Promise.all(Array.from({ length: n }, (_, i) => onceProbe(ctx, i, (s) => s.set(key, text(`W${i}`), { onlyIfMatch: e1 }))));
+    for (const a of answers) if (a.d) stepDiag.push(a.d);
     stepDiag.sort((a, b) => a.req - b.req);
+    const racers = answers.map((a) => a.r);
     reqN = n;
     const winners = racers.map((r, i) => ({ r, i })).filter((x) => x.r.status === 200);
     const w = winners.length === 1 ? winners[0] : null;
+    if (answers.some((a) => a.late)) {
+      stepRace = { racers: racers.map((r) => r.status), winners: winners.length, winner: w ? w.i : null, etagValid: w !== null && isCanonicalEtag(w.r.etag), transitionEtagChanged: w !== null && w.r.etag !== null ? w.r.etag !== e1 : null };
+      throw new ProbeRunDeadline("race");
+    }
     const losersOk = w !== null && racers.every((r, i) => i === w.i || r.status === 409 || r.status === 412);
     const eWValid = w !== null && isCanonicalEtag(w.r.etag);
     const eWChanged = w !== null && w.r.etag !== null ? w.r.etag !== e1 : null;
@@ -771,7 +786,7 @@ export async function runAuthorityProbe(runId: string, deployment: string, opts:
     step("replay of old bytes with old ETag refused (U2)", replay, f7 === null, undefined, { replays: [replay.status, replayW ? replayW.status : null], confirm: conf(c7), uncertain: uncertainOf(replay, replayW, c7), failed: f7 });
     return done();
   } catch (e) {
-    if (e instanceof ProbeRunDeadline) return deadlineStep(e);
+    if (e instanceof ProbeRunDeadline) return deadlineStep();
     throw e;
   }
 }

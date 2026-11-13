@@ -67,6 +67,8 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
      { stall: 'ignore' }             never enqueues; ignores abort; cancel() is counted and NEVER settles;
      { stall: 'oneByte' }            enqueues one byte, then stalls (honours cancel).
      { bytes: n, chunks: [sizes], pull: true }  the same bytes, one chunk per pull (pulls counted in `bodyPulls`);
+                                    `onPull(i)` (optional) runs before pull i answers (i = sizes.length: the EOF pull),
+                                    e.g. to move a test clock exactly as a read resolves;
      `bodyCancels` counts cancel() calls on these bodies. */
   let bodyCancels = 0;
   let bodyPulls = 0;
@@ -79,7 +81,7 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
       const all = patternBytes(eb.bytes); const sizes = eb.chunks || [eb.bytes];
       if (eb.pull) {
         let i = 0; let at = 0;
-        return new ReadableStream({ pull(c) { bodyPulls += 1; if (i >= sizes.length) { c.close(); return; } c.enqueue(all.subarray(at, at + sizes[i])); at += sizes[i]; i += 1; }, cancel() { bodyCancels += 1; } }, { highWaterMark: 0 });
+        return new ReadableStream({ pull(c) { bodyPulls += 1; if (typeof eb.onPull === 'function') eb.onPull(i); if (i >= sizes.length) { c.close(); return; } c.enqueue(all.subarray(at, at + sizes[i])); at += sizes[i]; i += 1; }, cancel() { bodyCancels += 1; } }, { highWaterMark: 0 });
       }
       return new ReadableStream({ start(c) { let at = 0; for (const s of sizes) { c.enqueue(all.subarray(at, at + s)); at += s; } c.close(); } });
     }
