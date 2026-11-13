@@ -692,9 +692,13 @@ export async function runAuthorityProbe(runId: string, deployment: string, opts:
   /* Run deadline (r3 T2 item 4, r4 U2; exact boundary: at the deadline counts as passed): the AFFECTED step fails with
      failed "run_deadline" / uncertain "deadline", keeping its safe projection (Bones HOLD on 637a972, item 2): the raw
      status of every request it sent (`requests`, with each confirmation's ETag-equality boolean) and, in step 5, the
-     racers' statuses, winner count / index and the winner-ETag booleans. No ETag value; nothing further is sent. */
+     racers' statuses, winner count / index and the winner-ETag booleans -- captured BEFORE the winner confirmation,
+     so a confirmation that reaches the deadline keeps them (Bones REVISE on eee59cb) -- plus that confirmation's own
+     status / ETag-equality boolean when it was sent. No ETag value; nothing further is sent. */
   const deadlineStep = (): ProbeResult => {
-    const detail: ProbeDetail = { ...(stepRace ?? {}), requests: stepReqs, uncertain: "deadline", failed: "run_deadline", ...(stepDiag.length ? { diag: stepDiag } : {}) };
+    const lastConfirm = [...stepReqs].reverse().find((q) => "etagMatches" in q);
+    const confirmProj = stepRace && lastConfirm ? { confirm: { status: lastConfirm.status, etagMatches: lastConfirm.etagMatches ?? null } } : stepRace ? { confirm: null } : {};
+    const detail: ProbeDetail = { ...(stepRace ?? {}), ...confirmProj, requests: stepReqs, uncertain: "deadline", failed: "run_deadline", ...(stepDiag.length ? { diag: stepDiag } : {}) };
     steps.push({ n: steps.length + 1, op: curOp, status: stepRace ? null : stepReqs.length ? stepReqs[0].status : null, etagChanged: null, modified: null, ok: false, duration_ms: elapsed(tStep), detail });
     stepDiag = []; stepReqs = []; stepRace = null;
     return done();
@@ -753,10 +757,9 @@ export async function runAuthorityProbe(runId: string, deployment: string, opts:
     reqN = n;
     const winners = racers.map((r, i) => ({ r, i })).filter((x) => x.r.status === 200);
     const w = winners.length === 1 ? winners[0] : null;
-    if (answers.some((a) => a.late)) {
-      stepRace = { racers: racers.map((r) => r.status), winners: winners.length, winner: w ? w.i : null, etagValid: w !== null && isCanonicalEtag(w.r.etag), transitionEtagChanged: w !== null && w.r.etag !== null ? w.r.etag !== e1 : null };
-      throw new ProbeRunDeadline("race");
-    }
+    // The safe race projection is captured BEFORE any winner confirmation, whatever happens next (Bones REVISE on eee59cb).
+    stepRace = { racers: racers.map((r) => r.status), winners: winners.length, winner: w ? w.i : null, etagValid: w !== null && isCanonicalEtag(w.r.etag), transitionEtagChanged: w !== null && w.r.etag !== null ? w.r.etag !== e1 : null };
+    if (answers.some((a) => a.late)) throw new ProbeRunDeadline("race");
     const losersOk = w !== null && racers.every((r, i) => i === w.i || r.status === 409 || r.status === 412);
     const eWValid = w !== null && isCanonicalEtag(w.r.etag);
     const eWChanged = w !== null && w.r.etag !== null ? w.r.etag !== e1 : null;

@@ -1,10 +1,10 @@
 {
   "_comment": "B15-22 S8 amendment S8-RC for the B15-29 G1 probe correction (Gate A r3 A1b, 2026-11-13; Bones accepted method r1 97_ + r2 98_ + r3 99_ + r4 9A_). lib/session-revocation.ts only: runAuthorityProbe step 5 accepts exactly one raw 200 winner with every other racer a raw 409 or 412 (steps 2, 4, 7 stay strict 412); Test-probe-only bounded, allowlisted diagnostics through an opt-in attempt() sink used only by onceProbe inside runAuthorityProbe; a probe-only run-deadline guard (now >= deadline). Product session logic (sign-in, checkSession, sign-out, recovery, confirmAnchor, once, onceAuthority) and runCheckShapeProbe are unchanged in behaviour. ONE change, chained from the bytes S8-PV expects; no addition. Earlier manifests and amendments are unchanged. Hashes are LF-normalized.",
-  "candidate": "g1-race-409 r2 (Bones HOLD on 637a972 corrected) on main 9295650",
+  "candidate": "g1-race-409 r3 (Bones REVISE on eee59cb corrected) on main 9295650",
   "changes": {
     "netlify/functions/lib/session-revocation.ts": {
       "from": "8ae4d9a0420f5198d495421d89025ccc3ec9f550ea069e519f1a3b08c0d2eb0e",
-      "to": "b4c9eceeedbfb609c1f4c45f41167cc8f86957e31a6196170e09b4f5e5119753",
+      "to": "04223a7a85ab7baaebac884adf10ca229ae5ca22c77209da85f1f1426c1565e2",
       "reason": "runAuthorityProbe step 5 accepts 409 or 412 race losers (exactly one raw 200 winner, canonical changed winner ETag, winner confirm, revoke and both replays unchanged); every probe request goes through onceProbe (bounded allowlisted ProbeDiag; probe-only run-deadline guard); attempt() gains an optional sink parameter that only onceProbe passes. No other behaviour changes."
     }
   },

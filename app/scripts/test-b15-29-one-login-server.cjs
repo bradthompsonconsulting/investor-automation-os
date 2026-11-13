@@ -1730,7 +1730,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal(out.ok, false); assert.equal(out.stoppedAt, 5); assert.equal(out.steps[4].detail.uncertain, 'deadline'); assert.equal(blobs.log.slice(b0).length, 11, 'no confirm');
     assert.ok(out.steps[4].duration_ms < 1500 + 200, 'the diag join did not wait past the deadline: ' + out.steps[4].duration_ms);
   });
-  await check('PV16 bounded reads and exact deadline boundaries (r2 R2, r3 T2, r4 U2): (a) one 1 MiB chunk -> 4096 bytes, prefix, the test\'s own sha256 of the first 4096; (b) exactly 4096 then EOF -> complete; (c) one 4097-byte chunk -> prefix; (d) headers inside the 50 ms reserve -> skipped_deadline; (e)/(f) headers just past the reserve -> timeout bounded by the absolute end; (g) clock past the deadline during the join -> run_deadline, nothing further; (h) a never-settling cancel near the deadline leaves no timer; (i) exactly AT the deadline after the race -> run_deadline, no confirm; (j) completion exactly at the deadline cannot PASS; (k) 1 ms before it passes; the deadline step keeps its safe projection (racer statuses, request statuses, ETag booleans); (l)-(o) a read resolving at or after the absolute end is rejected independent of the timer (1 ms before is accepted); (p)-(r) done() itself decides at deadline - 1 ms / exactly / after', async () => {
+  await check('PV16 bounded reads and exact deadline boundaries (r2 R2, r3 T2, r4 U2): (a) one 1 MiB chunk -> 4096 bytes, prefix, the test\'s own sha256 of the first 4096; (b) exactly 4096 then EOF -> complete; (c) one 4097-byte chunk -> prefix; (d) headers inside the 50 ms reserve -> skipped_deadline; (e)/(f) headers just past the reserve -> timeout bounded by the absolute end; (g) clock past the deadline during the join -> run_deadline, nothing further; (h) a never-settling cancel near the deadline leaves no timer; (i) exactly AT the deadline after the race -> run_deadline, no confirm; (j) completion exactly at the deadline cannot PASS; (k) 1 ms before it passes; the deadline step keeps its safe projection (racer statuses, request statuses, ETag booleans); (l)-(o) a read resolving at or after the absolute end is rejected independent of the timer (1 ms before is accepted); (p)-(r) done() itself decides at deadline - 1 ms / exactly / after; (s)/(t) the deadline immediately before / upon the winner confirmation keeps the race (and confirmation) evidence and sends nothing after', async () => {
     for (const [label, eb, bytes, body] of [['a', { bytes: 1 << 20 }, 4096, 'prefix'], ['b', { bytes: 4096 }, 4096, 'complete'], ['c', { bytes: 4097 }, 4096, 'prefix']]) {
       const { out } = await pv(() => loser(1, 409, { errorBody: eb })); const d = race(out).diag[0];
       assert.deepEqual([d.bytes, d.body, d.sha256], [bytes, body, sha256(ownPattern(4096))], label);
@@ -1767,7 +1767,25 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.deepEqual([r.out.ok, r.out.stoppedAt, race(r.out).failed, race(r.out).uncertain], [false, 5, 'run_deadline', 'deadline'], '(i)');
     assert.equal(blobs.log.slice(r.b0).length, 11, '(i) no confirm, no request after the racers');
     // Bones HOLD item 2: the deadline step keeps its safe projection -- racer statuses, winner, ETag booleans -- no ETag value
-    assert.deepEqual(noDiag(race(r.out)), { racers: [200, 412, 412, 412, 412], winners: 1, winner: 0, etagValid: true, transitionEtagChanged: true, requests: [], uncertain: 'deadline', failed: 'run_deadline' }, '(i) evidence kept');
+    assert.deepEqual(noDiag(race(r.out)), { racers: [200, 412, 412, 412, 412], winners: 1, winner: 0, etagValid: true, transitionEtagChanged: true, confirm: null, requests: [], uncertain: 'deadline', failed: 'run_deadline' }, '(i) evidence kept');
+    // (s) Bones REVISE on eee59cb: racers finish normally, the deadline is reached IMMEDIATELY BEFORE the winner
+    // confirmation (its pre-send guard): race evidence kept, the confirmation never sent, nothing after it.
+    {
+      const T = 1_000_000; const D = T + BUDGET; let calls = 0; let at = Infinity; let confirmCall = -1;
+      const runS = async () => { calls = 0; return direct(() => blobs.rule({ method: 'PUT', bodyIncludes: W(0), skip: 1, before: () => { confirmCall = calls; } }), { now: () => { calls += 1; return calls >= at ? D : T; }, budgetMs: BUDGET }); };
+      await runS(); const k = confirmCall;            // calibration: clock reads made when the confirmation reached the origin
+      at = k - 3;                                     // its pre-send guard, then attempt's cutoff, start-left and stage-end reads
+      const { out, b0 } = await runS();
+      assert.deepEqual([out.ok, out.stoppedAt, out.steps.length], [false, 5, 5], '(s)');
+      assert.deepEqual(noDiag(race(out)), { racers: [200, 412, 412, 412, 412], winners: 1, winner: 0, etagValid: true, transitionEtagChanged: true, confirm: null, requests: [], uncertain: 'deadline', failed: 'run_deadline' }, '(s) race evidence kept; the confirmation was never sent (requests [])');
+      assert.equal(blobs.log.slice(b0).length, 11, '(s) no confirmation request, nothing after');
+    }
+    // (t) the deadline is reached UPON the winner confirmation's return: race and confirmation evidence kept, no step 6
+    r = await frozen((set) => blobs.rule({ method: 'PUT', bodyIncludes: W(0), skip: 1, before: () => set((D) => D) }));
+    assert.deepEqual([r.out.ok, r.out.stoppedAt, r.out.steps.length], [false, 5, 5], '(t)');
+    assert.deepEqual(noDiag(race(r.out)), { racers: [200, 412, 412, 412, 412], winners: 1, winner: 0, etagValid: true, transitionEtagChanged: true, confirm: { status: 200, etagMatches: true }, requests: [{ status: 200, etagMatches: true }], uncertain: 'deadline', failed: 'run_deadline' }, '(t) race + confirmation evidence kept');
+    assert.equal(blobs.log.slice(r.b0).length, 12, '(t) the confirmation was sent; no revoke or anything after');
+    assert.ok(!/"c-|"w-/.test(JSON.stringify(r.out)), '(t) no ETag value');
     assert.ok(!/"c-|"w-/.test(JSON.stringify(r.out)), '(i) no ETag value');
     r = await frozen((set) => blobs.rule({ method: 'PUT', bodyIncludes: '"label":"REVOKED"', skip: 2, before: () => set((D) => D) }));
     assert.deepEqual([r.out.ok, r.out.stoppedAt, r.out.steps[6].detail.failed, r.out.steps[6].detail.uncertain], [false, 7, 'run_deadline', 'deadline'], '(j)');
