@@ -14,7 +14,7 @@
  * Shows OUR code's behaviour only. It cannot prove provider guarantees (U1-U4).
  *
  * Fault rules (consumed once each, first match wins): { method?, key?, status?, throw?, hang?, ignoreAbort?,
- * stallBody?, apply?, delayMs?, lie?, noEtag?, headers?, errorBody?, before? }. (G1: `headers` adds response headers to a
+ * stallBody?, apply?, delayMs?, lie?, noEtag?, headers?, errorBody?, before?, afterDelay?, ifMatchOnly?, unconditionalOnly? }. (G1: `headers` adds response headers to a
  * `status` answer; `errorBody` gives it a body -- see errorBodyOf; `before(entry)` runs when the rule matches, e.g. to move
  * a test clock.)
  *   status    answer this status (for a PUT with apply:true the write is applied first)
@@ -57,6 +57,9 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
      Default off; reset() turns it off again. */
   let ignore = { ifMatch: false, ifNoneMatch: false };
   let readMode = 'strong';
+  let conflict = null;               // { latencyMs, applyLoser, busyKeys:Set }, see the PUT path (B15-29 concurrency correction)
+  const inflight = new Map();        // id -> PUTs in flight
+  let conflictAnswers = 0;
   const readCache = new Map();        // eventual mode: id -> { status, etag, text } of the first GET
   const k = (site, s, key) => `${site}|${s}|${key}`;
   const etagFor = (text) => (mode === 'content' ? `"c-${crypto.createHash('sha256').update(text).digest('hex').slice(0, 24)}"` : `"w-${++n}"`);
@@ -128,6 +131,8 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
     log.push(entry);
     const rule = rules.find((r) => {
       if (!((!r.method || r.method === method) && (!r.key || r.key === key) && (!r.bodyIncludes || (method === 'PUT' && body.includes(r.bodyIncludes))))) return false;
+      if (r.ifMatchOnly && !headers['if-match']) return false;          // B15-29 concurrency: match only a conditional (If-Match) PUT
+      if (r.unconditionalOnly && (headers['if-match'] || headers['if-none-match'])) return false;
       if (r.skip > 0) { r.skip -= 1; return false; }
       return true;
     });
@@ -138,6 +143,7 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
     const id = k(site, storeName, key);
     if (method === 'DELETE') { mutations.push({ key, deleted: true, at: clock() }); store.delete(id); return answer(204); }
     if (rule && rule.delayMs) await new Promise((r) => setTimeout(r, rule.delayMs));
+    if (rule && typeof rule.afterDelay === 'function') rule.afterDelay(entry);   // B15-29 concurrency: e.g. move a test clock exactly as the answer is produced
     if (method === 'GET' && readMode === 'eventual' && !rule && readCache.has(id)) {
       const c = readCache.get(id);
       return answer(c.status, c.etag ? { etag: c.etag } : {}, c.text);
@@ -153,6 +159,26 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
       return answer(200, { etag: cur.etag }, cur.text);
     }
     if (method !== 'PUT') return answer(405);
+    /* B15-29 concurrency correction, deterministic CONFLICT mode (design r2 D3 / r3 E1): every PUT is in flight for
+       `latencyMs` (global setTimeout, virtualized by the suite's scheduler). A PUT that ARRIVES while another PUT to the
+       SAME key is in flight is a race loser: answered 409, NOT applied -- unless `applyLoser`, which applies it only if
+       its precondition still holds at completion (a stale If-Match is never applied; revoked bytes are never overwritten
+       by a stale write). Keys in `busyKeys` are permanently contended (sustained: every PUT 409, not applied).
+       Otherwise normal semantics at completion (stale If-Match -> 412). Rules still take precedence (no rule here). */
+    if (conflict && !rule) {
+      entry.conflictArrivalBusy = (inflight.get(id) || 0) > 0 || conflict.busyKeys.has(key);
+      inflight.set(id, (inflight.get(id) || 0) + 1);
+      try {
+        await new Promise((r) => setTimeout(r, conflict.latencyMs));
+        if (entry.conflictArrivalBusy) {
+          conflictAnswers += 1;
+          if (conflict.applyLoser && !conflict.busyKeys.has(key)) { const out = applyPut(id, key, body, headers, entry); entry.loserApplied = out.status === 200; }
+          return answer(409);
+        }
+        const out = applyPut(id, key, body, headers, entry);
+        return answer(out.status, out.etag ? { etag: out.etag } : {});
+      } finally { inflight.set(id, inflight.get(id) - 1); }
+    }
     const relabel = (text) => text.replace(/"label":"[^"]*"/, () => `"label":"${rule.storeAs || rule.interfere}"`);
     if (rule && rule.interfere) {
       const tx = relabel(body); const prev = store.get(id);
@@ -191,11 +217,15 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
     setEtagMode: (m) => { mode = m; },
     /** B15-29 P-1 tests: { ifMatch?, ifNoneMatch? } -- the fake ignores that precondition (a provider defect). */
     /** B15-29 A1a: 'strong' (default) or 'eventual' (edge-cached GETs; see the header). reset() restores 'strong'. */
+    /** B15-29 concurrency correction: { latencyMs = 40, applyLoser = false, busyKeys = [] } or null (off). */
+    setConflictMode: (o) => { conflict = o ? { latencyMs: o.latencyMs ?? 40, applyLoser: !!o.applyLoser, busyKeys: new Set(o.busyKeys || []) } : null; inflight.clear(); },
+    conflictAnswers: () => conflictAnswers,
+    inflightTotal: () => [...inflight.values()].reduce((a, v) => a + v, 0),
     setReadMode: (m) => { if (m !== 'strong' && m !== 'eventual') throw new Error('read mode'); readMode = m; readCache.clear(); },
     setIgnoreConditions: (o) => { ignore = { ifMatch: !!(o && o.ifMatch), ifNoneMatch: !!(o && o.ifNoneMatch) }; },
     rule: (...r) => { rules.push(...r); },
     clearRules: () => { rules = []; },
-    reset: () => { store.clear(); log.length = 0; mutations.length = 0; rules = []; bodyCancels = 0; bodyPulls = 0; mode = etagMode; ignore = { ifMatch: false, ifNoneMatch: false }; readMode = 'strong'; readCache.clear(); },
+    reset: () => { store.clear(); log.length = 0; mutations.length = 0; rules = []; bodyCancels = 0; bodyPulls = 0; conflict = null; inflight.clear(); conflictAnswers = 0; mode = etagMode; ignore = { ifMatch: false, ifNoneMatch: false }; readMode = 'strong'; readCache.clear(); },
     /** Write a raw value at a key (test setup / operator action only, never through the module). */
     put: (storeName, key, text) => { store.set(k(siteID, 'site:' + storeName, key), { text, etag: etagFor(text) }); },
     /** Remove a value at a key (test setup only). */

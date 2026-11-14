@@ -383,11 +383,17 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     ['204', { status: 204 }], ['a transport error', { throw: true }], ['500 applied', { status: 500, apply: true }],
   ]) {
     for (const which of ['session', 'anchor']) {
-      await check(`A6 ${which} write answers ${label} -> unavailable (never active, never revoked), exactly one attempt each (no SDK retry sent)`, async () => {
-        blobs.log.length = 0; blobs.rule({ method: 'PUT', key: which === 'anchor' ? ANCHOR_KEY : sKey(B.sid), ...rule });
+      /* B15-29 concurrency correction (design r2 D5 / r3 E4, amended in place): every non-409 row unchanged (one attempt
+         each); a PERSISTENT 409 (4 rules) -> unavailable after EXACTLY 4 attempts on that key (budget sufficient), 1 on
+         the other. "409 once -> active in 2" is in CC5. */
+      const n409 = label === '409' ? rev.CONFLICT_MAX_ATTEMPTS : 1;
+      await check(label === '409'
+        ? `A6 ${which} write answers a persistent 409 -> unavailable (never active, never revoked) after exactly ${n409} attempts on that key (409-only bounded re-attempt), 1 on the other (no SDK retry sent)`
+        : `A6 ${which} write answers ${label} -> unavailable (never active, never revoked), exactly one attempt each (no SDK retry sent)`, async () => {
+        blobs.log.length = 0; for (let k = 0; k < n409; k++) blobs.rule({ method: 'PUT', key: which === 'anchor' ? ANCHOR_KEY : sKey(B.sid), ...rule });
         const r = await rev.checkSession(B, 'test', { event: NF });
         assert.equal(r.kind, 'unavailable', JSON.stringify(r));
-        assert.equal(blobs.log.filter((e) => e.key === ANCHOR_KEY).length, 1); assert.equal(blobs.log.filter((e) => e.key === sKey(B.sid)).length, 1);
+        assert.equal(blobs.log.filter((e) => e.key === ANCHOR_KEY).length, which === 'anchor' ? n409 : 1); assert.equal(blobs.log.filter((e) => e.key === sKey(B.sid)).length, which === 'session' ? n409 : 1);
       });
     }
   }
@@ -1895,17 +1901,274 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     try {
       reset(); const Bs = await bind(7); blobs.log.length = 0;
       const body = { bytes: 6000, chunks: [1000, 1000, 1000, 1000, 1000, 1000], pull: true };
-      blobs.rule({ method: 'PUT', key: sKey(Bs.sid), status: 409, errorBody: body, headers: { 'x-nf-request-id': 'Bearer eyJ' } });
-      assert.equal((await rev.checkSession(Bs, 'test', { event: NF })).kind, 'unavailable', 'checkSession: the A6 409 result');
-      assert.equal(blobs.bodyPulls(), 7, 'the whole body was read (6 chunks + end): the existing arrayBuffer path'); assert.equal(blobs.bodyCancels(), 0, 'no diagnostic cancel');
-      blobs.rule({ method: 'PUT', key: sKey(Bs.sid), status: 409, errorBody: body });
+      // B15-29 concurrency correction (design r2 D5, amended in place): product 409s are re-attempted up to
+      // CONFLICT_MAX_ATTEMPTS, so a PERSISTENT 409 (4 rules) keeps the A6 result; each attempt reads its whole body.
+      const N = rev.CONFLICT_MAX_ATTEMPTS;
+      for (let k = 0; k < N; k++) blobs.rule({ method: 'PUT', key: sKey(Bs.sid), status: 409, errorBody: body, headers: { 'x-nf-request-id': 'Bearer eyJ' } });
+      assert.equal((await rev.checkSession(Bs, 'test', { event: NF })).kind, 'unavailable', 'checkSession: the A6 persistent-409 result');
+      assert.equal(blobs.bodyPulls(), N * 7, `every attempt read its whole body (${N} x (6 chunks + end)): the existing arrayBuffer path`); assert.equal(blobs.bodyCancels(), 0, 'no diagnostic cancel');
+      for (let k = 0; k < N; k++) blobs.rule({ method: 'PUT', key: sKey(Bs.sid), status: 409, errorBody: body });
       const rv = await rev.revokeSession(Bs.sid, Bs.epoch, 'test', { event: NF });
-      assert.ok(rv.kind !== 'verified', 'revokeSession on a 409: not verified (' + rv.kind + ')');
-      reset(); blobs.rule({ method: 'PUT', key: ANCHOR_KEY, status: 409, errorBody: body });
+      assert.ok(rv.kind !== 'verified', 'revokeSession on a persistent 409: not verified (' + rv.kind + ')');
+      reset(); for (let k = 0; k < N; k++) blobs.rule({ method: 'PUT', key: ANCHOR_KEY, status: 409, errorBody: body });
       assert.equal((await rev.beginSession(sid(8), 'test', { event: NF })).kind, 'unavailable', 'beginSession on a 409 anchor confirm: unavailable');
       assert.equal(blobs.bodyCancels(), 0);
     } finally { Object.freeze = freeze0; }
     assert.equal(diags, 0, 'no ProbeDiag was created on any product path');
+  });
+  /* Pinned from the deterministic schedules (design r2 D3: computed at implementation, pinned for THESE schedules only).
+     OBSERVED: under 8-way same-key bursts the 4-attempt ceiling leaves 4 of 8 checks fail-closed unavailable. */
+  const CC2_PIN = { outcome: 'active,active,active,active,unavailable:status_409_409,unavailable:status_409_409,unavailable:status_409_409,unavailable:status_409_409', total: 52 }, CC3_PIN = { outcome: 'active,active,active,active,unavailable:status_200_409,unavailable:status_200_409,unavailable:status_200_409,unavailable:status_200_409', total: 34 }, CC15_PIN = 'issued,issued,issued,issued';
+  // ── CC1-CC17: One IAOS sign-in session-check concurrency correction (Test 503 after sign-in, 2026-11-14; Bones accepted
+  //    design r1 9L_ + r2 9M_ + r3 9N_ + r4 9O_): bounded 409-only re-attempt, timely-412-first, Test-only log line ──
+  const REAL_SET_TIMEOUT = globalThis.setTimeout, REAL_CLEAR_TIMEOUT = globalThis.clearTimeout;
+  /* E1 virtual scheduler: replaces the global setTimeout / clearTimeout (attempt()'s stage + cutoff timers, the default
+     sleep, the fake's latency) ONLY inside the check that installs it. Timers are (due, seq): equal-time timers fire in
+     registration order (FIFO); a cleared timer never fires; the clock advances only after microtask quiescence (two
+     consecutive REAL setImmediate turns with no new timer registration); restore + leak guard in finally. */
+  const withVT = async (fn) => {
+    const timers = new Map(); let t = 1_000_000; let seq = 0;
+    globalThis.setTimeout = (cb, ms = 0, ...a) => { const h = { vt: ++seq }; timers.set(h, { due: t + Math.max(0, Number(ms) || 0), seq, cb, a }); return h; };
+    globalThis.clearTimeout = (h) => { timers.delete(h); };
+    const quiesce = async () => { let stable = 0, lastSeq = -1, lastSize = -1; while (stable < 2) { await new Promise((r) => setImmediate(r)); if (seq === lastSeq && timers.size === lastSize) stable += 1; else { stable = 0; lastSeq = seq; lastSize = timers.size; } } };
+    const step = () => { const next = [...timers.entries()].sort((x, y) => x[1].due - y[1].due || x[1].seq - y[1].seq)[0]; if (!next) return false; timers.delete(next[0]); t = Math.max(t, next[1].due); next[1].cb(...next[1].a); return true; };
+    const vt = {
+      now: () => t,
+      sleep: (ms) => new Promise((r) => globalThis.setTimeout(r, ms)),
+      /** Runs `promise` to settlement on virtual time; throws on a deadlock (pending promise, no timer). */
+      run: async (promise) => { let done = false, val, err; promise.then((v) => { done = true; val = v; }, (e) => { done = true; err = e; });
+        for (;;) { await quiesce(); if (done) break; if (!step()) throw new Error('virtual scheduler deadlock'); }
+        if (err) throw err; return val; },
+      drain: async () => { for (let i = 0; i < 10_000; i++) { await quiesce(); if (!step()) return; } throw new Error('drain runaway'); },
+      pending: () => timers.size,
+    };
+    try { const out = await fn(vt); await vt.drain(); assert.equal(timers.size, 0, 'no pending virtual timer at uninstall'); return out; }
+    finally { globalThis.setTimeout = REAL_SET_TIMEOUT; globalThis.clearTimeout = REAL_CLEAR_TIMEOUT; timers.clear();
+      assert.equal(globalThis.setTimeout, REAL_SET_TIMEOUT, 'real setTimeout restored'); assert.equal(globalThis.clearTimeout, REAL_CLEAR_TIMEOUT, 'real clearTimeout restored'); }
+  };
+  const noSleep = async () => {};
+  const jit = (k) => (i) => ((k * 13 + i * 7) % [1, 40, 90, 160][i]);                  // fixed per-check jitter table (deterministic)
+  const putsTo = (key, from = 0) => blobs.log.slice(from).filter((e) => e.method === 'PUT' && e.key === key);
+  const isActiveBytes = (e) => typeof e.body === 'string' && e.body.includes('"state":"active"');
+  const runChecks = (vt, bindings, extra = (k) => ({})) => Promise.all(bindings.map((b, k) => rev.checkSession(b, 'test', { event: NF, now: vt.now, sleep: vt.sleep, jitter: jit(k), ...extra(k) })));
+  const summary = (rs) => rs.map((r) => r.kind + (r.reason ? ':' + r.reason : '')).sort().join(',');
+  let B8 = [];
+  await check('CC1 reproduction (plausibility, not live causation): with re-attempts disabled (conflictAttempts:1) the CURRENT single-attempt behaviour under deterministic same-key contention (S-A: 8 checks, ONE session, t=0, latency 40 ms) gives >= 1 unavailable status_409 -- the Test symptom', async () => {
+    reset(); const B1 = await bind(41); blobs.log.length = 0;
+    const rs = await withVT(async (vt) => { blobs.setConflictMode({ latencyMs: 40 }); return vt.run(runChecks(vt, Array(8).fill(B1), () => ({ conflictAttempts: 1 }))); });
+    assert.ok(rs.some((r) => r.kind === 'unavailable' && /409/.test(r.reason)), summary(rs));
+    assert.ok(rs.every((r) => r.kind !== 'revoked'), summary(rs));
+  });
+  await check('CC2 S-A pinned: 8 concurrent checks on ONE session, latency 40 ms, fixed jitter table -> pinned outcome and pinned total request count (this schedule only); every check <= 3 s', async () => {
+    reset(); const B1 = await bind(42); const b0 = blobs.log.length;
+    const { rs, ms } = await withVT(async (vt) => { blobs.setConflictMode({ latencyMs: 40 }); const t0 = vt.now(); const rs = await vt.run(runChecks(vt, Array(8).fill(B1))); return { rs, ms: vt.now() - t0 }; });
+    const total = blobs.log.length - b0;
+    assert.deepEqual({ outcome: summary(rs), total }, CC2_PIN, JSON.stringify({ outcome: summary(rs), total, ms }));
+    assert.ok(ms <= 3000, 'within the 3 s check budget: ' + ms);
+  });
+  await check('CC3 S-B pinned: 8 concurrent checks on 8 DISTINCT sessions sharing the anchor, latency 40 ms, fixed jitter table -> pinned outcome and pinned total request count (this schedule only); every check <= 3 s', async () => {
+    reset(); B8 = []; for (let k = 0; k < 8; k++) B8.push(await bind(50 + k)); const b0 = blobs.log.length;
+    const { rs, ms } = await withVT(async (vt) => { blobs.setConflictMode({ latencyMs: 40 }); const t0 = vt.now(); const rs = await vt.run(runChecks(vt, B8)); return { rs, ms: vt.now() - t0 }; });
+    const total = blobs.log.length - b0;
+    assert.deepEqual({ outcome: summary(rs), total }, CC3_PIN, JSON.stringify({ outcome: summary(rs), total, ms }));
+    assert.ok(ms <= 3000, 'within the 3 s check budget: ' + ms);
+  });
+  await check('CC4 S-C sustained contention (the shared anchor permanently contended): every check fails CLOSED (unavailable, never active / revoked), <= 4 attempts per key per check, each completes within its 3 s deadline', async () => {
+    reset(); const BB = []; for (let k = 0; k < 8; k++) BB.push(await bind(60 + k)); const b0 = blobs.log.length;
+    const { rs, ms } = await withVT(async (vt) => { blobs.setConflictMode({ latencyMs: 40, busyKeys: [ANCHOR_KEY] }); const t0 = vt.now(); const rs = await vt.run(runChecks(vt, BB)); return { rs, ms: vt.now() - t0 }; });
+    assert.ok(rs.every((r) => r.kind === 'unavailable'), summary(rs));
+    const anchorPuts = putsTo(ANCHOR_KEY, b0).length;
+    assert.ok(anchorPuts <= 8 * rev.CONFLICT_MAX_ATTEMPTS, 'anchor attempts <= 4 per check: ' + anchorPuts);
+    for (const b of BB) assert.equal(putsTo(sKey(b.sid), b0).length, 1, 'session key: one attempt (no conflict there)');
+    assert.ok(ms <= 3000, 'all within the deadline: ' + ms);
+  });
+  await check('CC5 persistent 409 -> unavailable after EXACTLY 4 attempts on that key (session key; anchor key), 1 on the other; 409 ONCE -> active after 2 attempts (session key; anchor key) -- the A6 recovery rows, moved here (E4)', async () => {
+    reset(); const B1 = await bind(43);
+    for (const [key, n, kind] of [[sKey(B1.sid), 4, 'unavailable'], [ANCHOR_KEY, 4, 'unavailable'], [sKey(B1.sid), 1, 'active'], [ANCHOR_KEY, 1, 'active']]) {
+      const b0 = blobs.log.length; for (let k = 0; k < n; k++) blobs.rule({ method: 'PUT', key, status: 409 });
+      const r = await rev.checkSession(B1, 'test', { event: NF, sleep: noSleep, jitter: () => 0 });
+      assert.equal(r.kind, kind, `${key === ANCHOR_KEY ? 'anchor' : 'session'} x${n}: ` + JSON.stringify(r));
+      const other = key === ANCHOR_KEY ? sKey(B1.sid) : ANCHOR_KEY;
+      assert.equal(putsTo(key, b0).length, n === 4 ? 4 : 2, 'attempts on the contended key'); assert.equal(putsTo(other, b0).length, 1, 'one attempt on the other key');
+    }
+  });
+  await check('CC6 a 412 is NEVER re-attempted: 412 first -> revoked after 1 attempt; 409 then 412 -> revoked after 2 attempts, no further attempt', async () => {
+    reset(); const B1 = await bind(44);
+    let b0 = blobs.log.length; blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 412 });
+    assert.deepEqual(await rev.checkSession(B1, 'test', { event: NF, sleep: noSleep }), { kind: 'revoked' }); assert.equal(putsTo(sKey(B1.sid), b0).length, 1);
+    b0 = blobs.log.length; blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409 }, { method: 'PUT', key: sKey(B1.sid), status: 412 });
+    assert.deepEqual(await rev.checkSession(B1, 'test', { event: NF, sleep: noSleep }), { kind: 'revoked' }); assert.equal(putsTo(sKey(B1.sid), b0).length, 2);
+  });
+  await check('CC7 409 then a 500 / a transport failure / a hang to the deadline -> unavailable, no attempt after the non-409 (2 attempts on that key)', async () => {
+    reset(); const B1 = await bind(45);
+    for (const [label, second, opts] of [['500', { status: 500 }, {}], ['transport', { throw: true }, {}], ['hang', { hang: true }, { budgetMs: 600 }]]) {
+      const b0 = blobs.log.length; blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409 }, { method: 'PUT', key: sKey(B1.sid), ...second });
+      const r = await rev.checkSession(B1, 'test', { event: NF, sleep: noSleep, ...opts });
+      assert.equal(r.kind, 'unavailable', label + ' ' + JSON.stringify(r)); assert.equal(putsTo(sKey(B1.sid), b0).length, 2, label);
+    }
+  });
+  await check('CC8 absolute deadlines (E2; product cutoff unchanged): (a) insufficient time left after a 409 -> no re-attempt; (b) oversleep -> stop after the sleep; (c) a delayed but timely second answer -> used; (d) an abort-ignoring hang -> cut at the deadline; (h) left == MIN_START_MS starts / one ms less refused; (e) operation wins at now == deadline -> accepted; (f) cutoff wins at the same instant (FIFO) -> deadline; (g) now == deadline + 1 -> deadline', async () => {
+    reset(); const B1 = await bind(46); const SK = sKey(B1.sid);
+    const one = (rules, opts) => withVT(async (vt) => { const b0 = blobs.log.length; blobs.rule(...rules); const r = await vt.run(rev.checkSession(B1, 'test', { event: NF, now: opts.now ? opts.now(vt) : vt.now, sleep: opts.sleep ? opts.sleep(vt) : vt.sleep, jitter: () => 0, budgetMs: opts.budgetMs })); return { r, n: putsTo(SK, b0).length }; });
+    let o = await one([{ method: 'PUT', key: SK, status: 409 }], { budgetMs: 289 });                               // (a) 289-250 < 40
+    assert.deepEqual([o.r.kind, o.n], ['unavailable', 1], '(a) ' + JSON.stringify(o));
+    o = await one([{ method: 'PUT', key: SK, status: 409 }], { budgetMs: 290, sleep: (vt) => (ms) => vt.sleep(ms + 1) });   // (b)/(h-1) oversleep by 1 -> left 249
+    assert.deepEqual([o.r.kind, o.n], ['unavailable', 1], '(b) oversleep / (h) left = MIN_START_MS - 1 refused ' + JSON.stringify(o));
+    o = await one([{ method: 'PUT', key: SK, status: 409 }], { budgetMs: 290 });                                    // (h) exactly 250 left after the 40 ms sleep
+    assert.equal(o.n, 2, '(h) left == MIN_START_MS starts the re-attempt ' + JSON.stringify(o)); assert.equal(o.r.kind, 'active', '(h) ' + JSON.stringify(o));
+    o = await one([{ method: 'PUT', key: SK, status: 409 }, { method: 'PUT', key: SK, delayMs: 1000 }], {});            // (c)
+    assert.deepEqual([o.r.kind, o.n], ['active', 2], '(c) ' + JSON.stringify(o));
+    o = await one([{ method: 'PUT', key: SK, status: 409 }, { method: 'PUT', key: SK, hang: true, ignoreAbort: true }], {});   // (d)
+    assert.deepEqual([o.r.kind, o.r.reason, o.n], ['unavailable', 'deadline', 2], '(d) ' + JSON.stringify(o));
+    let off = 0;                                                                                                       // (e)(f)(g) exact deadline, single attempt
+    o = await one([{ method: 'PUT', key: SK, delayMs: 2990, afterDelay: () => { off = 10; } }], { now: (vt) => () => vt.now() + off });
+    assert.deepEqual([o.r.kind, o.n], ['active', 1], '(e) the operation settles first and now == deadline -> accepted ' + JSON.stringify(o)); off = 0;
+    o = await one([{ method: 'PUT', key: SK, delayMs: 3000 }], {});
+    assert.deepEqual([o.r.kind, o.r.reason], ['unavailable', 'deadline'], '(f) the cutoff, registered first, wins at the same instant ' + JSON.stringify(o));
+    o = await one([{ method: 'PUT', key: SK, delayMs: 2989, afterDelay: () => { off = 12; } }], { now: (vt) => () => vt.now() + off });
+    assert.deepEqual([o.r.kind, o.r.reason], ['unavailable', 'deadline'], '(g) now == deadline + 1 -> the late-answer rule refuses ' + JSON.stringify(o)); off = 0;
+  });
+  await check('CC9 frozen inputs: across all 4 attempts of a persistent 409 the key, the bytes and the If-Match are byte-identical (never refreshed)', async () => {
+    reset(); const B1 = await bind(47); const b0 = blobs.log.length;
+    for (let k = 0; k < 4; k++) blobs.rule({ method: 'PUT', key: ANCHOR_KEY, status: 409 });
+    for (let k = 0; k < 4; k++) blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409 });
+    await rev.checkSession(B1, 'test', { event: NF, sleep: noSleep });
+    for (const key of [sKey(B1.sid), ANCHOR_KEY]) { const P = putsTo(key, b0); assert.equal(P.length, 4); assert.equal(new Set(P.map((e) => `${e.key}|${e.body}|${e.ifMatch}|${e.ifNoneMatch}`)).size, 1, key); }
+  });
+  await check('CC10 sign-out stage 1 (the unconditional revoked write): 409 once -> re-attempted -> verified; 409 x4 -> unconfirmed (no readback sent)', async () => {
+    reset(); let B1 = await bind(48); let b0 = blobs.log.length;
+    blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409, unconditionalOnly: true });
+    assert.deepEqual(await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF, sleep: noSleep }), { kind: 'verified' });
+    assert.deepEqual(reqs(sKey(B1.sid)).slice(-3), ['PUT', 'PUT', 'PUT if-match']);
+    B1 = await bind(49); b0 = blobs.log.length; for (let k = 0; k < 4; k++) blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409, unconditionalOnly: true });
+    const r = await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF, sleep: noSleep });
+    assert.equal(r.kind, 'unconfirmed'); assert.equal(putsTo(sKey(B1.sid), b0).length, 4); assert.equal(putsTo(sKey(B1.sid), b0).filter((e) => e.ifMatch).length, 0, 'no readback after an unconfirmed stage 1');
+  });
+  await check('CC11 sign-out stage 2 (the If-Match readback): 409 once -> re-attempted -> verified; 409 x4 -> unconfirmed', async () => {
+    reset(); let B1 = await bind(70); let b0 = blobs.log.length;
+    blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409, ifMatchOnly: true });
+    assert.deepEqual(await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF, sleep: noSleep }), { kind: 'verified' });
+    assert.deepEqual(putsTo(sKey(B1.sid), b0).map((e) => e.ifMatch ? 'im' : 'u'), ['u', 'im', 'im']);
+    B1 = await bind(71); b0 = blobs.log.length; for (let k = 0; k < 4; k++) blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409, ifMatchOnly: true });
+    const r = await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF, sleep: noSleep });
+    assert.equal(r.kind, 'unconfirmed'); assert.deepEqual(putsTo(sKey(B1.sid), b0).map((e) => e.ifMatch ? 'im' : 'u'), ['u', 'im', 'im', 'im', 'im']);
+  });
+  await check('CC12 revocation (design r4 E3\'): (a) checks STARTED after a verified sign-out never return active -- plain, contended, sustained, transport, deadline; (b\') after verified no active-bytes write is applied (each 412 or an unapplied 409), final bytes revoked, also with the applied-loser fake; (c) overlap: a check that got both 200s before the revoke may return active after it (stated limitation); (d) a timely 412 on one branch while the other hangs to the deadline -> revoked (both mirrors); (d\') a late 412 -> unavailable; (d\'\') 200 + a hang -> unavailable', async () => {
+    reset(); const B1 = await bind(72); const SK = sKey(B1.sid);
+    assert.deepEqual(await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF }), { kind: 'verified' });
+    const iRev = blobs.log.length;
+    const after = [];
+    for (const [label, setup, opts] of [
+      ['plain', () => {}, {}],
+      ['contended', () => blobs.setConflictMode({ latencyMs: 40 }), {}],
+      ['sustained', () => blobs.setConflictMode({ latencyMs: 40, busyKeys: [SK] }), {}],
+      ['applied-loser', () => blobs.setConflictMode({ latencyMs: 40, applyLoser: true }), {}],
+      ['transport', () => blobs.rule({ method: 'PUT', key: SK, throw: true }), {}],
+      ['deadline', () => blobs.rule({ method: 'PUT', key: SK, hang: true, ignoreAbort: true }), {}]]) {
+      const rs = await withVT(async (vt) => { setup(); const out = await vt.run(runChecks(vt, Array(8).fill(B1))); blobs.setConflictMode(null); return out; });
+      after.push([label, rs.every((r) => r.kind === 'revoked' || r.kind === 'unavailable'), rs.some((r) => r.kind === 'active')]);
+    }
+    assert.deepEqual(after.filter(([, ok, act]) => !ok || act), [], '(a) R1: never active after verified: ' + JSON.stringify(after));
+    const activeAfter = blobs.log.slice(iRev).filter((e) => e.method === 'PUT' && e.key === SK && isActiveBytes(e));
+    assert.ok(activeAfter.length > 0 && activeAfter.every((e) => (e.status === 412 || e.status === 409 || e.status === null) && !e.applied), '(b\') ' + JSON.stringify(activeAfter.map((e) => [e.status, !!e.applied])));
+    assert.ok(blobs.get(SSTORE, SK).text.includes('"state":"revoked"'), '(b\') final bytes revoked');
+    // (c) overlap: the anchor answers late; the revoke verifies meanwhile; the check (both 200s at origin before the revoke's write) returns active after it
+    reset(); const B2 = await bind(73);
+    const ov = await withVT(async (vt) => {
+      blobs.rule({ method: 'PUT', key: ANCHOR_KEY, delayMs: 500 });
+      const c = rev.checkSession(B2, 'test', { event: NF, now: vt.now, sleep: vt.sleep });
+      const v = (async () => { await vt.sleep(100); return rev.revokeSession(B2.sid, B2.epoch, 'test', { event: NF, now: vt.now, sleep: vt.sleep }); })();
+      const [cr, vr] = await vt.run(Promise.all([c, v])); return { cr, vr };
+    });
+    assert.deepEqual([ov.vr.kind, ov.cr.kind], ['verified', 'active'], '(c) overlap (documented): ' + JSON.stringify(ov));
+    // (d) timely 412 + a deadline-cut sibling -> revoked; both mirrors. (d') late 412 -> unavailable. (d'') 200 + hang -> unavailable
+    reset(); const B3 = await bind(74); const S3 = sKey(B3.sid);
+    const dcase = (rules) => withVT(async (vt) => { blobs.rule(...rules); return vt.run(rev.checkSession(B3, 'test', { event: NF, now: vt.now, sleep: vt.sleep })); });
+    assert.deepEqual(await dcase([{ method: 'PUT', key: S3, status: 412, delayMs: 100 }, { method: 'PUT', key: ANCHOR_KEY, hang: true, ignoreAbort: true }]), { kind: 'revoked' }, '(d) session 412 + anchor hang');
+    assert.deepEqual(await dcase([{ method: 'PUT', key: ANCHOR_KEY, status: 412, delayMs: 100 }, { method: 'PUT', key: S3, hang: true, ignoreAbort: true }]), { kind: 'revoked' }, '(d) mirror: anchor 412 + session hang');
+    // (d''') precedence when the JOIN happens past the deadline: the clock reads deadline + 1 once the hanging sibling is
+    // cut, so a deadline check placed BEFORE the timely-412 check would say unavailable (mutation M2); R2' says revoked.
+    const dlate = (rules) => withVT(async (vt) => { blobs.rule(...rules); let D = null; const now = () => { const t = vt.now(); if (D === null) D = t + 3000; return t >= D ? t + 1 : t; };
+      return vt.run(rev.checkSession(B3, 'test', { event: NF, now, sleep: vt.sleep })); });
+    assert.deepEqual(await dlate([{ method: 'PUT', key: S3, status: 412, delayMs: 100 }, { method: 'PUT', key: ANCHOR_KEY, hang: true, ignoreAbort: true }]), { kind: 'revoked' }, '(d\'\'\') timely 412, join past the deadline');
+    let d = await dcase([{ method: 'PUT', key: S3, status: 412, delayMs: 3100 }]);
+    assert.equal(d.kind, 'unavailable', '(d\') late 412 ' + JSON.stringify(d));
+    d = await dcase([{ method: 'PUT', key: ANCHOR_KEY, hang: true, ignoreAbort: true }]);
+    assert.equal(d.kind, 'unavailable', '(d\'\') 200 + anchor hang ' + JSON.stringify(d));
+  });
+  await check('CC13 between re-attempts: a sign-out, an anchor CLOSE and an anchor ROTATION each turn the next attempt into a 412 -> revoked (never active, never unavailable)', async () => {
+    for (const [label, key, act] of [
+      ['sign-out', 'session', async (b) => { assert.equal((await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF })).kind, 'verified'); }],
+      ['anchor close', 'anchor', async () => seedAnchor({ state: 'closed' })],
+      ['anchor rotation', 'anchor', async () => seedAnchor({ epoch: EPOCH2 })]]) {
+      reset(); const b = await bind(75); const K = key === 'anchor' ? ANCHOR_KEY : sKey(b.sid); const b0 = blobs.log.length;
+      blobs.rule({ method: 'PUT', key: K, status: 409 });
+      let fired = 0; const sleep = async () => { fired += 1; await act(b); };
+      const r = await rev.checkSession(b, 'test', { event: NF, sleep });
+      assert.equal(fired, 1, label); assert.deepEqual(r, { kind: 'revoked' }, label + ' ' + JSON.stringify(r));
+      assert.equal(putsTo(K, b0).filter((e) => e.status === 412).length, 1, label + ': the re-attempt met 412');
+    }
+  });
+  await check('CC14 the applied-loser fake still enforces stale-ETag rejection: after a verified sign-out, 8 contended stale active checks cannot apply or overwrite the revoked bytes', async () => {
+    reset(); const B1 = await bind(76); const SK = sKey(B1.sid);
+    assert.equal((await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF })).kind, 'verified'); const iRev = blobs.log.length;
+    await withVT(async (vt) => { blobs.setConflictMode({ latencyMs: 40, applyLoser: true }); await vt.run(runChecks(vt, Array(8).fill(B1))); blobs.setConflictMode(null); });
+    assert.equal(blobs.log.slice(iRev).filter((e) => e.key === SK && isActiveBytes(e) && (e.applied || e.loserApplied)).length, 0);
+    assert.ok(blobs.get(SSTORE, SK).text.includes('"state":"revoked"'));
+  });
+  await check('CC15 sign-in: the anchor confirm under contention -> issued (pinned schedule: 4 concurrent sign-ins, latency 40 ms, fixed jitter); a permanently contended anchor -> unavailable (fail closed)', async () => {
+    reset();
+    const rs = await withVT(async (vt) => { blobs.setConflictMode({ latencyMs: 40 }); return vt.run(Promise.all([0, 1, 2, 3].map((k) => rev.beginSession(sid(80 + k), 'test', { event: NF, now: vt.now, sleep: vt.sleep, jitter: jit(k) })))); });
+    assert.deepEqual(rs.map((g) => g.kind).sort().join(','), CC15_PIN, JSON.stringify(rs.map((g) => g.kind + (g.reason ? ':' + g.reason : ''))));
+    reset();
+    const g = await withVT(async (vt) => { blobs.setConflictMode({ latencyMs: 40, busyKeys: [ANCHOR_KEY] }); return vt.run(rev.beginSession(sid(85), 'test', { event: NF, now: vt.now, sleep: vt.sleep, jitter: () => 0 })); });
+    assert.equal(g.kind, 'unavailable', JSON.stringify(g));
+  });
+  await check('CC16 the Test-only log line: exact key allowlist, fixed enums, bounded integers, no sid / epoch / ETag / token / cookie (seeded scan); nothing in Production; a console.warn that throws does not change the result', async () => {
+    reset(); const B1 = await bind(77);
+    const warn0 = console.warn; const lines = [];
+    console.warn = (...a) => { lines.push(a.map(String).join(' ')); };
+    let r1;
+    try { for (let k = 0; k < 4; k++) blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409 }); r1 = await rev.checkSession(B1, 'test', { event: NF, sleep: noSleep }); }
+    finally { console.warn = warn0; }
+    const mine = lines.filter((l) => l.startsWith('[iaos-session-check] '));
+    assert.equal(mine.length, 1, JSON.stringify(lines));
+    const j = JSON.parse(mine[0].slice('[iaos-session-check] '.length));
+    assert.deepEqual(Object.keys(j).sort(), ['attempts', 'conflicts', 'kind', 'ms', 'op', 'reason', 'status']);
+    assert.deepEqual([j.op, j.kind, j.reason, j.status, j.attempts, j.conflicts], ['check', 'unavailable', 'conflict_exhausted', [409, 200], [4, 1], [4, 0]]);
+    assert.ok(Number.isInteger(j.ms) && j.ms >= 0 && j.ms <= 10000);
+    for (const secret of [B1.sid, B1.epoch, B1.aetag, B1.setag, rev.sessionKey('test', B1.sid), 'Bearer', '__Host', B1.cookie]) assert.ok(!mine[0].includes(secret), 'no secret: ' + String(secret).slice(0, 8));
+    // Production emits nothing (same failing shape)
+    const lines2 = []; console.warn = (...a) => { lines2.push(a.map(String).join(' ')); };
+    try { setEnv('production'); await rev.checkSession(B1, 'production', { event: { headers: { 'x-nf-site-id': PROD_SITE }, blobs: blobs.lambdaBlobs }, sleep: noSleep }); }
+    finally { console.warn = warn0; setEnv('test'); }
+    assert.equal(lines2.filter((l) => l.includes('[iaos-session-check]')).length, 0, 'Production: no line');
+    // A throwing logger never changes the result
+    console.warn = () => { throw new Error('logger down'); };
+    let r2; try { for (let k = 0; k < 4; k++) blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409 }); r2 = await rev.checkSession(B1, 'test', { event: NF, sleep: noSleep }); }
+    finally { console.warn = warn0; }
+    assert.deepEqual(r2, r1);
+  });
+  await check('CC17 static + isolation: conflictBounded is declared once and called ONLY at the 4 product sites (checkSession 1, confirmAnchor 1, revokeSession 2), never in a probe body; no product caller passes sleep / jitter / conflictAttempts; no unconditional active-bytes write exists; every probe stays single-attempt; the real timers are restored after the CC checks', async () => {
+    const strip = (src) => { const js = ts.transpileModule(src, { compilerOptions: { removeComments: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
+      let out = ''; let i = 0; const n = js.length; while (i < n) { const c = js[i]; if (c === '"' || c === "'" || c === '`') { const q = c; out += ' '; i++; while (i < n && js[i] !== q) { if (js[i] === '\\') i++; i++; } out += ' '; i++; continue; } out += c; i++; } return out; };
+    const src = fs.readFileSync(path.join(FUNCTIONS, 'lib/session-revocation.ts'), 'utf8'); const code = strip(src);
+    const DECL = (nm) => new RegExp(`(?:^|[^.\\w])(?:async\\s+)?function\\s+${nm}\\s*\\(`, 'g'); const CALL = (nm) => new RegExp(`(?:^|[^.\\w])${nm}\\s*\\(`, 'g');
+    const count = (c, nm) => { const d = (c.match(DECL(nm)) || []).length; return { decl: d, calls: (c.match(CALL(nm)) || []).length - d }; };
+    const fnSlice = (nm) => { const m = new RegExp(`(?:^|\\n)(?:async\\s+)?function\\s+${nm}\\s*\\(`).exec(code); assert.ok(m, nm); const rest = code.slice(m.index + 1); const end = rest.search(/\n(?:async\s+)?function\s|\nclass\s|\nexports\.|\nconst\s+[A-Z_]+\s*=/); return end < 0 ? rest : rest.slice(0, end); };
+    assert.deepEqual(count(code, 'conflictBounded'), { decl: 1, calls: 4 });
+    assert.deepEqual(['checkSession', 'confirmAnchor', 'revokeSession', 'beginSession'].map((f) => count(fnSlice(f), 'conflictBounded').calls), [1, 1, 2, 0]);
+    for (const f of ['runAuthorityProbe', 'runCheckShapeProbe', 'onceProbe', 'attempt', 'once', 'onceAuthority']) assert.equal(count(fnSlice(f), 'conflictBounded').calls, 0, f);
+    assert.deepEqual(count(code, 'attempt'), { decl: 1, calls: 3 }, 'attempt() call sites unchanged (once, onceAuthority, onceProbe)');
+    // no unconditional active-bytes write: every set() with "active" record bytes carries onlyIfMatch or onlyIfNew
+    const activeWrites = src.split('\n').filter((l) => /sessionRecordText\([^)]*"active"\)/.test(l) || /sBytes/.test(l) && /\.set\(/.test(l));
+    assert.ok(activeWrites.length >= 2 && activeWrites.filter((l) => /\.set\(/.test(l)).every((l) => /onlyIfMatch|onlyIfNew/.test(l)), activeWrites.join('\n'));
+    // product callers never pass the test-only injections
+    const files = []; const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.name === 'node_modules') continue; const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/\.(ts|tsx)$/.test(e.name)) files.push(p); } };
+    walk(path.join(APP, 'netlify')); walk(path.join(APP, 'src'));
+    const passing = files.filter((f) => !f.endsWith(path.join('lib', 'session-revocation.ts')) && /conflictAttempts|\bjitter\s*:|\bsleep\s*:/.test(fs.readFileSync(f, 'utf8')));
+    assert.deepEqual(passing.map((f) => path.relative(APP, f)), []);
+    assert.equal(globalThis.setTimeout, REAL_SET_TIMEOUT); assert.equal(globalThis.clearTimeout, REAL_CLEAR_TIMEOUT);
   });
   // ── PT / PC: P-1 timing and the check-shape mode (Bones REVISE P2 on the activation plan, U3; Jeff 2026-11-10) ──
   const checkEv = (o = {}) => ev({ body: JSON.stringify({ probe: 'check', runId: RUN }), ...o });
@@ -2186,7 +2449,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal((await NOOP()(ev({ bearer: tok, body: JSON.stringify({ probe: 'a6' }) }))).statusCode, 401);
     assert.equal(storeImage(), before, 'byte-identical store'); assert.equal(blobs.mutations.length, m0);
   });
-  const FLOOR = 305;   // G1 (Gate A r3 A1b; Bones accepted r1-r4): + PV6-PV18
+  const FLOOR = 322;   // G1 (Gate A r3 A1b; Bones accepted r1-r4): + PV6-PV18; session-check concurrency (design r1-r4): + CC1-CC17
   if (checks < FLOOR) { failures += 1; console.log(`FAIL  check floor -- ${checks} checks ran, the floor is ${FLOOR}`); }
   console.log(`B15-29 one IAOS sign-in (server): ${checks - failures}/${checks} checks passed`);
   process.exitCode = failures ? 1 : 0;

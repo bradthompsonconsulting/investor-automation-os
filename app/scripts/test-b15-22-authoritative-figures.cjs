@@ -38,7 +38,7 @@ const TMP = path.join(APP, '.tmp-b15-22-authoritative-test');
 const esbuild = require(path.join(APP, 'node_modules', '.pnpm', 'esbuild@0.25.12', 'node_modules', 'esbuild'));
 
 /** Literal check() call-site count in this file. */
-const FLOOR = 106;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta); B15-29 P-1 timing: + S8f (S8e was within 101); probe gate site id: + S8g; B15-29 probe verification (A1a): + S8-PV; B15-29 G1 race-409 probe: + S8-RC; B15-29 activation: + S8h
+const FLOOR = 107;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta); B15-29 P-1 timing: + S8f (S8e was within 101); probe gate site id: + S8g; B15-29 probe verification (A1a): + S8-PV; B15-29 G1 race-409 probe: + S8-RC; B15-29 activation: + S8h; B15-29 session-check concurrency: + S8-CC
 /** S8h: the committed activation config steps, in order. H5 alone; the H7-only C3 commit pins ['H5', 'C3']. */
 const B29A_EXPECTED_STEPS = ['H5'];
 let checks = 0; let failures = 0;
@@ -506,6 +506,21 @@ check('S7 the label is backed by the resolver: Opportunity ARV first, Contact on
   check('S8h the B15-29 activation config steps change only shared/ghl-config.ts, each chained from the bytes expected before it (H5, then the H7-only C3 step when present)',
     [b29aFile, (Array.isArray(B29A.steps) ? B29A.steps : []).map((s) => s && s.name), b29aProblems],
     ['shared/ghl-config.ts', B29A_EXPECTED_STEPS, []]);
+  /* B15-29 session-check concurrency correction (2026-11-14; Bones accepted design r1-r4): ONE change to
+     lib/session-revocation.ts (bounded 409-only re-attempt at the product identical-bytes writes; timely-412-first;
+     Test-only log line), chained from the bytes S8-RC expects (S8h touches only shared/ghl-config.ts); no addition.
+     Listed, with its reason, in b15-22-b15-29-conflict-retry-delta.json. S8-RC, S8h and every earlier amendment unchanged. */
+  const B29C = JSON.parse(fs.readFileSync(path.join(APP, 'scripts', 'fixtures', 'b15-22-b15-29-conflict-retry-delta.json'), 'utf8'));
+  const b29cProblems = [];
+  for (const [rel, c] of Object.entries(B29C.changes || {})) {
+    if (!(rel in expected)) b29cProblems.push(`not an expected protected file: ${rel}`);
+    else if (!c || c.from !== expected[rel] || typeof c.to !== 'string' || c.to === c.from) b29cProblems.push(`not a reviewed change from the expected bytes: ${rel}`);
+    else expected[rel] = c.to;
+  }
+  if (Object.keys(B29C.additions || {}).length) b29cProblems.push('additions are not part of this delta');
+  check('S8-CC the B15-29 session-check concurrency delta is exactly its one chained change (lib/session-revocation.ts) and no addition',
+    [Object.keys(B29C.changes || {}).sort(), b29cProblems],
+    [['netlify/functions/lib/session-revocation.ts'], []]);
   const drift = [];
   for (const rel of seen) { if (!(rel in expected)) drift.push(`added ${rel}`); else if (hashOf(rel) !== expected[rel]) drift.push(`changed ${rel}`); }
   for (const rel of Object.keys(expected)) if (!seen.includes(rel)) drift.push(`removed ${rel}`);

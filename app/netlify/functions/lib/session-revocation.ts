@@ -171,7 +171,8 @@ export function sessionRecordText(deployment: string, epoch: string, sid: string
 // ------------------------------------------------- single-attempt transport ---
 
 type Clock = () => number;
-type Ctx = { deployment: Deployment; fetchImpl: typeof fetch; now: Clock; deadline: number };
+type Ctx = { deployment: Deployment; fetchImpl: typeof fetch; now: Clock; deadline: number;
+  sleep: (ms: number) => Promise<void>; jitter: (attempt: number) => number; conflictAttempts: number };
 /** One recorded request: its raw status and response ETag, or why there is none. */
 type Recorded = { status: number | null; etag: string | null; data: unknown; why: string | null };
 type Store = ReturnType<typeof getStore>;
@@ -344,13 +345,82 @@ async function onceProbe(ctx: Ctx, req: number, op: (store: Store) => Promise<un
   return { r, d, late: ctx.now() >= ctx.deadline, sent: true };
 }
 
-/** An If-Match re-write of the IDENTICAL canonical anchor bytes: the only anchor write in this module. */
-function confirmAnchor(ctx: Ctx, epoch: string, etag: string): Promise<Recorded> {
-  if (!isCanonicalEtag(etag)) return Promise.resolve({ status: null, etag: null, data: undefined, why: "etag" });
-  return onceAuthority(ctx, (s) => s.set(AUTHORITY_KEY, anchorBytes(ctx.deployment, epoch), { onlyIfMatch: etag }));
+// ------------------------------------- bounded 409-only re-attempt (B15-29) ---
+/*
+ * One IAOS sign-in concurrency correction (Test 503 after sign-in, 2026-11-14; Bones accepted design r1-r4):
+ * concurrent checks write identical bytes onlyIfMatch to the SAME session key and the shared anchor key, and the
+ * provider answers the losers of a same-key race 409. ONLY a raw 409 makes ONE logical write send its SAME frozen
+ * request again (the same `send` thunk: key, bytes and If-Match fixed once, never refreshed), as a NEW single
+ * attempt (attempt() unchanged), at most CONFLICT_MAX_ATTEMPTS in total, inside the operation's ONE absolute
+ * deadline (never reset). A 409 is never success, never revoked, never "applied"; a 412 is never re-attempted;
+ * anything else ends the loop. Before every re-attempt: stop if the time left cannot cover the base backoff plus
+ * MIN_START_MS; after every sleep: stop if less than MIN_START_MS is left (the existing attempt-start boundary).
+ * Four is a ceiling, not a promise. Used ONLY at the product identical-bytes / idempotent writes (checkSession x2,
+ * the beginSession anchor confirm, revokeSession x2); every probe path stays single-attempt.
+ */
+export const CONFLICT_MAX_ATTEMPTS = 4;
+const CONFLICT_BACKOFF_MS: readonly number[] = [0, 40, 90, 160];
+type Conflicted = Recorded & { attempts: number; conflicts: number; stopped: "none" | "exhausted" | "deadline" };
+async function conflictBounded(ctx: Ctx, send: () => Promise<Recorded>): Promise<Conflicted> {
+  let attempts = 0;
+  let conflicts = 0;
+  let last: Recorded = { status: null, etag: null, data: undefined, why: "deadline" };
+  for (;;) {
+    if (attempts > 0) {
+      const base = CONFLICT_BACKOFF_MS[attempts];
+      const left = ctx.deadline - ctx.now();
+      if (left - MIN_START_MS < base) return { ...last, attempts, conflicts, stopped: "deadline" };
+      const j = Math.max(0, Math.min(base > 0 ? base - 1 : 0, Math.floor(Number(ctx.jitter(attempts)) || 0)));
+      await ctx.sleep(Math.min(base + j, left - MIN_START_MS));
+      if (ctx.deadline - ctx.now() < MIN_START_MS) return { ...last, attempts, conflicts, stopped: "deadline" };
+    }
+    last = await send();
+    attempts += 1;
+    if (!(last.status === 409 && last.why === null)) return { ...last, attempts, conflicts, stopped: "none" };
+    conflicts += 1;
+    if (attempts >= ctx.conflictAttempts) return { ...last, attempts, conflicts, stopped: "exhausted" };
+  }
+}
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, Math.max(0, ms)); });
+
+/* Test-only sanitized classification line (design r2 D5): fixed enums and bounded integers only -- never a sid,
+   epoch, ETag, token, cookie, email, URL or raw exception / provider text. Emitted after the decision is made; a
+   logging failure never changes the result. Production emits nothing. */
+const LOG_REASONS = new Set(["none", "conflict_exhausted", "conflict_deadline", "deadline", "transport", "attempts", "status_other",
+  "refused_input", "environment_unbound", "runtime_site_mismatch", "blob_context", "not_configured", "etag"]);
+const clampInt = (v: unknown, lo: number, hi: number) => (typeof v === "number" && Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : lo);
+const statusOrNull = (s: unknown) => (typeof s === "number" && Number.isInteger(s) && s >= 100 && s <= 599 ? s : null);
+function reasonOf(r: Conflicted | null): string {
+  if (!r) return "none";
+  if (r.status === 409 && r.why === null) return r.stopped === "exhausted" ? "conflict_exhausted" : r.stopped === "deadline" ? "conflict_deadline" : "status_other";
+  if (r.why === "deadline" || r.why === "transport" || r.why === "attempts" || r.why === "etag") return r.why;
+  return r.status === 200 || r.status === 412 ? "none" : "status_other";
+}
+function logSessionCheck(deployment: string, entry: { op: "check" | "signin" | "signout"; kind: string; reason: string; a: Conflicted | null; b: Conflicted | null; ms: number }): void {
+  if (deployment !== "test") return;
+  try {
+    const reason = LOG_REASONS.has(entry.reason) ? entry.reason : "status_other";
+    const line = {
+      op: entry.op, kind: entry.kind, reason,
+      status: [statusOrNull(entry.a?.status), statusOrNull(entry.b?.status)],
+      attempts: [clampInt(entry.a?.attempts, 0, CONFLICT_MAX_ATTEMPTS), clampInt(entry.b?.attempts, 0, CONFLICT_MAX_ATTEMPTS)],
+      conflicts: [clampInt(entry.a?.conflicts, 0, CONFLICT_MAX_ATTEMPTS), clampInt(entry.b?.conflicts, 0, CONFLICT_MAX_ATTEMPTS)],
+      ms: clampInt(entry.ms, 0, 10_000),
+    };
+    console.warn("[iaos-session-check]", JSON.stringify(line));
+  } catch { /* a logging failure never alters authorization */ }
 }
 
-type OpOpts = { env?: NodeJS.ProcessEnv; fetch?: typeof fetch; now?: Clock; budgetMs?: number; event?: any };
+/** An If-Match re-write of the IDENTICAL canonical anchor bytes: the only anchor write in this module. Conflict-bounded
+ *  (409 only); every attempt goes through onceAuthority with the same frozen bytes and If-Match. */
+function confirmAnchor(ctx: Ctx, epoch: string, etag: string): Promise<Conflicted> {
+  if (!isCanonicalEtag(etag)) return Promise.resolve({ status: null, etag: null, data: undefined, why: "etag", attempts: 0, conflicts: 0, stopped: "none" });
+  return conflictBounded(ctx, () => onceAuthority(ctx, (s) => s.set(AUTHORITY_KEY, anchorBytes(ctx.deployment, epoch), { onlyIfMatch: etag })));
+}
+
+/* `sleep`, `jitter` and `conflictAttempts` are TEST-ONLY injections (deterministic schedules); no product caller passes them. */
+type OpOpts = { env?: NodeJS.ProcessEnv; fetch?: typeof fetch; now?: Clock; budgetMs?: number; event?: any;
+  sleep?: (ms: number) => Promise<void>; jitter?: (attempt: number) => number; conflictAttempts?: number };
 
 /** Environment binding + the platform's runtime site id + the Lambda Blobs context. A refusal reason, or a context. */
 function context(env: NodeJS.ProcessEnv, deployment: string, budgetMs: number, opts: OpOpts): Ctx | { refused: string } {
@@ -363,7 +433,9 @@ function context(env: NodeJS.ProcessEnv, deployment: string, budgetMs: number, o
   try { connectLambda(opts.event); } catch { return { refused: "blob_context" }; }
   const now = opts.now ?? Date.now;
   // The global fetch is read at call time (never captured at module load).
-  return { deployment: setup.deployment, fetchImpl: opts.fetch ?? globalThis.fetch, now, deadline: now() + budgetMs };
+  const conflictAttempts = Number.isInteger(opts.conflictAttempts) ? Math.max(1, Math.min(CONFLICT_MAX_ATTEMPTS, opts.conflictAttempts as number)) : CONFLICT_MAX_ATTEMPTS;
+  return { deployment: setup.deployment, fetchImpl: opts.fetch ?? globalThis.fetch, now, deadline: now() + budgetMs,
+    sleep: opts.sleep ?? defaultSleep, jitter: opts.jitter ?? ((i: number) => Math.random() * CONFLICT_BACKOFF_MS[i]), conflictAttempts };
 }
 
 // -------------------------------------------------------------- operations ---
@@ -391,8 +463,13 @@ export async function beginSession(sid: string, deployment: string, opts: OpOpts
   if (authority.state !== "open") return { kind: "unavailable", reason: "authority_closed" };
   const epoch = authority.epoch;
   // 2. Only a 200 to an If-Match re-write of the identical bytes shows this anchor is current AT ORIGIN.
+  const t0 = ctx.now();
   const anchor = await confirmAnchor(ctx, epoch, read.etag);
-  if (anchor.why || anchor.status !== 200 || !isCanonicalEtag(anchor.etag)) return { kind: "unavailable", reason: anchor.why ?? "authority_unconfirmed" };
+  if (anchor.why || anchor.status !== 200 || !isCanonicalEtag(anchor.etag)) {
+    logSessionCheck(deployment, { op: "signin", kind: "unavailable", reason: reasonOf(anchor), a: null, b: anchor, ms: ctx.now() - t0 });
+    return { kind: "unavailable", reason: anchor.why ?? "authority_unconfirmed" };
+  }
+  if (anchor.conflicts > 0) logSessionCheck(deployment, { op: "signin", kind: "issued", reason: "none", a: null, b: anchor, ms: ctx.now() - t0 });
   // 3. The session record, created only if new (a fresh random sid; 200 only).
   const created = await once(ctx, (s) => s.set(sessionKey(deployment, sid), sessionRecordText(deployment, epoch, sid, "active"), { onlyIfNew: true }));
   if (created.why || created.status !== 200 || !isCanonicalEtag(created.etag)) return { kind: "unavailable", reason: created.why ?? "session_not_created" };
@@ -405,7 +482,9 @@ export type SessionStatus = { kind: "active" } | { kind: "revoked" } | { kind: "
 
 /**
  * THE check (token mint, every protected reader and writer, status): two identical-bytes If-Match writes IN
- * PARALLEL under one CHECK_BUDGET_MS deadline. Both 200 -> active; either 412 -> revoked; else unavailable. Never throws.
+ * PARALLEL under one CHECK_BUDGET_MS deadline, each conflict-bounded (a raw 409 only: the same frozen request again,
+ * <= CONFLICT_MAX_ATTEMPTS, inside the same deadline). A TIMELY 412 on either -> revoked (decided first; never
+ * re-attempted); past the deadline -> unavailable; both raw 200 -> active; else unavailable. Never throws.
  */
 export async function checkSession(binding: SessionBinding, deployment: string, opts: OpOpts = {}): Promise<SessionStatus> {
   const { sid, epoch, aetag, setag } = binding;
@@ -413,16 +492,30 @@ export async function checkSession(binding: SessionBinding, deployment: string, 
       !isCanonicalEtag(aetag) || !isCanonicalEtag(setag)) return { kind: "unavailable", reason: "refused_input" };
   const ctx = context(opts.env ?? process.env, deployment, opts.budgetMs ?? CHECK_BUDGET_MS, opts);
   if ("refused" in ctx) return { kind: "unavailable", reason: ctx.refused };
+  const t0 = ctx.now();
+  const sKey = sessionKey(deployment, sid);
+  const sBytes = sessionRecordText(deployment, epoch, sid, "active");
   const [session, anchor] = await Promise.all([
-    once(ctx, (s) => s.set(sessionKey(deployment, sid), sessionRecordText(deployment, epoch, sid, "active"), { onlyIfMatch: setag })),
+    conflictBounded(ctx, () => once(ctx, (s) => s.set(sKey, sBytes, { onlyIfMatch: setag }))),
     confirmAnchor(ctx, epoch, aetag),
   ]);
-  if (ctx.now() > ctx.deadline) return { kind: "unavailable", reason: "deadline" };
-  // A precondition failure at origin is definitive: the bytes this session was bound to are no longer current there
-  // (signed out, anchor closed / rotated, or the authority store's anchor absent).
-  if (session.status === 412 || anchor.status === 412) return { kind: "revoked" };
-  if (session.status === 200 && anchor.status === 200) return { kind: "active" };
-  return { kind: "unavailable", reason: session.why ?? anchor.why ?? `status_${session.status}_${anchor.status}` };
+  const late = ctx.now() > ctx.deadline;
+  const out = ((): SessionStatus => {
+    // 1. A TIMELY precondition failure at origin is definitive (design r4 R2'): the bytes this session was bound to are
+    //    no longer current there (signed out, anchor closed / rotated, or the authority store's anchor absent). Timely =
+    //    attempt() recorded a real 412 (why null: before its cutoff and its own late-answer check). Never re-attempted.
+    if ((session.status === 412 && session.why === null) || (anchor.status === 412 && anchor.why === null)) return { kind: "revoked" };
+    // 2. Past the deadline nothing else is concluded.
+    if (late) return { kind: "unavailable", reason: "deadline" };
+    // 3. Active needs BOTH raw 200s to our own requests.
+    if (session.status === 200 && anchor.status === 200) return { kind: "active" };
+    return { kind: "unavailable", reason: session.why ?? anchor.why ?? `status_${session.status}_${anchor.status}` };
+  })();
+  if (out.kind !== "active" || session.conflicts > 0 || anchor.conflicts > 0) {
+    const reason = out.kind === "unavailable" && late ? "deadline" : out.kind === "revoked" ? "none" : reasonOf(session.status !== 200 ? session : anchor);
+    logSessionCheck(deployment, { op: "check", kind: out.kind, reason, a: session, b: anchor, ms: ctx.now() - t0 });
+  }
+  return out;
 }
 
 export type RevokeResult = { kind: "verified" } | { kind: "unconfirmed"; reason: string };
@@ -437,11 +530,18 @@ export async function revokeSession(sid: string, epoch: string, deployment: stri
   if ("refused" in ctx) return { kind: "unconfirmed", reason: ctx.refused };
   const key = sessionKey(deployment, sid);
   const text = sessionRecordText(deployment, epoch, sid, "revoked");
-  const written = await once(ctx, (s) => s.set(key, text));
-  if (written.why || written.status !== 200 || !isCanonicalEtag(written.etag)) return { kind: "unconfirmed", reason: written.why ?? "revoke_not_written" };
-  const back = await once(ctx, (s) => s.set(key, text, { onlyIfMatch: written.etag as string }));
-  if (back.why || back.status !== 200) return { kind: "unconfirmed", reason: back.why ?? "revoke_not_current" };
-  if (ctx.now() > ctx.deadline) return { kind: "unconfirmed", reason: "deadline" };
+  const t0 = ctx.now();
+  const log = (kind: string, a: Conflicted | null, b: Conflicted | null, reason?: string) =>
+    logSessionCheck(deployment, { op: "signout", kind, reason: reason ?? reasonOf(b && b.status !== 200 ? b : a), a, b, ms: ctx.now() - t0 });
+  // Stage 1: the revoked bytes, unconditionally (idempotent: the same bytes; it can only move the record toward revoked).
+  const written = await conflictBounded(ctx, () => once(ctx, (s) => s.set(key, text)));
+  if (written.why || written.status !== 200 || !isCanonicalEtag(written.etag)) { log("unconfirmed", written, null); return { kind: "unconfirmed", reason: written.why ?? "revoke_not_written" }; }
+  // Stage 2: the same bytes onlyIfMatch stage 1's ETag (frozen), a write-based readback.
+  const wTag = written.etag as string;
+  const back = await conflictBounded(ctx, () => once(ctx, (s) => s.set(key, text, { onlyIfMatch: wTag })));
+  if (back.why || back.status !== 200) { log("unconfirmed", written, back); return { kind: "unconfirmed", reason: back.why ?? "revoke_not_current" }; }
+  if (ctx.now() > ctx.deadline) { log("unconfirmed", written, back, "deadline"); return { kind: "unconfirmed", reason: "deadline" }; }
+  if (written.conflicts > 0 || back.conflicts > 0) log("verified", written, back, "none");
   return { kind: "verified" };
 }
 
