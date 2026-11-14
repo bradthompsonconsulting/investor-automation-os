@@ -1323,10 +1323,10 @@ export default function Dashboard() {
       {/* 4. Lead Queue (renamed from Call Queue) — cold outreach, the long list at the bottom */}
       <SectionHeading count={leadQueue.length} href="/contacts">Lead Queue</SectionHeading>
       <p data-testid="dashboard-lead-queue-showing" style={{ fontSize: "12px", color: "#64748B", margin: "0 0 6px", maxWidth: CONTENT_MAX_WIDTH }}>
-        Sellers to cold-call next, top of the list first. Save a note after each call to mark the attempt. Showing{" "}
-        {Math.min(RESURFACE_VISIBLE_ROWS, leadQueue.length)} of {leadQueue.length}
-        {/* B15-19: "scroll for the rest" only while the list below really has more than fits. */}
-        {leadListOverflows ? " — scroll for the rest." : "."}
+        Sellers to cold-call next, top of the list first. Save a note after each call to mark the attempt.
+        {/* B15-19 Option B (Captain, 2026-11-14): no "Showing X of Y" -- X was the box-height constant, not a count;
+            the heading carries the count. "Scroll for the rest." only while the list below really has more than fits. */}
+        {leadListOverflows ? " Scroll for the rest." : ""}
       </p>
       {!loading && (
         <p data-testid="dashboard-lead-queue-accounting" style={{ fontSize: "11px", color: "#475569", margin: "0 0 6px", maxWidth: CONTENT_MAX_WIDTH }}>

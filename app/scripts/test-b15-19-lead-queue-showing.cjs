@@ -1,22 +1,26 @@
 /**
- * B15-19 (INV-128) -- Spock's hosted Test finding: the Lead Queue said "Showing 1 of 1 — scroll for the rest." when
- * every row was already on screen. The scroll instruction is shown only when the list really has more than fits in
- * its box (measured on the element); "Showing X of Y", the queue, its filters, order and links are unchanged.
+ * B15-19 (INV-128) -- the Lead Queue sentence. Spock's hosted Test finding: "Showing 1 of 1 — scroll for the rest." with
+ * every row on screen (902aba9: the instruction follows the measured overflow). Captain decision 2026-11-14, OPTION B:
+ * no "Showing X of Y" at all -- X was min(15, Y), the list box's height constant, while every one of the Y rows is
+ * rendered and about 13 fit in view; the Lead Queue heading carries the count. "Scroll for the rest." is shown ONLY
+ * while the list really overflows its box (measured on the element, again on every resize).
  *
  * Offline: the REAL Dashboard (scripts/harness/dashboard-callback-popover, unchanged); every /.netlify/functions
  * request is answered here from fictional fixtures (N plain contacts with a phone, so the Lead Queue holds exactly N);
  * any write is counted and refused; any other request is aborted and counted.
  *
- *   Q0 / Q1 / Q13  0, 1 and 13 contacts (every row fits in the list box): "Showing N of N." with no scroll instruction;
- *                  the heading count, the contact rows and the queue accounting line show N
- *   Q15            15 contacts: the box (15 x 44px) also holds the header and its rows are 48px, so the last rows sit
- *                  below the fold -- the instruction is KEPT ("Showing 15 of 15 — scroll for the rest.")
- *   Q16            16 contacts: "Showing 15 of 16 — scroll for the rest." is kept; the list scrolls
- *   R              at a narrow window the instruction follows whether the list really scrolls (measured, not counted)
- *   NAV            a Lead Queue name still links to that contact
- *   W              no write; nothing left the machine; no page errors; no unmodelled read
+ *   Q0 / Q1     0 and 1 contacts: the sentence is exactly the description, no "Showing", no scroll instruction; the
+ *               heading count, the contact rows and the queue accounting line show N; nothing scrolls; a name links
+ *   Q15 / Q16   15 and 16 contacts: every row rendered, the list really scrolls, the sentence ends "Scroll for the rest."
+ *               and has no "Showing"; heading 15 / 16
+ *   RS          no reload: 13 contacts fit at 1400px (no instruction); resized to 390px the instruction still follows the
+ *               measured overflow; a row made taller on the open page makes the list overflow and the instruction appears;
+ *               the row back to normal removes it (the ResizeObserver path)
+ *   N           narrow windows (390 / 760px): the instruction is shown exactly when the list scrolls; never "Showing"
+ *   W           no write; nothing left the machine; no page errors; no unmodelled read
  *
- * NEGATIVE CONTROL: --before=<rev> serves <rev>'s Dashboard.tsx; with the base 9e8c8fd, Q0, Q1 and Q13 must FAIL.
+ * NEGATIVE CONTROL: --before=<rev> serves <rev>'s Dashboard.tsx and must FAIL: main 821f74a (always "Showing X of Y —
+ * scroll for the rest.") and 902aba9's version ("Showing X of Y" kept).
  */
 'use strict';
 const path = require('node:path');
@@ -32,7 +36,7 @@ const before = { name: 'b15-19-before', enforce: 'pre', load(id) {
 } };
 
 let checks = 0, failures = 0;
-const FLOOR = 23;   // literal count of check() calls executed on a full run; a shorter run fails
+const FLOOR = 25;   // literal count of check() calls executed on a full run; a shorter run fails
 function check(name, ok, detail) { checks += 1; if (!ok) failures += 1; console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail)}`}`); }
 
 const TODAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
@@ -98,10 +102,19 @@ async function main() {
     return { context, page, text, accounting, ...m };
   }
 
+  const SENT = 'Sellers to cold-call next, top of the list first. Save a note after each call to mark the attempt.';
+  const SCROLL = `${SENT} Scroll for the rest.`;
+  /* Re-read the sentence and the list's measured overflow on an already-open page (after a resize). */
+  async function remeasure(page) {
+    await page.waitForTimeout(400);
+    const text = (await page.getByTestId('dashboard-lead-queue-showing').innerText()).replace(/\s+/g, ' ').trim();
+    const scrolls = await page.getByTestId('dashboard-lead-queue-list').evaluate((el) => el.scrollHeight > el.clientHeight + 1);
+    return { text, scrolls };
+  }
   try {
-    for (const n of [0, 1, 13]) {
+    for (const n of [0, 1]) {
       const r = await open(n);
-      check(`Q${n} ${n} in the queue, every row fits: "Showing ${n} of ${n}." with no scroll instruction`, r.text.endsWith(`Showing ${n} of ${n}.`) && !/scroll/i.test(r.text), r.text);
+      check(`Q${n} ${n} in the queue: the sentence is exactly the description (no "Showing", no scroll instruction)`, r.text === SENT, r.text);
       check(`Q${n} the count is unchanged: heading ${n}, ${n} contact rows`, !!r.heading && r.heading.includes(String(n)) && r.rows === n, { heading: r.heading, rows: r.rows });
       check(`Q${n} the queue accounting line is still shown`, !!r.accounting && r.accounting.length > 0, r.accounting);
       if (n > 0) check(`Q${n} nothing to scroll: the list box holds every row`, r.scrolls === false, r.scrolls);
@@ -109,19 +122,36 @@ async function main() {
       await r.context.close();
     }
     const f15 = await open(15);
-    check('Q15 the last rows are below the fold (the box also holds the header): the list scrolls and the instruction is KEPT',
-      f15.scrolls === true && f15.text.endsWith('Showing 15 of 15 — scroll for the rest.'), { text: f15.text, scrolls: f15.scrolls });
-    check('Q15 the count is unchanged: heading 15, 15 contact rows', !!f15.heading && f15.heading.includes('15') && f15.rows === 15, { heading: f15.heading, rows: f15.rows });
+    check('Q15 the last rows are below the fold: the list scrolls and the sentence ends "Scroll for the rest." with no "Showing"',
+      f15.scrolls === true && f15.text === SCROLL, { text: f15.text, scrolls: f15.scrolls });
+    check('Q15 the count is unchanged: heading 15, all 15 contact rows rendered', !!f15.heading && f15.heading.includes('15') && f15.rows === 15, { heading: f15.heading, rows: f15.rows });
     await f15.context.close();
     const r = await open(16);
-    check('Q16 more than fits: "Showing 15 of 16 — scroll for the rest." is kept', r.text.endsWith('Showing 15 of 16 — scroll for the rest.'), r.text);
+    check('Q16 more than fits: the sentence ends "Scroll for the rest." with no "Showing"', r.text === SCROLL, r.text);
     check('Q16 the count is unchanged: heading 16, all 16 contact rows in the list', !!r.heading && r.heading.includes('16') && r.rows === 16, { heading: r.heading, rows: r.rows });
     check('Q16 the list really scrolls (its box is shorter than its rows)', r.scrolls === true, r.scrolls);
     check('Q16 the queue accounting line is still shown', !!r.accounting && r.accounting.length > 0, r.accounting);
     await r.context.close();
-    for (const [n, w] of [[13, 760], [1, 760]]) {
+    const rs = await open(13, 1400);
+    check('RS 13 contacts at 1400px fit: no scroll instruction', rs.scrolls === false && rs.text === SENT, { text: rs.text, scrolls: rs.scrolls });
+    await rs.page.setViewportSize({ width: 390, height: 1200 });
+    const narrow = await remeasure(rs.page);
+    check('RS resized to 390px without reload: the instruction follows the measured overflow', narrow.text === (narrow.scrolls ? SCROLL : SENT), narrow);
+    /* The list box is fixed-height and the table does not wrap at narrow widths (measured: 13 rows still fit at 390px),
+       so a window resize alone never changes the overflow. The measured path is proven by changing the CONTENT height
+       on the open page (as a wrapped row would): the ResizeObserver must show the instruction, then remove it again. */
+    const grow = (px) => rs.page.getByTestId('dashboard-lead-queue-list').evaluate((el, h) => { const tr = el.querySelector('tbody tr'); tr.style.height = h; }, px);
+    await grow('200px');
+    const tall = await remeasure(rs.page);
+    check('RS a row grows taller on the open page: the list now overflows and "Scroll for the rest." appears (no reload)', tall.scrolls === true && tall.text === SCROLL, tall);
+    await grow('');
+    const back = await remeasure(rs.page);
+    check('RS the row back to normal: the list fits again and the instruction is gone', back.scrolls === false && back.text === SENT, back);
+    await rs.context.close();
+    for (const [n, w] of [[1, 390], [13, 390], [16, 390], [16, 760]]) {
       const x = await open(n, w);
-      check(`R ${n} contacts at a ${w}px window: the instruction is shown exactly when the list really scrolls`, x.scrolls === /scroll for the rest/.test(x.text), { text: x.text, scrolls: x.scrolls });
+      check(`N ${n} contacts at a ${w}px window: the instruction is shown exactly when the list scrolls; never "Showing"`,
+        x.text === (x.scrolls ? SCROLL : SENT) && !/Showing/.test(x.text), { text: x.text, scrolls: x.scrolls });
       await x.context.close();
     }
     check('W no write was attempted', writes.length === 0, writes);
@@ -132,7 +162,7 @@ async function main() {
   }
   await browser.close().catch(() => {}); await server.close().catch(() => {});
   if (checks < FLOOR) check(`at least ${FLOOR} checks ran`, false, checks);
-  console.log(`\nB15-19 Lead Queue "Showing": ${checks - failures}/${checks} checks passed${BEFORE ? ` (negative control vs ${BEFORE})` : ''}`);
+  console.log(`\nB15-19 Lead Queue sentence (Option B): ${checks - failures}/${checks} checks passed${BEFORE ? ` (negative control vs ${BEFORE})` : ''}`);
   process.exit(failures === 0 ? 0 : 1);
 }
 main();
