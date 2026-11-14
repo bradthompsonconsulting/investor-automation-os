@@ -1,0 +1,12 @@
+{
+  "_comment": "B15-22 S8 amendment for the B15-29 One Login Test activation (test-only). Earlier manifests and amendments are unchanged. `steps` is ordered; each step applies only when its `from` is exactly the bytes already expected for shared/ghl-config.ts after S8a-S8g and the steps before it. S8h pins the step names and that every step changes only shared/ghl-config.ts. Hashes are LF-normalized.",
+  "file": "shared/ghl-config.ts",
+  "steps": [
+    {
+      "name": "H5",
+      "from": "c9e591416ad07a584ab9201d0e62c81d6f6be85fdbca9f3a64b5089d215770f3",
+      "to": "b7a80a7bb3dac29f01f7879ae7b85ddfcf99495597102426868d8b0271f322c7",
+      "reason": "H5 (Captain GO, controlled activation window): TEST oneLogin = ONE_LOGIN_ENABLED and its comment. PRODUCTION stays ONE_LOGIN_DISABLED; the Test lifetime stays null (30 days). No other line changes."
+    }
+  ]
+}

@@ -1259,8 +1259,8 @@ const TEST: GhlConfig = {
   productionSellerCallNegotiation: PRODUCTION_SELLER_CALL_NEGOTIATION_DISABLED,
   // B15-03 slice C: DISABLED pending the Captain's review and a separate enabling commit.
   sellerConversationSave: SELLER_CONVERSATION_SAVE_DISABLED,
-  // B15-29 (INV-137): one IAOS sign-in is OFF. Enabling is a separately reviewed config-only commit.
-  oneLogin: ONE_LOGIN_DISABLED,
+  // B15-29 (INV-137): one IAOS sign-in is ON for TEST only (Captain GO, controlled activation window H5). PRODUCTION stays OFF.
+  oneLogin: ONE_LOGIN_ENABLED,
   // B15-29 (Jess 2026-11-10): TEST ONLY. null = the full 30 days. A short value (e.g. 3600) is its own reviewed config-only commit.
   oneLoginTestSessionSeconds: null,
   pipelines: {
