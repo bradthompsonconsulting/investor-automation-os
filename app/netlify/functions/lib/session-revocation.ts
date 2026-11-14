@@ -469,11 +469,14 @@ export async function beginSession(sid: string, deployment: string, opts: OpOpts
     logSessionCheck(deployment, { op: "signin", kind: "unavailable", reason: reasonOf(anchor), a: null, b: anchor, ms: ctx.now() - t0 });
     return { kind: "unavailable", reason: anchor.why ?? "authority_unconfirmed" };
   }
-  if (anchor.conflicts > 0) logSessionCheck(deployment, { op: "signin", kind: "issued", reason: "none", a: null, b: anchor, ms: ctx.now() - t0 });
   // 3. The session record, created only if new (a fresh random sid; 200 only).
   const created = await once(ctx, (s) => s.set(sessionKey(deployment, sid), sessionRecordText(deployment, epoch, sid, "active"), { onlyIfNew: true }));
-  if (created.why || created.status !== 200 || !isCanonicalEtag(created.etag)) return { kind: "unavailable", reason: created.why ?? "session_not_created" };
-  if (ctx.now() > ctx.deadline) return { kind: "unavailable", reason: "deadline" };
+  // The log line is emitted only AFTER the final decision (Bones REVISE on e5b71f7): never a success line for a sign-in
+  // that then fails at creation or at the deadline.
+  const logged = (kind: string, reason: string) => { if (anchor.conflicts > 0 || kind !== "issued") logSessionCheck(deployment, { op: "signin", kind, reason, a: null, b: anchor, ms: ctx.now() - t0 }); };
+  if (created.why || created.status !== 200 || !isCanonicalEtag(created.etag)) { logged("unavailable", created.why === "deadline" || created.why === "transport" || created.why === "attempts" ? created.why : "status_other"); return { kind: "unavailable", reason: created.why ?? "session_not_created" }; }
+  if (ctx.now() > ctx.deadline) { logged("unavailable", "deadline"); return { kind: "unavailable", reason: "deadline" }; }
+  logged("issued", "none");
   return { kind: "issued", epoch, aetag: anchor.etag, setag: created.etag };
 }
 

@@ -60,6 +60,10 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
   let conflict = null;               // { latencyMs, applyLoser, busyKeys:Set }, see the PUT path (B15-29 concurrency correction)
   const inflight = new Map();        // id -> PUTs in flight
   let conflictAnswers = 0;
+  /* The fake's OWN delays (rule.delayMs, conflict latency) go through this scheduler. Default: the global setTimeout,
+     read at call time. The suite's virtual scheduler installs a TAGGED variant so an expected delayed fake response is
+     distinguishable from a product (attempt stage / cutoff) timer. */
+  let sched = { setTimeout: (cb, ms) => setTimeout(cb, ms) };
   const readCache = new Map();        // eventual mode: id -> { status, etag, text } of the first GET
   const k = (site, s, key) => `${site}|${s}|${key}`;
   const etagFor = (text) => (mode === 'content' ? `"c-${crypto.createHash('sha256').update(text).digest('hex').slice(0, 24)}"` : `"w-${++n}"`);
@@ -142,7 +146,7 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
     if (headers.authorization !== `Bearer ${token}` || site !== siteID) return answer(401);
     const id = k(site, storeName, key);
     if (method === 'DELETE') { mutations.push({ key, deleted: true, at: clock() }); store.delete(id); return answer(204); }
-    if (rule && rule.delayMs) await new Promise((r) => setTimeout(r, rule.delayMs));
+    if (rule && rule.delayMs) await new Promise((r) => sched.setTimeout(r, rule.delayMs));
     if (rule && typeof rule.afterDelay === 'function') rule.afterDelay(entry);   // B15-29 concurrency: e.g. move a test clock exactly as the answer is produced
     if (method === 'GET' && readMode === 'eventual' && !rule && readCache.has(id)) {
       const c = readCache.get(id);
@@ -169,7 +173,7 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
       entry.conflictArrivalBusy = (inflight.get(id) || 0) > 0 || conflict.busyKeys.has(key);
       inflight.set(id, (inflight.get(id) || 0) + 1);
       try {
-        await new Promise((r) => setTimeout(r, conflict.latencyMs));
+        await new Promise((r) => sched.setTimeout(r, conflict.latencyMs));
         if (entry.conflictArrivalBusy) {
           conflictAnswers += 1;
           if (conflict.applyLoser && !conflict.busyKeys.has(key)) { const out = applyPut(id, key, body, headers, entry); entry.loserApplied = out.status === 200; }
@@ -197,6 +201,9 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
       return answer(rule.status, h, errorBodyOf(rule));
     }
     const out = applyPut(id, key, body, headers, entry);
+    // B15-29 concurrency CC12(c): `holdDelivery` -- the write is PROCESSED at origin now; only the answer's DELIVERY
+    // waits for the test's release (the origin outcome is fixed before the hold).
+    if (rule && typeof rule.holdDelivery === 'function') { entry.processedBeforeHold = out.status; await rule.holdDelivery(entry); }
     if (rule && rule.noEtag && out.status === 200) return answer(200);
     return answer(out.status, out.etag ? { etag: out.etag } : {});
   }
@@ -220,6 +227,8 @@ function createFakeBlobs({ siteID, token = 'fixture-lambda-blobs-token', clock =
     /** B15-29 concurrency correction: { latencyMs = 40, applyLoser = false, busyKeys = [] } or null (off). */
     setConflictMode: (o) => { conflict = o ? { latencyMs: o.latencyMs ?? 40, applyLoser: !!o.applyLoser, busyKeys: new Set(o.busyKeys || []) } : null; inflight.clear(); },
     conflictAnswers: () => conflictAnswers,
+    /** { setTimeout } for the fake's own delays, or null for the default (global, read at call time). */
+    setScheduler: (s) => { sched = s || { setTimeout: (cb, ms) => setTimeout(cb, ms) }; },
     inflightTotal: () => [...inflight.values()].reduce((a, v) => a + v, 0),
     setReadMode: (m) => { if (m !== 'strong' && m !== 'eventual') throw new Error('read mode'); readMode = m; readCache.clear(); },
     setIgnoreConditions: (o) => { ignore = { ifMatch: !!(o && o.ifMatch), ifNoneMatch: !!(o && o.ifNoneMatch) }; },

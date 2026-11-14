@@ -1926,10 +1926,18 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
      sleep, the fake's latency) ONLY inside the check that installs it. Timers are (due, seq): equal-time timers fire in
      registration order (FIFO); a cleared timer never fires; the clock advances only after microtask quiescence (two
      consecutive REAL setImmediate turns with no new timer registration); restore + leak guard in finally. */
+  /* Bones REVISE on e5b71f7 (item 3): no unconditional drain before the leak check. Every timer is TAGGED at
+     registration: 'fake' = the fake origin's own delays (via blobs.setScheduler), 'product' = everything else (attempt()'s
+     stage + cutoff timers, the default / injected sleep). At the end of the check, BEFORE any drain, a pending 'product'
+     timer is a LEAK and fails the check. Only then are the expected delayed FAKE responses drained (a late answer to a
+     request the product already abandoned); a product timer appearing during that drain is also a leak. */
   const withVT = async (fn) => {
     const timers = new Map(); let t = 1_000_000; let seq = 0;
-    globalThis.setTimeout = (cb, ms = 0, ...a) => { const h = { vt: ++seq }; timers.set(h, { due: t + Math.max(0, Number(ms) || 0), seq, cb, a }); return h; };
+    const add = (tag) => (cb, ms = 0, ...a) => { const h = { vt: ++seq }; timers.set(h, { due: t + Math.max(0, Number(ms) || 0), seq, cb, a, tag }); return h; };
+    globalThis.setTimeout = add('product');
     globalThis.clearTimeout = (h) => { timers.delete(h); };
+    blobs.setScheduler({ setTimeout: add('fake') });
+    const productPending = () => [...timers.values()].filter((x) => x.tag === 'product').length;
     const quiesce = async () => { let stable = 0, lastSeq = -1, lastSize = -1; while (stable < 2) { await new Promise((r) => setImmediate(r)); if (seq === lastSeq && timers.size === lastSize) stable += 1; else { stable = 0; lastSeq = seq; lastSize = timers.size; } } };
     const step = () => { const next = [...timers.entries()].sort((x, y) => x[1].due - y[1].due || x[1].seq - y[1].seq)[0]; if (!next) return false; timers.delete(next[0]); t = Math.max(t, next[1].due); next[1].cb(...next[1].a); return true; };
     const vt = {
@@ -1939,11 +1947,23 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
       run: async (promise) => { let done = false, val, err; promise.then((v) => { done = true; val = v; }, (e) => { done = true; err = e; });
         for (;;) { await quiesce(); if (done) break; if (!step()) throw new Error('virtual scheduler deadlock'); }
         if (err) throw err; return val; },
-      drain: async () => { for (let i = 0; i < 10_000; i++) { await quiesce(); if (!step()) return; } throw new Error('drain runaway'); },
+      /** Drains ONLY expected fake-origin timers; a product timer present (or appearing) during the drain is a leak. */
+      drainFake: async () => { for (let i = 0; i < 10_000; i++) { await quiesce();
+        if (productPending() > 0) throw new Error('leaked product timer (stage / cutoff / sleep not cleared)');
+        const next = [...timers.entries()].filter(([, x]) => x.tag === 'fake').sort((x, y) => x[1].due - y[1].due || x[1].seq - y[1].seq)[0];
+        if (!next) return; timers.delete(next[0]); t = Math.max(t, next[1].due); next[1].cb(...next[1].a); } throw new Error('drain runaway'); },
       pending: () => timers.size,
+      productPending,
     };
-    try { const out = await fn(vt); await vt.drain(); assert.equal(timers.size, 0, 'no pending virtual timer at uninstall'); return out; }
-    finally { globalThis.setTimeout = REAL_SET_TIMEOUT; globalThis.clearTimeout = REAL_CLEAR_TIMEOUT; timers.clear();
+    try {
+      const out = await fn(vt);
+      await quiesce();
+      if (productPending() > 0) throw new Error(`leaked product timer: ${productPending()} pending at the end of the check (stage / cutoff / sleep not cleared)`);
+      await vt.drainFake();
+      assert.equal(timers.size, 0, 'no pending virtual timer at uninstall');
+      return out;
+    }
+    finally { globalThis.setTimeout = REAL_SET_TIMEOUT; globalThis.clearTimeout = REAL_CLEAR_TIMEOUT; blobs.setScheduler(null); timers.clear();
       assert.equal(globalThis.setTimeout, REAL_SET_TIMEOUT, 'real setTimeout restored'); assert.equal(globalThis.clearTimeout, REAL_CLEAR_TIMEOUT, 'real clearTimeout restored'); }
   };
   const noSleep = async () => {};
@@ -1972,6 +1992,30 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     const total = blobs.log.length - b0;
     assert.deepEqual({ outcome: summary(rs), total }, CC3_PIN, JSON.stringify({ outcome: summary(rs), total, ms }));
     assert.ok(ms <= 3000, 'within the 3 s check budget: ' + ms);
+    /* Bones additional requirement (2026-11-14): a bounded OFFLINE N = 1..4 matrix. Same-session and distinct-session
+       (shared anchor) contention; arrival gaps 0 / 10 / 25 / 60 ms (60 > the 40 ms fake latency); budgets 3000 / 400 ms; and a "revoked before arrival"
+       variant. Exact ACTIVE / REVOKED / UNAVAILABLE counts and request counts are REPORTED (MATRIX lines), not assumed
+       from N = 8. Asserted invariants only: allowed kinds; revoked-before-arrival -> never active; each run within its
+       budget; N = 1 uncontended (3000 ms, not revoked) -> active in exactly 2 requests. */
+    const MATRIX = [];
+    for (const shape of ['same', 'distinct']) for (const N of [1, 2, 3, 4]) for (const gap of [0, 10, 25, 60]) for (const budgetMs of [3000, 400]) for (const revokedFirst of [false, true]) {
+      reset(); const bs = []; for (let k = 0; k < N; k++) bs.push(shape === 'same' && k > 0 ? bs[0] : await bind(100 + k));
+      if (revokedFirst) for (const b of new Set(bs)) assert.equal((await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF })).kind, 'verified');
+      const b0 = blobs.log.length;
+      const { rs, ms } = await withVT(async (vt) => {
+        blobs.setConflictMode({ latencyMs: 40 }); const t0 = vt.now();
+        const rs = await vt.run(Promise.all(bs.map(async (b, k) => { if (gap * k > 0) await vt.sleep(gap * k); return rev.checkSession(b, 'test', { event: NF, now: vt.now, sleep: vt.sleep, jitter: jit(k), budgetMs }); })));
+        return { rs, ms: vt.now() - t0 };
+      });
+      const c = { active: 0, revoked: 0, unavailable: 0 }; for (const r of rs) c[r.kind] += 1;
+      const row = { shape, N, gap, budgetMs, revokedFirst, ...c, requests: blobs.log.length - b0, ms };
+      MATRIX.push(row);
+      assert.equal(c.active + c.revoked + c.unavailable, N, JSON.stringify(row));
+      if (revokedFirst) assert.equal(c.active, 0, 'revoked before arrival -> never active: ' + JSON.stringify(row));
+      assert.ok(ms <= budgetMs + gap * (N - 1), 'within budget: ' + JSON.stringify(row));
+      if (N === 1 && budgetMs === 3000 && !revokedFirst) assert.deepEqual([c.active, row.requests], [1, 2], JSON.stringify(row));
+    }
+    for (const r of MATRIX) console.log('MATRIX ' + JSON.stringify(r));
   });
   await check('CC4 S-C sustained contention (the shared anchor permanently contended): every check fails CLOSED (unavailable, never active / revoked), <= 4 attempts per key per check, each completes within its 3 s deadline', async () => {
     reset(); const BB = []; for (let k = 0; k < 8; k++) BB.push(await bind(60 + k)); const b0 = blobs.log.length;
@@ -2072,15 +2116,22 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     const activeAfter = blobs.log.slice(iRev).filter((e) => e.method === 'PUT' && e.key === SK && isActiveBytes(e));
     assert.ok(activeAfter.length > 0 && activeAfter.every((e) => (e.status === 412 || e.status === 409 || e.status === null) && !e.applied), '(b\') ' + JSON.stringify(activeAfter.map((e) => [e.status, !!e.applied])));
     assert.ok(blobs.get(SSTORE, SK).text.includes('"state":"revoked"'), '(b\') final bytes revoked');
-    // (c) overlap: the anchor answers late; the revoke verifies meanwhile; the check (both 200s at origin before the revoke's write) returns active after it
-    reset(); const B2 = await bind(73);
-    const ov = await withVT(async (vt) => {
-      blobs.rule({ method: 'PUT', key: ANCHOR_KEY, delayMs: 500 });
-      const c = rev.checkSession(B2, 'test', { event: NF, now: vt.now, sleep: vt.sleep });
-      const v = (async () => { await vt.sleep(100); return rev.revokeSession(B2.sid, B2.epoch, 'test', { event: NF, now: vt.now, sleep: vt.sleep }); })();
-      const [cr, vr] = await vt.run(Promise.all([c, v])); return { cr, vr };
-    });
-    assert.deepEqual([ov.vr.kind, ov.cr.kind], ['verified', 'active'], '(c) overlap (documented): ' + JSON.stringify(ov));
+    // (c) overlap (Bones REVISE on e5b71f7, item 2): BOTH check writes are PROCESSED at origin (200) BEFORE the revoke;
+    // only the anchor answer's DELIVERY is held. The revoke then completes as verified; the held answer is released; the
+    // check returns active AFTER verified -- the documented point-in-time overlap, not a check started after revocation.
+    reset(); const B2 = await bind(73); const S2 = sKey(B2.sid);
+    const order = []; let release = null; const held = new Promise((r) => { release = r; });
+    let processedResolve = null; const anchorProcessed = new Promise((r) => { processedResolve = r; });
+    blobs.rule({ method: 'PUT', key: ANCHOR_KEY, holdDelivery: async (e) => { order.push('anchor processed ' + e.processedBeforeHold); processedResolve(); await held; order.push('anchor delivered'); } });
+    const c = rev.checkSession(B2, 'test', { event: NF }).then((r) => { order.push('check returned ' + r.kind); return r; });
+    await anchorProcessed;
+    for (let i = 0; i < 50 && !putsTo(S2).some((e) => e.status === 200 && isActiveBytes(e)); i++) await new Promise((r) => setImmediate(r));
+    order.push('session processed ' + (putsTo(S2).find((e) => isActiveBytes(e)) || {}).status);
+    const vr = await rev.revokeSession(B2.sid, B2.epoch, 'test', { event: NF }); order.push('revoke ' + vr.kind);
+    release(); const cr = await c;
+    assert.deepEqual(order, ['anchor processed 200', 'session processed 200', 'revoke verified', 'anchor delivered', 'check returned active'], '(c) exact completion order: ' + JSON.stringify(order));
+    assert.equal(cr.kind, 'active', '(c) the overlapping check (started and origin-processed before the revoke) returns active after verified -- documented limitation');
+    assert.ok(blobs.get(SSTORE, S2).text.includes('"state":"revoked"'), '(c) final bytes revoked');
     // (d) timely 412 + a deadline-cut sibling -> revoked; both mirrors. (d') late 412 -> unavailable. (d'') 200 + hang -> unavailable
     reset(); const B3 = await bind(74); const S3 = sKey(B3.sid);
     const dcase = (rules) => withVT(async (vt) => { blobs.rule(...rules); return vt.run(rev.checkSession(B3, 'test', { event: NF, now: vt.now, sleep: vt.sleep })); });
@@ -2148,6 +2199,24 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     let r2; try { for (let k = 0; k < 4; k++) blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409 }); r2 = await rev.checkSession(B1, 'test', { event: NF, sleep: noSleep }); }
     finally { console.warn = warn0; }
     assert.deepEqual(r2, r1);
+    // Bones REVISE on e5b71f7 (item 1): sign-in -- conflict recovery, then a CREATION failure / a DEADLINE expiry, never
+    // logs a success line; a recovered, successful sign-in logs "issued" only after creation and the final decision.
+    const signin = async (n, setup, opts = {}) => {
+      reset(); setup(); const ls = []; console.warn = (...a) => { ls.push(a.map(String).join(' ')); };
+      let g; try { g = await rev.beginSession(sid(n), 'test', { event: NF, sleep: noSleep, ...opts }); } finally { console.warn = warn0; }
+      return { g, L: ls.filter((l) => l.startsWith('[iaos-session-check] ')).map((l) => JSON.parse(l.slice(21))) };
+    };
+    let s = await signin(90, () => { blobs.rule({ method: 'PUT', key: ANCHOR_KEY, status: 409 }, { method: 'PUT', key: sKey(sid(90)), status: 500 }); });
+    assert.equal(s.g.kind, 'unavailable', 'conflict recovery then creation failure: ' + JSON.stringify(s.g));
+    assert.deepEqual(s.L.map((x) => [x.op, x.kind, x.reason, x.attempts[1], x.conflicts[1]]), [['signin', 'unavailable', 'status_other', 2, 1]], 'no "issued" line: ' + JSON.stringify(s.L));
+    let off = 0;
+    s = await signin(91, () => { blobs.rule({ method: 'PUT', key: ANCHOR_KEY, status: 409 }, { method: 'PUT', key: sKey(sid(91)), afterDelay: () => { off = 10_000; } }); }, { now: () => Date.now() + off });
+    off = 0;
+    assert.deepEqual([s.g.kind, s.g.reason], ['unavailable', 'deadline'], 'conflict recovery then deadline expiry: ' + JSON.stringify(s.g));
+    assert.deepEqual(s.L.map((x) => [x.op, x.kind, x.reason]), [['signin', 'unavailable', 'deadline']], 'no "issued" line: ' + JSON.stringify(s.L));
+    s = await signin(92, () => { blobs.rule({ method: 'PUT', key: ANCHOR_KEY, status: 409 }); });
+    assert.equal(s.g.kind, 'issued');
+    assert.deepEqual(s.L.map((x) => [x.op, x.kind, x.reason, x.attempts[1], x.conflicts[1]]), [['signin', 'issued', 'none', 2, 1]], 'one "issued" line, after creation: ' + JSON.stringify(s.L));
   });
   await check('CC17 static + isolation: conflictBounded is declared once and called ONLY at the 4 product sites (checkSession 1, confirmAnchor 1, revokeSession 2), never in a probe body; no product caller passes sleep / jitter / conflictAttempts; no unconditional active-bytes write exists; every probe stays single-attempt; the real timers are restored after the CC checks', async () => {
     const strip = (src) => { const js = ts.transpileModule(src, { compilerOptions: { removeComments: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
@@ -2168,6 +2237,15 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     walk(path.join(APP, 'netlify')); walk(path.join(APP, 'src'));
     const passing = files.filter((f) => !f.endsWith(path.join('lib', 'session-revocation.ts')) && /conflictAttempts|\bjitter\s*:|\bsleep\s*:/.test(fs.readFileSync(f, 'utf8')));
     assert.deepEqual(passing.map((f) => path.relative(APP, f)), []);
+    // Bones REVISE on e5b71f7 (item 3): the leak detector itself -- an uncleared PRODUCT timer (a stage / cutoff stand-in
+    // registered through the global setTimeout and never cleared) fails withVT, and the real timers are restored anyway.
+    let leak = null;
+    try { await withVT(async () => { globalThis.setTimeout(() => {}, 2000); }); } catch (e) { leak = String(e && e.message); }
+    assert.ok(leak && /leaked product timer/.test(leak), 'an uncleared product timer is detected: ' + leak);
+    // ...while an EXPECTED delayed fake response (fake-tagged) is drained, not reported as a leak
+    reset(); const BL = await bind(93);
+    const okFake = await withVT(async (vt) => { blobs.rule({ method: 'PUT', key: sKey(BL.sid), delayMs: 5000 }); return vt.run(rev.checkSession(BL, 'test', { event: NF, now: vt.now, sleep: vt.sleep })); });
+    assert.deepEqual([okFake.kind, okFake.reason], ['unavailable', 'deadline'], 'cut at the deadline; the late fake answer is drained as expected');
     assert.equal(globalThis.setTimeout, REAL_SET_TIMEOUT); assert.equal(globalThis.clearTimeout, REAL_CLEAR_TIMEOUT);
   });
   // ── PT / PC: P-1 timing and the check-shape mode (Bones REVISE P2 on the activation plan, U3; Jeff 2026-11-10) ──
