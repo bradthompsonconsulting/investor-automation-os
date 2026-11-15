@@ -109,7 +109,7 @@ const get = () => mod.handler({ httpMethod: 'GET', queryStringParameters: { star
   const page = fs.readFileSync(path.join(APP, 'src/pages/Calendars.tsx'), 'utf8');
   const client = fs.readFileSync(path.join(APP, 'src/lib/ghl.ts'), 'utf8');
   check('client carries the server code on the thrown error',
-    /throw Object\.assign\(new Error\(`ghl-calendar-events → \$\{res\.status\}: \$\{text\}`\), \{ code \}\)/.test(client), true);
+    /throw Object\.assign\(readerFailure\("ghl-calendar-events", res\.status\), \{ code \}\)/.test(client), true);  // B15-29 D19: no raw body in the message
   check('page recognises the access-denied code', /e\.code === "ghl_calendar_access_denied"/.test(page), true);
   check('page no longer prints the raw error as the message', /Failed to load appointments: \{error\}/.test(page), false);
   /* R3 (Captain decision 2026-11-06): a failed read shows only "Open Calendars in GHL"; the access-denied code is still

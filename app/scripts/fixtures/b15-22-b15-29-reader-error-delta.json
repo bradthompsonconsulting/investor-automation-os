@@ -1,0 +1,12 @@
+{
+  "_comment": "B15-22 S8 amendment S8-RD for the B15-29 D19 correction (Captain GO 2026-11-15; Bones review of 64a0959). src/lib/ghl.ts only: the eleven readFetch READ failure messages (request(), the opportunity readback, ghl-contacts, ghl-contact, ghl-opportunities, ghl-conversations, ghl-conversations?scope=all, ghl-contact-conversations, ghl-calendar-events, ghl-mailers, ghl-underwriting-policy) keep '<label> → <status>: ' and replace the raw response body with a fixed, safe description (safeReadFailureText / readerFailure). The calendar error still carries the server's code. Write (PUT) and contract (appWriteFetch) errors are unchanged. ONE change, chained from the bytes Release 15-A leaves expected; no addition. Earlier manifests and amendments are unchanged. Hashes are LF-normalized.",
+  "candidate": "b15-29-single-flight D19 correction on f852ce9 (main 821f74a)",
+  "changes": {
+    "src/lib/ghl.ts": {
+      "from": "1da5438c0b24543e7e821720b687b8c666272937a613d535af2a27f0379c0408",
+      "to": "b4934e9ea30205cac53757050de3639925ed2246c754dffccc6c0bdb0303a0be",
+      "reason": "READ failure messages no longer embed the response body: endpoint label and HTTP status kept, fixed safe description added (readerFailure). No request, response handling, write path or authorization change."
+    }
+  },
+  "additions": {}
+}

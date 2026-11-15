@@ -533,6 +533,25 @@ export interface UnderwritingWriteResult {
 
 // ── Transport (swap this block for OAuth in Phase B) ─────────────────────────
 
+/**
+ * B15-29 D19 (Bones, review of 64a0959; Captain GO 2026-11-15): a READ failure names the endpoint and the HTTP status with a
+ * fixed, safe description -- never the response body. A refusal or an upstream error passed through the proxy could
+ * carry data, and the page renders this message (e.g. the Dashboard's "Failed to load dashboard"). The format
+ * "<label> → <status>: <text>" is kept, so existing status matching (e.g. /→ 404/) is unchanged. Write (PUT) errors are
+ * NOT changed here: their server body is parsed (current-offer-save-coordinator).
+ */
+export function safeReadFailureText(status: number): string {
+  if (status === 401) return "IAOS read sign-in required";
+  if (status === 403) return "not permitted";
+  if (status === 404) return "not found";
+  if (status === 429) return "too many requests; try again shortly";
+  if (status >= 500) return "the server could not complete the read";
+  return "the read was not completed";
+}
+export function readerFailure(label: string, status: number): Error {
+  return new Error(`${label} → ${status}: ${safeReadFailureText(status)}`);
+}
+
 async function request<T = unknown>(
   path: string,
   method: "GET" = "GET",
@@ -545,8 +564,7 @@ async function request<T = unknown>(
   });
   if (!res.ok) {
     if (await isReadAuthRefusal(res)) throw new ReadUnavailableError(res.status, `GHL ${method} ${path}`);
-    const text = await res.text();
-    throw new Error(`GHL ${method} ${path} → ${res.status}: ${text}`);
+    throw readerFailure(`GHL ${method} ${path}`, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -624,8 +642,7 @@ async function readbackOpportunity(label: string, opportunityId: string, putRes:
     if (server && server.id === opportunityId && Array.isArray(server.customFields)) return server;
     throw new ReadUnavailableError(readRes.status, `${label}: the save was NOT confirmed and cannot be read back -- inspect in GHL before retrying`);
   }
-  const text = await readRes.text();
-  throw new Error(`${label} readback → ${readRes.status}: ${text}`);
+  throw readerFailure(`${label} readback`, readRes.status);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -639,8 +656,7 @@ export const ghl = {
     listAll: async (): Promise<ContactRow[]> => {
       const res = await readFetch("/.netlify/functions/ghl-contacts");
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`ghl-contacts → ${res.status}: ${text}`);
+        throw readerFailure("ghl-contacts", res.status);
       }
       return res.json() as Promise<ContactRow[]>;
     },
@@ -652,8 +668,7 @@ export const ghl = {
     getOne: async (id: string): Promise<ContactRow> => {
       const res = await readFetch(`/.netlify/functions/ghl-contact?id=${encodeURIComponent(id)}`);
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`ghl-contact → ${res.status}: ${text}`);
+        throw readerFailure("ghl-contact", res.status);
       }
       return res.json() as Promise<ContactRow>;
     },
@@ -885,8 +900,7 @@ export const ghl = {
     listPipeline: async (): Promise<PipelineData> => {
       const res = await readFetch("/.netlify/functions/ghl-opportunities");
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`ghl-opportunities → ${res.status}: ${text}`);
+        throw readerFailure("ghl-opportunities", res.status);
       }
       return res.json() as Promise<PipelineData>;
     },
@@ -1257,8 +1271,7 @@ export const ghl = {
     unansweredInbound: async (): Promise<UnansweredInboundRow[]> => {
       const res = await readFetch("/.netlify/functions/ghl-conversations");
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`ghl-conversations → ${res.status}: ${text}`);
+        throw readerFailure("ghl-conversations", res.status);
       }
       return res.json() as Promise<UnansweredInboundRow[]>;
     },
@@ -1269,8 +1282,7 @@ export const ghl = {
     threads: async (): Promise<ThreadRow[]> => {
       const res = await readFetch("/.netlify/functions/ghl-conversations?scope=all");
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`ghl-conversations?scope=all → ${res.status}: ${text}`);
+        throw readerFailure("ghl-conversations?scope=all", res.status);
       }
       return res.json() as Promise<ThreadRow[]>;
     },
@@ -1282,8 +1294,7 @@ export const ghl = {
     forContact: async (contactId: string): Promise<ContactConversations> => {
       const res = await readFetch(`/.netlify/functions/ghl-contact-conversations?id=${encodeURIComponent(contactId)}`);
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`ghl-contact-conversations → ${res.status}: ${text}`);
+        throw readerFailure("ghl-contact-conversations", res.status);
       }
       return res.json() as Promise<ContactConversations>;
     },
@@ -1307,7 +1318,7 @@ export const ghl = {
         try { code = typeof JSON.parse(text)?.code === "string" ? JSON.parse(text).code : null; } catch { /* not JSON */ }
         // B15-07: an IAOS read sign-in refusal is named as such (by the boundary's own marker), never blamed on GHL.
         if (code === null) { try { code = readAuthCode(res.status, JSON.parse(text)?.by); } catch { /* not JSON */ } }
-        throw Object.assign(new Error(`ghl-calendar-events → ${res.status}: ${text}`), { code });
+        throw Object.assign(readerFailure("ghl-calendar-events", res.status), { code });
       }
       return res.json() as Promise<CalendarEventsResult>;
     },
@@ -1318,8 +1329,7 @@ export const ghl = {
     list: async (): Promise<MailerDigest> => {
       const res = await readFetch("/.netlify/functions/ghl-mailers");
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`ghl-mailers → ${res.status}: ${text}`);
+        throw readerFailure("ghl-mailers", res.status);
       }
       return res.json() as Promise<MailerDigest>;
     },
@@ -1349,8 +1359,7 @@ export const ghl = {
     policy: async (): Promise<PolicyValuesResponse> => {
       const res = await readFetch("/.netlify/functions/ghl-underwriting-policy");
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`ghl-underwriting-policy → ${res.status}: ${text}`);
+        throw readerFailure("ghl-underwriting-policy", res.status);
       }
       return res.json() as Promise<PolicyValuesResponse>;
     },
