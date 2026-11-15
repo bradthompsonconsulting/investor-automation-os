@@ -698,38 +698,49 @@ async function main() {
       const lateEntry = log.filter((e) => e.held && e.tab === 'V' && e.fn === 'app-read-session').slice(-1)[0];
       const c = claims();
       if ((await rev.revokeSession(c.sid, c.epoch, 'test', { event: { headers: { 'x-nf-site-id': SITE }, blobs: blobs.lambdaBlobs } })).kind !== 'verified') throw new Error('fixture revoke failed');
+      // B15-29 single-flight (design r1–r6, Bones ACCEPT): one status request in flight per tab. The second focus, while
+      // the late request is held, sends NO second request; it is coalesced into ONE trailing re-check that starts only
+      // after the late answer has settled. So there is never a NEWER "revoked" answer racing an OLDER "signed in" one
+      // from the same tab (the generation case, a replacement sign-in, is L19). The late "signed in" -- true when it was
+      // sent -- is applied; the trailing re-check then shows the revocation.
+      const sentBefore22 = log.filter((e) => e.tab === 'V' && e.fn === 'app-read-session').length;
       await V.evaluate(() => window.dispatchEvent(new Event('focus')));
-      await until(() => shown(V, 'read-access-recovery'));
-      const overlayFirst = await shown(V, 'read-access-recovery');
-      // Jeff (N40 not caught on 3311102): an end-state check missed a TRANSIENT repaint -- under the mutation the late
-      // "signed in" applied, then a follow-up check re-showed the overlay within the wait. Record EVERY DOM change in the
-      // window: the signed-in line must never appear and the overlay must never leave.
+      await settled(V); await settled(V); await new Promise((r) => setTimeout(r, 300));
+      const sentDuringHold22 = log.filter((e) => e.tab === 'V' && e.fn === 'app-read-session').length - sentBefore22;
+      // Jeff (N40 not caught on 3311102): an end-state check missed a TRANSIENT repaint. Record EVERY DOM change: once the
+      // revoked view is shown (overlay present AND the signed-in line gone -- as the original L22 observed from), the
+      // signed-in line must never appear again and the overlay must never leave. (The Layout status line follows the
+      // overlay by one effect, so the overlay alone is not yet the revoked view.)
       await V.evaluate(() => {
-        const w = window; w.__l22 = { sawSignedIn: false, overlayGone: false, mutations: 0 };
+        const w = window; w.__l22 = { overlaySeen: false, sawSignedInAfter: false, overlayGoneAfter: false, mutations: 0 };
         const probe = () => {
           w.__l22.mutations += 1;
-          if (document.querySelector('[data-testid="read-access-signed-in"]')) w.__l22.sawSignedIn = true;
-          if (!document.querySelector('[data-testid="read-access-recovery"]')) w.__l22.overlayGone = true;
+          const overlay = !!document.querySelector('[data-testid="read-access-recovery"]');
+          const line = !!document.querySelector('[data-testid="read-access-signed-in"]');
+          if (w.__l22.overlaySeen && line) w.__l22.sawSignedInAfter = true;
+          if (w.__l22.overlaySeen && !overlay) w.__l22.overlayGoneAfter = true;
+          if (overlay && !line) w.__l22.overlaySeen = true;
         };
         w.__l22o = new MutationObserver(probe);
         w.__l22o.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
       });
       const ansLate = await answers(V, 'app-read-session');
       late.release();
-      // The late answer has reached the page and been processed (observer still recording every DOM change).
-      // Bones P2-1 (280a974): delivery is a REQUIRED prerequisite (consumed, not discarded); the observer stays connected
-      // until the answer has been delivered AND processed (settled), and only then is read.
-      const delivered22 = await until(async () => late.fulfilled && (await answers(V, 'app-read-session')) > ansLate, 20000);
+      // Delivery of the late answer AND of exactly one trailing answer ("revoked") are REQUIRED prerequisites (Bones P2-1,
+      // 280a974: consumed, not discarded); the observer stays connected until both have been processed (settled).
+      const delivered22 = await until(async () => late.fulfilled && (await answers(V, 'app-read-session')) >= ansLate + 2 && await shown(V, 'read-access-recovery'), 20000);
       const settled22 = (await settled(V)) && (await settled(V)) && (await settled(V));
       const answers22 = await answers(V, 'app-read-session');
+      const after22 = log.filter((e) => e.tab === 'V' && e.fn === 'app-read-session').slice(sentBefore22);
       const l22 = await V.evaluate(() => { const w = window; w.__l22o.disconnect(); return w.__l22; });
-      check('L22 prerequisite: the late "signed in" answer was delivered to the page and processed while observed',
-        delivered22 && settled22 && !!late.fulfilled && answers22 > ansLate && l22 && l22.mutations >= 0,
-        { delivered22, settled22, fulfilled: !!late.fulfilled, answers22, ansLate });
-      check('L22 delayed status: an OLDER "signed in" answer delivered after a NEWER "revoked" one is discarded -- the overlay stays, no signed-in status line repaints (not even transiently)',
-        delivered22 && settled22 && !!late.fulfilled && answers22 > ansLate &&
-        lateEntry && lateEntry.state === 'signed_in' && overlayFirst && await shown(V, 'read-access-recovery') && !(await shown(V, 'read-access-signed-in')) &&
-        !l22.sawSignedIn && !l22.overlayGone &&
+      check('L22 prerequisite: while the late request was held, the second focus sent NO second status request; after the late answer, exactly ONE trailing re-check was sent and answered "revoked", all while observed',
+        delivered22 && settled22 && !!late.fulfilled && sentDuringHold22 === 0 && answers22 === ansLate + 2 &&
+        after22.length === 1 && after22[0].state === 'revoked' && l22 && l22.mutations >= 0,
+        { delivered22, settled22, fulfilled: !!late.fulfilled, sentDuringHold22, answers22, ansLate, after22: after22.map((e) => e.state) });
+      check('L22 delayed status: the late "signed in" never repaints after the revocation is shown -- once the revoked overlay appears it stays, and the signed-in status line never returns (not even transiently)',
+        delivered22 && settled22 && lateEntry && lateEntry.state === 'signed_in' && l22.overlaySeen &&
+        await shown(V, 'read-access-recovery') && !(await shown(V, 'read-access-signed-in')) &&
+        !l22.sawSignedInAfter && !l22.overlayGoneAfter &&
         (await msgText(V)) === "You've signed out of IAOS." && (await draftValue(V)) === 'kept under the revoked overlay', { delivered22, settled22, l22 });
       await ctx11.close();
     }
