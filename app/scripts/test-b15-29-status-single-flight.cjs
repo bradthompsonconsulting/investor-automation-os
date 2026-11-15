@@ -6,7 +6,7 @@
  * Harness-only instrumentation (VITE_IAOS_STATUS_PROBE=1): window.__iaosStatusProbe and window.__iaosStatusTrace.
  *
  * Rows (ids from the design): D1 D2p D3 D4p D5 D6 D7 D8a D8b D9 D10 D11 D12 D13 D14 D15 D16 D17 D18 D19 D20
- * D21a D21b D21c D22a D22b D22c D23p D24 D25p D25q D26T D26S D27a D27b BUILD.
+ * D21a D21b D21c D22a D22b D22c D23p D24 D25p D25q D26T D26S D27a D27b ST1 ST2 BUILD.
  *
  *   node scripts/test-b15-29-status-single-flight.cjs                     all rows, unmutated (every row must pass)
  *   node scripts/test-b15-29-status-single-flight.cjs --controls          every mutation control (see MUTATIONS)
@@ -67,6 +67,11 @@ const MUTATIONS = {
     '    setSlot({ kind: "idle" }, "complete:slot-idle");\n    const q = pendingRef.current;\n    setPending(null, "complete:pending-clear");')] },
   'catch-bypasses-apply':     { targets: ['D21b'], record: { D21b: ['setStatus'] }, edits: [R(OLA, 'catch { ctxFlight.current = f.id; res = null; }', 'catch { ctxFlight.current = f.id; fx.setStatus({ kind: "unavailable", message: UNAVAILABLE_TEXT }); res = null; }')] },
   'json-bypasses-apply':      { targets: ['D21c'], record: { D21c: ['setStatus'] }, edits: [R(OLA, '.catch(() => { ctxFlight.current = f.id; return JSON_FAILED; })', '.catch(() => { ctxFlight.current = f.id; fx.setStatus({ kind: "unavailable", message: UNAVAILABLE_TEXT }); return JSON_FAILED; })')] },
+  // r5 structural controls (Bones, review of 64a0959): a deliberate bypass must be caught by the structural row.
+  'bypass-ownership-setter':  { targets: ['ST1'], edits: [R(OLA, '    setSlot({ kind: "idle" }, "complete:slot-idle");', '    slotRef.current = { kind: "idle" };')] },
+  'bypass-apply-wrapper':     { targets: ['ST2'], edits: [R(OLA, '    if (r.kind === "unavailable") { fx.setStatus({ kind: "unavailable", message: UNAVAILABLE_TEXT }); return; }',
+    '    if (r.kind === "unavailable") { setStatusRaw({ kind: "unavailable", message: UNAVAILABLE_TEXT }); return; }')] },
+  'bypass-handle-write':      { targets: ['ST2'], edits: [R(OLA, '    fx.setHandle(null);\n    fx.setStatus({ kind: "signed_out", reason: r.reason });', '    handle.current = null;\n    fx.setStatus({ kind: "signed_out", reason: r.reason });')] },
   'scheduled-merge-new-timer':{ targets: ['D4p'], edits: [R(OLA, '    if (s.kind === "scheduled") { setSlot({ ...s, queued: merge(s.queued, item) }, "request:merge-queued"); return; }',
     '    if (s.kind === "scheduled") { clearTimeout(s.timer); fx.schedule(merge(s.queued, item), 1000, "request:merge-queued"); return; }')] },
 };
@@ -525,6 +530,38 @@ async function main() {
     await until(() => READERS.every((fn) => count(S, fn) >= 1)); await until(() => statusGets(S) >= 2, 5000); await settle(p, 4);
     row('D19', READERS.every((fn) => count(S, fn) >= 1) && statusGets(S) === 2, { readers: Object.fromEntries(READERS.map((fn) => [fn, count(S, fn)])), statusGets: statusGets(S) });
     await S.ctx.close();
+  };
+
+  /*
+   * r5 structural enforcement (Bones, review of 64a0959), on the source actually served (mutations included):
+   * ST1 ownership: `slotRef.current =` and `pendingRef.current =` are assigned ONLY inside setSlot / setPending.
+   * ST2 application wrappers: every raw state setter / side effect is called ONLY inside the `raw` table, and
+   *     `handle.current =` / `appliedSeq.current =` are assigned only there -- so no response-application path can
+   *     bypass the traced `fx` wrappers.
+   */
+  const servedOla = () => (rewrite[OLA] ?? fs.readFileSync(OLA, 'utf8')).replace(/\r\n/g, '\n');
+  ROWS.ST1 = async () => {
+    const lines = servedOla().split('\n');
+    const hits = lines.map((l, i) => [i + 1, l]).filter(([, l]) => /\b(slotRef|pendingRef)\.current\s*=(?!=)/.test(l));
+    const allowed = hits.every(([, l]) => /^\s*function (setSlot|setPending)\(/.test(l));
+    row('ST1', hits.length === 2 && allowed, { hits: hits.map(([n, l]) => `${n}: ${l.trim().slice(0, 90)}`) });
+  };
+  ROWS.ST2 = async () => {
+    const lines = servedOla().split('\n');
+    const start = lines.findIndex((l) => /^\s*const raw: Fx = \{/.test(l));
+    const end = start < 0 ? -1 : lines.findIndex((l, i) => i > start && /^\s*\};\s*$/.test(l));
+    const inRaw = (i) => i > start && i < end;
+    const RAW = ['setStatusRaw', 'setPartitionRaw', 'setAccountChangedRaw', 'adoptSessionRaw', 'scheduleRaw', 'startRaw',
+      'primeAppWriteSession', 'confirmAppWriteSession', 'replaceAppWriteSession', 'clearOperatorScopedData', 'rememberOperator'];
+    const bad = [];
+    lines.forEach((l, i) => {
+      for (const n of RAW) {
+        const re = new RegExp(`(?<![\\w.])${n}\\(`, 'g');
+        if (re.test(l) && !inRaw(i) && !new RegExp(`function ${n}\\(`).test(l)) bad.push(`${i + 1}: ${n}`);
+      }
+      if (/\b(handle|appliedSeq)\.current\s*=(?!=)/.test(l) && !inRaw(i)) bad.push(`${i + 1}: ${l.trim().slice(0, 60)}`);
+    });
+    row('ST2', start > 0 && end > start && bad.length === 0, { rawTable: [start + 1, end + 1], bad });
   };
   ROWS.D20 = async () => {
     const S = await newSession('D20'); const p = await signedInDashboard(S);
