@@ -2097,7 +2097,7 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     const r = await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF, sleep: noSleep });
     assert.equal(r.kind, 'unconfirmed'); assert.deepEqual(putsTo(sKey(B1.sid), b0).map((e) => e.ifMatch ? 'im' : 'u'), ['u', 'im', 'im', 'im', 'im']);
   });
-  await check('CC12 revocation (design r4 E3\'): (a) checks STARTED after a verified sign-out never return active -- plain, contended, sustained, transport, deadline; (b\') after verified no active-bytes write is applied (each 412 or an unapplied 409), final bytes revoked, also with the applied-loser fake; (c) overlap: a check that got both 200s before the revoke may return active after it (stated limitation); (d) a timely 412 on one branch while the other hangs to the deadline -> revoked (both mirrors); (d\') a late 412 -> unavailable; (d\'\') 200 + a hang -> unavailable', async () => {
+  await check('CC12 revocation (design r4 E3\'): (a) checks STARTED after a verified sign-out never return active -- plain, contended, sustained, transport, deadline; (b\') after verified no active-bytes write is applied (each 412 or an unapplied 409), final bytes revoked, also with the applied-loser fake; (c) overlap: the check\'s OWN conditional session PUT origin-applied 200 before the revoke, delivery held, then verified, then active (stated limitation), with a negative control delaying that PUT; (d) a timely 412 on one branch while the other hangs to the deadline -> revoked (both mirrors); (d\') a late 412 -> unavailable; (d\'\') 200 + a hang -> unavailable', async () => {
     reset(); const B1 = await bind(72); const SK = sKey(B1.sid);
     assert.deepEqual(await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF }), { kind: 'verified' });
     const iRev = blobs.log.length;
@@ -2116,22 +2116,47 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     const activeAfter = blobs.log.slice(iRev).filter((e) => e.method === 'PUT' && e.key === SK && isActiveBytes(e));
     assert.ok(activeAfter.length > 0 && activeAfter.every((e) => (e.status === 412 || e.status === 409 || e.status === null) && !e.applied), '(b\') ' + JSON.stringify(activeAfter.map((e) => [e.status, !!e.applied])));
     assert.ok(blobs.get(SSTORE, SK).text.includes('"state":"revoked"'), '(b\') final bytes revoked');
-    // (c) overlap (Bones REVISE on e5b71f7, item 2): BOTH check writes are PROCESSED at origin (200) BEFORE the revoke;
-    // only the anchor answer's DELIVERY is held. The revoke then completes as verified; the held answer is released; the
-    // check returns active AFTER verified -- the documented point-in-time overlap, not a check started after revocation.
-    reset(); const B2 = await bind(73); const S2 = sKey(B2.sid);
-    const order = []; let release = null; const held = new Promise((r) => { release = r; });
-    let processedResolve = null; const anchorProcessed = new Promise((r) => { processedResolve = r; });
-    blobs.rule({ method: 'PUT', key: ANCHOR_KEY, holdDelivery: async (e) => { order.push('anchor processed ' + e.processedBeforeHold); processedResolve(); await held; order.push('anchor delivered'); } });
-    const c = rev.checkSession(B2, 'test', { event: NF }).then((r) => { order.push('check returned ' + r.kind); return r; });
-    await anchorProcessed;
-    for (let i = 0; i < 50 && !putsTo(S2).some((e) => e.status === 200 && isActiveBytes(e)); i++) await new Promise((r) => setImmediate(r));
-    order.push('session processed ' + (putsTo(S2).find((e) => isActiveBytes(e)) || {}).status);
-    const vr = await rev.revokeSession(B2.sid, B2.epoch, 'test', { event: NF }); order.push('revoke ' + vr.kind);
-    release(); const cr = await c;
-    assert.deepEqual(order, ['anchor processed 200', 'session processed 200', 'revoke verified', 'anchor delivered', 'check returned active'], '(c) exact completion order: ' + JSON.stringify(order));
-    assert.equal(cr.kind, 'active', '(c) the overlapping check (started and origin-processed before the revoke) returns active after verified -- documented limitation');
-    assert.ok(blobs.get(SSTORE, S2).text.includes('"state":"revoked"'), '(c) final bytes revoked');
+    // (c) overlap (Bones REVISE on ba8b7c6): the log boundary is taken AFTER bind(73); THE check's own conditional session
+    // PUT (If-Match = the bound setag, the exact active bytes, no If-None-Match) must be origin-APPLIED with HTTP 200
+    // BEFORE the revoke starts; only the anchor answer's DELIVERY is held. Then: verified revoke -> held delivery ->
+    // the overlapping check returns active -> final bytes revoked. The ordering run is a helper so the negative control
+    // below can show it FAILS when that specific PUT is delayed.
+    const overlapRun = async (n, sessionRule) => {
+      reset(); const B2 = await bind(n); const S2 = sKey(B2.sid);
+      const b0 = blobs.log.length;                                              // boundary AFTER bind(): bind's own onlyIfNew create is excluded
+      const activeBytes = rev.sessionRecordText('test', B2.epoch, B2.sid, 'active');
+      const theCheckPut = () => blobs.log.slice(b0).find((e) => e.method === 'PUT' && e.key === S2 && e.ifMatch === B2.setag && e.ifNoneMatch === null && e.body === activeBytes);
+      const order = []; let release = null; const held = new Promise((r) => { release = r; });
+      let processedResolve = null; const anchorProcessed = new Promise((r) => { processedResolve = r; });
+      blobs.rule({ method: 'PUT', key: ANCHOR_KEY, holdDelivery: async (e) => { order.push('anchor processed ' + e.processedBeforeHold); processedResolve(); await held; order.push('anchor delivered'); } });
+      if (sessionRule) blobs.rule(sessionRule);
+      const c = rev.checkSession(B2, 'test', { event: NF }).then((r) => { order.push('check returned ' + r.kind); return r; });
+      await anchorProcessed;
+      for (let i = 0; i < 50 && !(theCheckPut() && theCheckPut().status === 200 && theCheckPut().applied === true); i++) await new Promise((r) => setImmediate(r));
+      const p = theCheckPut();
+      const pre = !!p && p.status === 200 && p.applied === true;                // the check's own session PUT applied at origin, 200
+      order.push('check session PUT ' + (p ? `${p.status}${p.applied ? ' applied' : ''}` : 'absent'));
+      let vr = null;
+      if (pre) { vr = await rev.revokeSession(B2.sid, B2.epoch, 'test', { event: NF }); order.push('revoke ' + vr.kind); }
+      else order.push('revoke NOT started (precondition failed)');
+      release(); const cr = await c;
+      const stored = blobs.get(SSTORE, S2).text;
+      return { pre, order, cr, vr, storedRevoked: stored.includes('"state":"revoked"'), putIfMatchIsSetag: !!p && p.ifMatch === B2.setag };
+    };
+    const EXPECT_ORDER = ['anchor processed 200', 'check session PUT 200 applied', 'revoke verified', 'anchor delivered', 'check returned active'];
+    const ov = await overlapRun(73, null);
+    assert.equal(ov.pre, true, '(c) precondition: the check\'s own conditional session PUT was origin-applied 200 before the revoke: ' + JSON.stringify(ov.order));
+    assert.ok(ov.putIfMatchIsSetag, '(c) identified by its conditional input (If-Match = bound setag)');
+    assert.deepEqual(ov.order, EXPECT_ORDER, '(c) exact completion order: ' + JSON.stringify(ov.order));
+    assert.equal(ov.cr.kind, 'active', '(c) the overlapping check (started and origin-processed before the revoke) returns active after verified -- documented limitation');
+    assert.ok(ov.storedRevoked, '(c) final bytes revoked');
+    // (c-neg) negative control: DELAY that specific check PUT (300 ms, conditional PUTs on the session key only). When the
+    // anchor is processed, the check's session PUT is not yet applied -> the precondition fails, the revoke is not
+    // started, and the ordering assertion above would FAIL.
+    const neg = await overlapRun(78, { method: 'PUT', key: null, ifMatchOnly: true, delayMs: 300, bodyIncludes: '"state":"active"' });
+    assert.equal(neg.pre, false, '(c-neg) delayed check PUT -> precondition not met: ' + JSON.stringify(neg.order));
+    assert.notDeepEqual(neg.order, EXPECT_ORDER, '(c-neg) the ordering assertion fails when the check PUT is delayed: ' + JSON.stringify(neg.order));
+    assert.ok(neg.order.includes('revoke NOT started (precondition failed)'));
     // (d) timely 412 + a deadline-cut sibling -> revoked; both mirrors. (d') late 412 -> unavailable. (d'') 200 + hang -> unavailable
     reset(); const B3 = await bind(74); const S3 = sKey(B3.sid);
     const dcase = (rules) => withVT(async (vt) => { blobs.rule(...rules); return vt.run(rev.checkSession(B3, 'test', { event: NF, now: vt.now, sleep: vt.sleep })); });
