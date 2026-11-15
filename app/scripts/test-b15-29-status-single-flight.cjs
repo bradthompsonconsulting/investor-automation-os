@@ -5,7 +5,7 @@
  * Playwright's fake clock, paused: a backoff fires only when the script advances it (deterministic, never wall-clock).
  * Harness-only instrumentation (VITE_IAOS_STATUS_PROBE=1): window.__iaosStatusProbe and window.__iaosStatusTrace.
  *
- * Rows (ids from the design): D1 D2p D3 D4p D5 D6 D7 D8a D8b D9 D10 D11 D12 D13 D14 D15 D16 D17 D18 D19 D20
+ * Rows (ids from the design): D1 D2p D3 D4p D5 D6 D7 D8a D8b D9 D10 D11 D12 D13 D14 D15 D16 D17 D18 D19 D19pos D20
  * D21a D21b D21c D22a D22b D22c D23p D24 D25p D25q D26T D26S D27a D27b ST1 ST2 BUILD.
  *
  *   node scripts/test-b15-29-status-single-flight.cjs                     all rows, unmutated (every row must pass)
@@ -25,6 +25,7 @@ const APP = path.resolve(__dirname, '..');
 const HARNESS = '/scripts/harness/one-login-dashboard/index.html';
 const OLA = path.join(APP, 'src/components/OneLoginAccess.tsx');
 const READ_SESSION = path.join(APP, 'src/lib/read-session.ts');
+const GHL = path.join(APP, 'src/lib/ghl.ts');
 
 const arg = (k) => { const a = process.argv.find((x) => x.startsWith(`--${k}=`)); return a ? a.slice(k.length + 3) : null; };
 const MUTATE = arg('mutate');
@@ -67,6 +68,8 @@ const MUTATIONS = {
     '    setSlot({ kind: "idle" }, "complete:slot-idle");\n    const q = pendingRef.current;\n    setPending(null, "complete:pending-clear");')] },
   'catch-bypasses-apply':     { targets: ['D21b'], record: { D21b: ['setStatus'] }, edits: [R(OLA, 'catch { ctxFlight.current = f.id; res = null; }', 'catch { ctxFlight.current = f.id; fx.setStatus({ kind: "unavailable", message: UNAVAILABLE_TEXT }); res = null; }')] },
   'json-bypasses-apply':      { targets: ['D21c'], record: { D21c: ['setStatus'] }, edits: [R(OLA, '.catch(() => { ctxFlight.current = f.id; return JSON_FAILED; })', '.catch(() => { ctxFlight.current = f.id; fx.setStatus({ kind: "unavailable", message: UNAVAILABLE_TEXT }); return JSON_FAILED; })')] },
+  // D19 (Captain GO 2026-11-15): a reader that echoes the refused response body into its error must be caught by D19.
+  'reader-echoes-body':       { targets: ['D19'], edits: [R(GHL, '        throw readerFailure("ghl-contacts", res.status);', '        throw new Error(`ghl-contacts → ${res.status}: ${await res.text()}`);')] },
   // r5 structural controls (Bones, review of 64a0959): a deliberate bypass must be caught by the structural row.
   'bypass-ownership-setter':  { targets: ['ST1'], edits: [R(OLA, '    setSlot({ kind: "idle" }, "complete:slot-idle");', '    slotRef.current = { kind: "idle" };')] },
   'bypass-apply-wrapper':     { targets: ['ST2'], edits: [R(OLA, '    if (r.kind === "unavailable") { fx.setStatus({ kind: "unavailable", message: UNAVAILABLE_TEXT }); return; }',
@@ -523,12 +526,38 @@ async function main() {
       { a: { exhausted: xa.exhausted, refusals: xa.refusals }, b: { exhausted: xb.exhausted, refusals: xb.refusals, gets: statusGets(SB) } });
     await SA.ctx.close(); await SB.ctx.close();
   };
+  /*
+   * D19 (Bones, review of 64a0959): a refused reader's data is never displayed. The refused ghl-contacts answer is a
+   * read-auth 401 whose body ALSO carries an identifiable contact (MARKER); the permitted readers answer 200. D19pos is
+   * the positive control: the SAME contact answered 200 by the same reader IS displayed by the same assertion, so the
+   * check can tell permitted visible data from refused data. Both wait for the same rendered state before reading.
+   */
+  const MARKER = 'Quillfeather';
+  const markerContact = { ...CONTACTS[0], id: 'c-marker', firstName: 'Zed', lastName: MARKER, phone: '+15555551099' };
+  const pageText = async (p) => ((await p.locator('#root').innerText().catch(() => '')) || '').toLowerCase();
+  async function d19(S, contactsSpec) {
+    S.net.queue['ghl-contacts'] = [contactsSpec];
+    const p = await openTab(S);
+    await until(() => READERS.every((fn) => S.net.log.some((e) => e.fn === fn && e.answered !== undefined)));
+    await until(async () => { const t = await pageText(p); return t.includes('lead queue') || t.includes('failed to load dashboard'); }, 8000);
+    await settle(p, 6);
+    return { p, text: await pageText(p) };
+  }
   ROWS.D19 = async () => {
     const S = await newSession('D19');
-    S.net.queue['ghl-conversations'] = [READ_401];
-    const p = await openTab(S);
-    await until(() => READERS.every((fn) => count(S, fn) >= 1)); await until(() => statusGets(S) >= 2, 5000); await settle(p, 4);
-    row('D19', READERS.every((fn) => count(S, fn) >= 1) && statusGets(S) === 2, { readers: Object.fromEntries(READERS.map((fn) => [fn, count(S, fn)])), statusGets: statusGets(S) });
+    const { p, text } = await d19(S, { status: 401, json: { ...READ_401.json, contacts: [markerContact], rows: [markerContact] } });
+    await until(() => statusGets(S) >= 2, 5000); await settle(p, 3);
+    // The refused read shows the Dashboard's error state (rendered, not vacuous), naming the endpoint and status only.
+    const rendered = text.includes('failed to load dashboard') && text.includes('ghl-contacts → 401');
+    const leaked = text.includes(MARKER.toLowerCase()) || text.includes('"contacts"');
+    row('D19', READERS.every((fn) => count(S, fn) >= 1) && statusGets(S) === 2 && rendered && !leaked,
+      { readers: Object.fromEntries(READERS.map((fn) => [fn, count(S, fn)])), statusGets: statusGets(S), rendered, leaked });
+    await S.ctx.close();
+  };
+  ROWS.D19pos = async () => {
+    const S = await newSession('D19pos');
+    const { text } = await d19(S, { status: 200, json: [markerContact] });
+    row('D19pos', text.includes('lead queue') && text.includes(MARKER.toLowerCase()), { rendered: text.includes('lead queue'), shown: text.includes(MARKER.toLowerCase()) });
     await S.ctx.close();
   };
 
