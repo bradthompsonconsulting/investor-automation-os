@@ -38,7 +38,7 @@ const TMP = path.join(APP, '.tmp-b15-22-authoritative-test');
 const esbuild = require(path.join(APP, 'node_modules', '.pnpm', 'esbuild@0.25.12', 'node_modules', 'esbuild'));
 
 /** Literal check() call-site count in this file. */
-const FLOOR = 107;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta); B15-29 P-1 timing: + S8f (S8e was within 101); probe gate site id: + S8g; B15-29 probe verification (A1a): + S8-PV; B15-29 G1 race-409 probe: + S8-RC; B15-29 activation: + S8h; B15-29 session-check concurrency: + S8-CC
+const FLOOR = 108;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta); B15-29 P-1 timing: + S8f (S8e was within 101); probe gate site id: + S8g; B15-29 probe verification (A1a): + S8-PV; B15-29 G1 race-409 probe: + S8-RC; B15-29 activation: + S8h; B15-29 session-check concurrency: + S8-CC; B15-29 D19 reader errors: + S8-RD
 /** S8h: the committed activation config steps, in order. H5 alone; the H7-only C3 commit pins ['H5', 'C3']. */
 const B29A_EXPECTED_STEPS = ['H5'];
 let checks = 0; let failures = 0;
@@ -521,6 +521,21 @@ check('S7 the label is backed by the resolver: Opportunity ARV first, Contact on
   check('S8-CC the B15-29 session-check concurrency delta is exactly its one chained change (lib/session-revocation.ts) and no addition',
     [Object.keys(B29C.changes || {}).sort(), b29cProblems],
     [['netlify/functions/lib/session-revocation.ts'], []]);
+  /* B15-29 D19 correction (Captain GO 2026-11-15; Bones review of 64a0959): ONE change to src/lib/ghl.ts -- READ failure
+     messages keep "<label> → <status>: " and no longer embed the response body -- chained from the bytes Release 15-A
+     leaves expected; no addition. Listed, with its reason, in b15-22-b15-29-reader-error-delta.json. Every earlier
+     amendment is unchanged. */
+  const B29D = JSON.parse(fs.readFileSync(path.join(APP, 'scripts', 'fixtures', 'b15-22-b15-29-reader-error-delta.json'), 'utf8'));
+  const b29dProblems = [];
+  for (const [rel, c] of Object.entries(B29D.changes || {})) {
+    if (!(rel in expected)) b29dProblems.push(`not an expected protected file: ${rel}`);
+    else if (!c || c.from !== expected[rel] || typeof c.to !== 'string' || c.to === c.from) b29dProblems.push(`not a reviewed change from the expected bytes: ${rel}`);
+    else expected[rel] = c.to;
+  }
+  if (Object.keys(B29D.additions || {}).length) b29dProblems.push('additions are not part of this delta');
+  check('S8-RD the B15-29 D19 reader-error delta is exactly its one chained change (src/lib/ghl.ts) and no addition',
+    [Object.keys(B29D.changes || {}).sort(), b29dProblems],
+    [['src/lib/ghl.ts'], []]);
   const drift = [];
   for (const rel of seen) { if (!(rel in expected)) drift.push(`added ${rel}`); else if (hashOf(rel) !== expected[rel]) drift.push(`changed ${rel}`); }
   for (const rel of Object.keys(expected)) if (!seen.includes(rel)) drift.push(`removed ${rel}`);
