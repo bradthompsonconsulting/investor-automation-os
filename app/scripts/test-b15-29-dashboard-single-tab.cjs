@@ -40,7 +40,10 @@ Module._extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
 
 const arg = (k, d) => { const a = process.argv.find((x) => x.startsWith(`--${k}=`)); return a ? a.slice(k.length + 3) : d; };
-const K = Number(arg('k', '5'));
+const K = Number(arg('k', '10'));
+/* The D2 client contract under test: at most LANE_MAX session-checked requests from ONE tab in flight at the server at
+   once (Scotty's lane: 1). Measured server-side per tab. --lane-max=0 disables the bound (baseline characterisation). */
+const LANE_MAX = Number(arg('lane-max', '1'));
 const LATENCIES = arg('latencies', '10,40,100').split(',').map(Number);
 const ORIGIN = 'https://proof.example.invalid';
 const SITE = '07ca1f1a-60fd-4229-a076-528970957912';
@@ -66,7 +69,11 @@ assert.equal(cfg.getConfig('production').oneLogin, cfg.ONE_LOGIN_DISABLED, 'comm
 const handlers = new Map();
 const handlerFor = (fn) => { if (!handlers.has(fn)) { const p = path.join(FUNCTIONS, fn + '.ts'); handlers.set(fn, fs.existsSync(p) ? require(p).handler : null); } return handlers.get(fn); };
 const ALLOWED_FNS = new Set(['iaos-runtime-config', 'app-read-session', 'app-write-token', 'ghl-contacts', 'ghl-mailers', 'ghl-opportunities', 'ghl-conversations',
-  'ghl-calendar-events', 'ghl-underwriting-policy', 'call-log-barrier', 'ghl-contact', 'ghl-contact-conversations', 'ghl-proxy']);
+  'ghl-calendar-events', 'ghl-underwriting-policy', 'call-log-barrier', 'ghl-contact', 'ghl-contact-conversations', 'ghl-proxy',
+  'protected-noop', 'protected-noop-read', 'app-signout']);
+/* Functions that run NO session check (excluded from the per-tab in-flight bound). */
+const UNCHECKED_FNS = new Set(['iaos-runtime-config']);
+let PENDING = 0;   // server-side handler executions not yet settled, across every tab (aborted requests included)
 const PROTECTED_READERS = ['ghl-contacts', 'ghl-mailers', 'ghl-opportunities', 'ghl-conversations'];
 const anchorText = (epoch = 'fixture-epoch-0001') => JSON.stringify({ env: 'test', epoch, kind: 'iaos-session-revocation-authority', siteID: SITE, state: 'open', v: 1 });
 const sid = (n) => Buffer.alloc(16, n).toString('base64url');
@@ -74,7 +81,7 @@ const NF = { headers: { 'x-nf-site-id': SITE }, blobs: blobs.lambdaBlobs };
 async function bindSession(n) {
   const g = await rev.beginSession(sid(n), 'test', { event: NF });
   if (g.kind !== 'issued') throw new Error('fixture bind: ' + JSON.stringify(g));
-  return { sid: sid(n), epoch: g.epoch, cookie: readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now(), sid(n), g.epoch, { aetag: g.aetag, setag: g.setag }).token };
+  return { sid: sid(n), epoch: g.epoch, aetag: g.aetag, setag: g.setag, cookie: readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now(), sid(n), g.epoch, { aetag: g.aetag, setag: g.setag }).token };
 }
 const ev = ({ method = 'GET', cookie = null, headers = {}, body = '' } = {}) => ({ httpMethod: method, headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'x-nf-site-id': SITE, ...(cookie ? { cookie: `${readAuth.READ_COOKIE}=${cookie}` } : {}), ...headers }, body, blobs: blobs.lambdaBlobs });
 const fresh = (latencyMs) => { blobs.reset(); blobs.put('iaos-session-authority', 'authority', anchorText()); blobs.setConflictMode(latencyMs ? { latencyMs } : null); ghlCalls = 0; };
@@ -97,32 +104,46 @@ async function main() {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   /** ONE browser context, ONE tab, the session's cookie injected on every function request. */
+  /* Server-side accounting per tab: every function request is a log entry with its start / end time and status; the
+     number of SESSION-CHECKED handler executions from this tab in flight at once (inflight / maxInflight: the D2 lane
+     bound); handlers that are still running after the browser gave up (aborted / closed page) keep running here, as
+     a Lambda would, and are counted in the global PENDING until they settle. */
   async function openTab(cookie) {
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
-    const log = []; const foreign = [];
+    const tab = { log: [], foreign: [], errs: [], inflight: 0, maxInflight: 0, fulfillFailed: 0 };
     await ctx.route('**/*', async (route) => {
       const req = route.request(); const url = req.url();
       if (url.endsWith('/app-read-login.html')) return route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>login</title>' });
       if (url.startsWith(base) && !url.includes('/.netlify/functions/')) return route.continue();
-      if (!url.includes('/.netlify/functions/')) { foreign.push(url); return route.abort(); }
+      if (!url.includes('/.netlify/functions/')) { tab.foreign.push(url); return route.abort(); }
       const U = new URL(url); const fn = U.pathname.replace(/^.*\/\.netlify\/functions\//, '');
-      const entry = { fn, method: req.method(), t0: Date.now() }; log.push(entry);
+      const entry = { fn, method: req.method(), t0: Date.now() }; tab.log.push(entry);
       const h = handlerFor(fn);
-      if (!h) { entry.status = 404; return route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"no handler"}' }); }
+      if (!h) { entry.status = 404; entry.t1 = Date.now(); return route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"no handler"}' }).catch(() => { tab.fulfillFailed += 1; }); }
       const headers = { origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'x-nf-site-id': SITE };
       for (const [k, v] of Object.entries(req.headers())) if (!['cookie', 'host', 'origin', 'referer'].includes(k)) headers[k] = v;
-      if (cookie) headers.cookie = `${readAuth.READ_COOKIE}=${cookie}`;
+      if (tab.cookie) headers.cookie = `${readAuth.READ_COOKIE}=${tab.cookie}`;
       const q = {}; U.searchParams.forEach((v, k) => { q[k] = v; });
+      const checked = !UNCHECKED_FNS.has(fn);
+      if (checked) { tab.inflight += 1; tab.maxInflight = Math.max(tab.maxInflight, tab.inflight); }
+      PENDING += 1;
       let res;
       try { res = await h({ httpMethod: req.method(), headers, body: req.postData() || '', blobs: blobs.lambdaBlobs, queryStringParameters: Object.keys(q).length ? q : undefined, rawUrl: url, path: U.pathname }); }
-      catch (e) { entry.status = 'threw'; return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"handler threw"}' }); }
-      entry.status = res.statusCode; entry.ms = Date.now() - entry.t0;
+      catch (e) { res = { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: '{"error":"handler threw"}' }; entry.threw = true; }
+      finally { PENDING -= 1; if (checked) tab.inflight -= 1; }
+      entry.status = res.statusCode; entry.t1 = Date.now(); entry.ms = entry.t1 - entry.t0;
       const hdrs = {}; for (const [k, v] of Object.entries(res.headers || {})) if (k.toLowerCase() !== 'set-cookie') hdrs[k] = String(v);
-      return route.fulfill({ status: res.statusCode, headers: hdrs, body: res.body || '' });
+      return route.fulfill({ status: res.statusCode, headers: hdrs, body: res.body || '' }).catch(() => { tab.fulfillFailed += 1; entry.undelivered = true; });
     });
-    const page = await ctx.newPage(); const errs = []; page.on('pageerror', (e) => errs.push(String(e).slice(0, 160)));
-    return { ctx, page, log, foreign, errs };
+    tab.cookie = cookie;
+    tab.ctx = ctx; tab.page = await ctx.newPage(); tab.page.on('pageerror', (e) => tab.errs.push(String(e).slice(0, 160)));
+    return tab;
   }
+  /** Rendered completion: the Dashboard's count notes render only once every reader has delivered (loading false). */
+  const rendered = async (T, ms = 8000) => T.page.waitForSelector('[data-testid="dashboard-count-notes"]', { timeout: ms }).then(() => true).catch(() => false);
+  /** Settle: wait until no server-side handler is pending (bounded), then report anything stuck. */
+  const settleServer = async (ms = 6000) => { const t0 = Date.now(); while (PENDING > 0 && Date.now() - t0 < ms) await sleep(25); return { pending: PENDING, blobInflight: blobs.inflightTotal() }; };
+  const unfinished = (T) => T.log.filter((e) => e.status === undefined).length;
   const account = (log) => { const by = {}; for (const e of log) { const k = `${e.fn}:${e.status}`; by[k] = (by[k] || 0) + 1; } return by; };
   const withCheckLog = async (fn) => { const w0 = console.warn; const lines = []; console.warn = (...a) => { const l = a.map(String).join(' '); if (l.startsWith('[iaos-session-check]')) lines.push(JSON.parse(l.slice(21))); else w0(...a); };
     try { return { out: await fn(), lines }; } finally { console.warn = w0; } };
@@ -133,33 +154,174 @@ async function main() {
     const runs = [];
     for (let k = 0; k < K; k++) {
       fresh(L); const S = await bindSession(1);
-      const { out: T, lines } = await withCheckLog(async () => { const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await sleep(2500);
+      const { out: T, lines } = await withCheckLog(async () => { const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`);
+        T.rendered = await rendered(T); await sleep(300);
         T.text = await T.page.evaluate(() => document.body.innerText).catch(() => ''); return T; });
+      const srv = await settleServer();
       const by = account(T.log); const n503 = T.log.filter((e) => e.status === 503).length;
       const row = { scenario: `T-L${L}`, run: k + 1, n503, requests: T.log.length, byFnStatus: by, conflict409s: blobs.conflictAnswers(), ghlCalls, checkClasses: classes(lines),
-        signedIn: /Sign out/i.test(T.text), unavailableBanner: /IAOS can.t confirm your sign-in/.test(T.text), pageErrors: T.errs.length, foreign: T.foreign.length,
-        unexpectedFns: [...new Set(T.log.map((e) => e.fn).filter((f) => !ALLOWED_FNS.has(f)))], maxMs: Math.max(0, ...T.log.map((e) => e.ms || 0)) };
+        rendered: T.rendered, signedIn: /Sign out/i.test(T.text), unavailableBanner: /IAOS can.t confirm your sign-in/.test(T.text), pageErrors: T.errs.length, foreign: T.foreign.length,
+        unexpectedFns: [...new Set(T.log.map((e) => e.fn).filter((f) => !ALLOWED_FNS.has(f)))], maxMs: Math.max(0, ...T.log.map((e) => e.ms || 0)),
+        maxInflight: T.maxInflight, unfinished: unfinished(T), serverPending: srv.pending, blobInflight: srv.blobInflight };
       RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row)); runs.push(row);
       await T.ctx.close();
     }
-    await check(`T-L${L} one tab x${K}: ZERO 503; status signed in; every protected Dashboard reader 200; saving token primed (app-write-token 200); no page error, no foreign request, only allowlisted functions`, async () => {
-      const bad = runs.filter((r) => r.n503 > 0 || !r.signedIn || r.unavailableBanner || r.pageErrors || r.foreign || r.unexpectedFns.length
+    await check(`T-L${L} one tab x${K}: ZERO 503; status signed in; every protected Dashboard reader 200; saving token primed (app-write-token 200); Dashboard rendered complete; no page error, no foreign request, only allowlisted functions`, async () => {
+      const bad = runs.filter((r) => r.n503 > 0 || !r.signedIn || !r.rendered || r.unavailableBanner || r.pageErrors || r.foreign || r.unexpectedFns.length
         || PROTECTED_READERS.some((f) => !(r.byFnStatus[`${f}:200`] >= 1)) || !(r.byFnStatus['app-write-token:200'] >= 1));
-      assert.deepEqual(bad.map((r) => ({ run: r.run, n503: r.n503, signedIn: r.signedIn, by: r.byFnStatus })), [], `${bad.length}/${K} runs failed`);
+      assert.deepEqual(bad.map((r) => ({ run: r.run, n503: r.n503, signedIn: r.signedIn, rendered: r.rendered, by: r.byFnStatus })), [], `${bad.length}/${K} runs failed`);
+    });
+    await check(`T-L${L} one tab x${K}: no stuck request or unfinished work (every request answered; 0 server handlers pending; 0 Blob writes in flight) and at most ${LANE_MAX || 'unbounded'} session-checked request(s) from the tab in flight at once`, async () => {
+      const bad = runs.filter((r) => r.unfinished || r.serverPending || r.blobInflight || (LANE_MAX > 0 && r.maxInflight > LANE_MAX));
+      assert.deepEqual(bad.map((r) => ({ run: r.run, unfinished: r.unfinished, pending: r.serverPending, blob: r.blobInflight, maxInflight: r.maxInflight })), [], `${bad.length}/${K} runs failed`);
     });
   }
   // ── NAV: navigate away (unmount) and back (remount) in the same tab ──
   {
     fresh(40); const S = await bindSession(2);
-    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await sleep(2500);
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T);
     const first = T.log.length;
     await T.page.evaluate(() => window.__iaosNavigate('/away')); await sleep(300);
-    await T.page.evaluate(() => window.__iaosNavigate('/')); await sleep(2500);
-    const after = T.log.slice(first); const row = { scenario: 'NAV', requestsFirst: first, requestsAfter: after.length, byFnStatusAfter: account(after), n503: T.log.filter((e) => e.status === 503).length };
+    await T.page.evaluate(() => window.__iaosNavigate('/')); const again = await rendered(T); await settleServer();
+    const after = T.log.slice(first); const row = { scenario: 'NAV', requestsFirst: first, requestsAfter: after.length, byFnStatusAfter: account(after), n503: T.log.filter((e) => e.status === 503).length, renderedAgain: again, maxInflight: T.maxInflight };
     RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-    await check('NAV away and back in the same tab (latency 40 ms): the protected readers run again and answer 200; zero 503 across the whole tab', async () => {
+    await check('NAV away and back in the same tab (latency 40 ms): the protected readers run again and answer 200; the Dashboard renders complete again; zero 503 across the whole tab', async () => {
       assert.ok(PROTECTED_READERS.some((f) => row.byFnStatusAfter[`${f}:200`] >= 1), JSON.stringify(row.byFnStatusAfter));
-      assert.equal(row.n503, 0, JSON.stringify(account(T.log)));
+      assert.ok(again, 'rendered again'); assert.equal(row.n503, 0, JSON.stringify(account(T.log)));
+    });
+    await T.ctx.close();
+  }
+  // ── SAVE-IN-PAGE: an authorized save issued WHILE the Dashboard is loading, through the app's own write client, then a readback ──
+  {
+    fresh(40); const S = await bindSession(6);
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`);
+    const save = await T.page.evaluate(async () => {
+      const w = await import('/src/lib/app-write-session.ts'); const r = await import('/src/lib/read-session.ts');
+      const out = {};
+      for (let i = 0; i < 100 && !document.body.innerText.includes('Sign out'); i++) await new Promise((x) => setTimeout(x, 20));   // signed-in status confirmed, readers still loading
+      try { const res = await w.appWriteFetch('/.netlify/functions/protected-noop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"probe":"a6"}' }); out.saveStatus = res.status; out.saveBody = await res.text(); }
+      catch (e) { out.saveThrew = String(e && e.name); }
+      try { const rb = await r.readFetch('/.netlify/functions/protected-noop-read'); out.readbackStatus = rb.status; } catch (e) { out.readbackThrew = String(e && e.name); }
+      return out;
+    });
+    const done = await rendered(T); await settleServer();
+    const row = { scenario: 'SAVE-IN-PAGE', ...save, rendered: done, n503: T.log.filter((e) => e.status === 503).length, byFnStatus: account(T.log), maxInflight: T.maxInflight };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check('SAVE-IN-PAGE (40 ms): a save sent through the app write client while the Dashboard is still loading -> 200 {"ok":true,"sent":false}; the readback -> 204; the Dashboard still renders complete; zero 503; the token never reaches the test output', async () => {
+      assert.deepEqual([row.saveStatus, row.saveBody, row.readbackStatus], [200, '{"ok":true,"sent":false}', 204], JSON.stringify(row));
+      assert.ok(row.rendered); assert.equal(row.n503, 0, JSON.stringify(row.byFnStatus));
+      assert.ok(!/eyJ/.test(JSON.stringify(row)), 'no token-shaped value in the evidence');
+    });
+    await T.ctx.close();
+  }
+  // ── QUEUE: a burst of reads from the app's read client in ONE tab: all answered, bounded concurrency, no 503 ──
+  {
+    fresh(40); const S = await bindSession(7);
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+    const base0 = T.log.length; T.maxInflight = 0;
+    const burst = await T.page.evaluate(async () => { const r = await import('/src/lib/read-session.ts');
+      const xs = await Promise.all(Array.from({ length: 12 }, () => r.readFetch('/.netlify/functions/ghl-contacts').then((x) => x.status, (e) => 'threw:' + (e && e.name)))); return xs; });
+    await settleServer();
+    const row = { scenario: 'QUEUE', burst, maxInflight: T.maxInflight, requests: T.log.length - base0, n503: T.log.slice(base0).filter((e) => e.status === 503).length };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check(`QUEUE (40 ms): 12 concurrent reads from the app read client in one tab -> all 200, zero 503, at most ${LANE_MAX || 'unbounded'} session-checked request(s) in flight, every request answered`, async () => {
+      assert.deepEqual(row.burst, Array(12).fill(200), JSON.stringify(row)); assert.equal(row.n503, 0);
+      if (LANE_MAX > 0) assert.ok(row.maxInflight <= LANE_MAX, 'maxInflight ' + row.maxInflight);
+      assert.equal(unfinished(T), 0);
+    });
+    await T.ctx.close();
+  }
+  // ── CANCEL: unmount the Dashboard right after the load starts: no new work keeps being started ──
+  {
+    fresh(100); const S = await bindSession(8);
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`);
+    await T.page.waitForFunction(() => typeof window.__iaosNavigate === 'function', null, { timeout: 8000 });   // the harness router is mounted (load in progress)
+    // Unmount only once the reader phase has begun (status confirmed and at least one protected reader started), so the
+    // check exercises queued / in-flight reader work, not an empty page.
+    for (let i = 0; i < 400 && !T.log.some((e) => e.fn.startsWith('ghl-')); i++) await sleep(5);
+    await T.page.evaluate(() => window.__iaosNavigate('/away')); const tUnmount = Date.now();
+    const loadRequestsAtUnmount = T.log.length;
+    await sleep(2000); await settleServer();
+    const late = T.log.filter((e) => e.t0 > tUnmount + 300 && e.fn !== 'iaos-runtime-config');
+    const row = { scenario: 'CANCEL', startedAfterUnmountPlus300ms: late.map((e) => e.fn), requestsAtUnmount: loadRequestsAtUnmount, requests: T.log.length, unfinished: unfinished(T), pending: PENDING };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check('CANCEL (100 ms): after the Dashboard unmounts, no session-checked request is STARTED more than 300 ms later (queued work is cancelled, not drained); every started request is answered; 0 handlers pending', async () => {
+      assert.ok(row.requestsAtUnmount >= 2, 'non-vacuous: the reader phase had begun at unmount ' + JSON.stringify(row));
+      assert.deepEqual(row.startedAfterUnmountPlus300ms, [], JSON.stringify(row)); assert.equal(row.unfinished, 0); assert.equal(row.pending, 0);
+    });
+    await T.ctx.close();
+  }
+  // ── EXPIRED / GENERATION: the session is revoked while a queued burst is in progress; nothing sent after the revoke is authorized ──
+  {
+    fresh(100); const S = await bindSession(9);
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+    const base0 = T.log.length;
+    const burstP = T.page.evaluate(async () => { const r = await import('/src/lib/read-session.ts');
+      return Promise.all(Array.from({ length: 8 }, () => r.readFetch('/.netlify/functions/ghl-contacts').then((x) => x.status, (e) => 'threw:' + (e && e.name)))); });
+    for (let i = 0; i < 200 && !T.log.slice(base0).some((e) => e.status !== undefined); i++) await sleep(10);
+    const v = await rev.revokeSession(S.sid, S.epoch, 'test', { event: NF }); const tRevoked = Date.now();
+    const burst = await burstP; await settleServer();
+    const afterRevoke = T.log.slice(base0).filter((e) => e.t0 > tRevoked);
+    const row = { scenario: 'EXPIRED', revoke: v.kind, burst, startedAfterRevoke: afterRevoke.map((e) => `${e.fn}:${e.status}`), n503: T.log.slice(base0).filter((e) => e.status === 503).length };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check('EXPIRED (100 ms): a revoke lands while a queued burst is in progress -> every request STARTED after the verified revoke is refused (never 200); the burst settles; nothing stuck', async () => {
+      assert.equal(v.kind, 'verified');
+      // Non-vacuous under a lane: queued requests start AFTER the revoke (on an unbounded client they may all have started before).
+      if (LANE_MAX > 0) assert.ok(afterRevoke.length > 0, 'non-vacuous: some queued request started after the revoke ' + JSON.stringify(row));
+      assert.deepEqual(afterRevoke.filter((e) => e.status === 200).map((e) => e.fn), [], JSON.stringify(row));
+      assert.equal(unfinished(T), 0); assert.equal(PENDING, 0);
+    });
+    await T.ctx.close();
+  }
+  // ── LOGOUT (UI): the operator clicks Sign out; the tab is signed out; nothing protected is answered with data afterwards ──
+  {
+    fresh(40); const S = await bindSession(10);
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+    const base0 = T.log.length;
+    await T.page.getByRole('button', { name: 'Sign out' }).click(); await sleep(1500); await settleServer();
+    const tAfter = Date.now(); await T.page.reload(); await sleep(2500); await settleServer();
+    const text = await T.page.evaluate(() => document.body.innerText).catch(() => '');
+    const signout = T.log.slice(base0).filter((e) => e.fn === 'app-signout').map((e) => e.status);
+    const after = T.log.filter((e) => e.t0 > tAfter);
+    const row = { scenario: 'LOGOUT', signout, afterReload: account(after), signedInShown: /Sign out/.test(text) };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check('LOGOUT (UI): Sign out -> app-signout 200 (server-verified); after a reload the tab is not signed in and no protected reader answers 200', async () => {
+      assert.deepEqual(row.signout, [200], JSON.stringify(row));
+      assert.equal(after.filter((e) => e.fn.startsWith('ghl-') && e.status === 200).length, 0, JSON.stringify(row.afterReload));
+      assert.equal(row.signedInShown, false);
+    });
+    await T.ctx.close();
+  }
+  // ── INVALID credentials in the tab: a tampered cookie ──
+  {
+    fresh(40); const S = await bindSession(11);
+    const T = await openTab(S.cookie.slice(0, -2) + (S.cookie.endsWith('A') ? 'BB' : 'AA')); await T.page.goto(`${base}${HARNESS}`); await sleep(2500); await settleServer();
+    const text = await T.page.evaluate(() => document.body.innerText).catch(() => '');
+    const row = { scenario: 'INVALID', byFnStatus: account(T.log), signedInShown: /Sign out/.test(text), n503: T.log.filter((e) => e.status === 503).length };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check('INVALID (UI): a tampered session cookie -> the tab is not signed in, no protected reader answers 200, no 503 (a refusal, not an outage)', async () => {
+      assert.equal(T.log.filter((e) => e.fn.startsWith('ghl-') && e.status === 200).length, 0, JSON.stringify(row));
+      assert.equal(row.signedInShown, false); assert.equal(row.n503, 0);
+    });
+    await T.ctx.close();
+  }
+  // ── ABORT: the tab is closed mid-load; server-side work keeps running (as a Lambda would) and must settle without harm ──
+  {
+    fresh(100); const S = await bindSession(12);
+    const anchorBefore = blobs.get('iaos-session-authority', 'authority').text;
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`);
+    // Close only while protected reader work is IN FLIGHT at the server (started, not answered), so abandoned server-side work is exercised.
+    for (let i = 0; i < 600 && !T.log.some((e) => e.fn.startsWith('ghl-') && e.status === undefined); i++) await sleep(5);
+    const inFlightAtClose = T.log.filter((e) => e.status === undefined).length;
+    await T.page.close(); const srv = await settleServer(8000);
+    const after = await rev.checkSession({ sid: S.sid, epoch: S.epoch, aetag: S.aetag, setag: S.setag }, 'test', { event: NF });
+    const row = { scenario: 'ABORT', inFlightAtClose, requests: T.log.length, undelivered: T.log.filter((e) => e.undelivered).length, unfinished: unfinished(T), ...srv, sessionAfter: after.kind,
+      anchorUnchanged: blobs.get('iaos-session-authority', 'authority').text === anchorBefore };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check('ABORT (100 ms): requests abandoned by a closed tab keep running server-side and all settle (0 pending, 0 Blob in flight); the session is still active and the anchor bytes unchanged (no partial state)', async () => {
+      assert.ok(row.inFlightAtClose >= 1, 'non-vacuous: server work was in flight at close ' + JSON.stringify(row));
+      assert.equal(row.pending, 0, JSON.stringify(row)); assert.equal(row.blobInflight, 0);
+      assert.equal(row.sessionAfter, 'active'); assert.ok(row.anchorUnchanged);
     });
     await T.ctx.close();
   }
