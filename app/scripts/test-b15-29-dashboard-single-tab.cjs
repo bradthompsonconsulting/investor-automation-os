@@ -44,6 +44,17 @@ const K = Number(arg('k', '10'));
 /* The D2 client contract under test: at most LANE_MAX session-checked requests from ONE tab in flight at the server at
    once (Scotty's lane: 1). Measured server-side per tab. --lane-max=0 disables the bound (baseline characterisation). */
 const LANE_MAX = Number(arg('lane-max', '1'));
+/* ABNORMAL (isolated) write-abandon scenario: the protected writer's response DELIVERY is held for WRITE_HOLD_MS (the
+   origin has already processed it). Set above the client's write deadline (r2: 20 000 ms) so the caller gives up while
+   the server-side work exists. WRITE_DEADLINE_MS, when given, is the client contract to expect an abort by (r3 value
+   from Scotty); without it the outcome is only RECORDED. No expectation is made that a later save proceeds. */
+const WRITE_HOLD_MS = Number(arg('write-hold-ms', '25000'));
+/* --contract=r3 (Scotty's D2 r3 amendment, PROVISIONAL until Bones reviews it, 02_SCOTTY_D2_r3_AMENDMENT.md sha256
+   2fe7d8b6…ccd7): write deadline 20 000 ms -> LaneUncertain (dispatched); the no-op writer's key is "*" (conflicts with
+   every write) -> a later write is rejected at once with LaneNotSent("uncertain_pending") and NOTHING is sent; reads
+   still proceed; no automatic release or retry. Without --contract the client outcome is recorded only. */
+const CONTRACT = arg('contract', null);
+const WRITE_DEADLINE_MS = arg('write-deadline-ms', null) !== null ? Number(arg('write-deadline-ms')) : CONTRACT === 'r3' ? 20000 : null;
 const LATENCIES = arg('latencies', '10,40,100').split(',').map(Number);
 const ORIGIN = 'https://proof.example.invalid';
 const SITE = '07ca1f1a-60fd-4229-a076-528970957912';
@@ -133,6 +144,8 @@ async function main() {
       finally { PENDING -= 1; if (checked) tab.inflight -= 1; }
       entry.status = res.statusCode; entry.t1 = Date.now(); entry.ms = entry.t1 - entry.t0;
       const hdrs = {}; for (const [k, v] of Object.entries(res.headers || {})) if (k.toLowerCase() !== 'set-cookie') hdrs[k] = String(v);
+      if (tab.holdDelivery && tab.holdDelivery.fn === fn) { entry.heldMs = tab.holdDelivery.ms; await sleep(tab.holdDelivery.ms); }   // origin already processed; only DELIVERY waits
+      entry.deliveredAt = Date.now();
       return route.fulfill({ status: res.statusCode, headers: hdrs, body: res.body || '' }).catch(() => { tab.fulfillFailed += 1; entry.undelivered = true; });
     });
     tab.cookie = cookie;
@@ -207,7 +220,7 @@ async function main() {
     const done = await rendered(T); await settleServer();
     const row = { scenario: 'SAVE-IN-PAGE', ...save, rendered: done, n503: T.log.filter((e) => e.status === 503).length, byFnStatus: account(T.log), maxInflight: T.maxInflight };
     RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-    await check('SAVE-IN-PAGE (40 ms): a save sent through the app write client while the Dashboard is still loading -> 200 {"ok":true,"sent":false}; the readback -> 204; the Dashboard still renders complete; zero 503; the token never reaches the test output', async () => {
+    await check('TRANSPORT-IN-PAGE (40 ms; the no-op authorization TRANSPORT through the app write client -- NOT a persisted business save): a write sent while the Dashboard is still loading -> 200 {"ok":true,"sent":false}; the readback -> 204; the Dashboard still renders complete; zero 503; the token never reaches the test output', async () => {
       assert.deepEqual([row.saveStatus, row.saveBody, row.readbackStatus], [200, '{"ok":true,"sent":false}', 204], JSON.stringify(row));
       assert.ok(row.rendered); assert.equal(row.n503, 0, JSON.stringify(row.byFnStatus));
       assert.ok(!/eyJ/.test(JSON.stringify(row)), 'no token-shaped value in the evidence');
@@ -325,8 +338,70 @@ async function main() {
     });
     await T.ctx.close();
   }
+  // ── ABNORMAL (isolated, last browser scenario): a write whose response is not delivered in time (ghost / abandoned
+  //    server work). Explicit accounting; excluded from the healthy one-in-flight assertions; NO expectation that a
+  //    later save proceeds automatically. ──
+  {
+    fresh(40); const S = await bindSession(13);
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+    const base0 = T.log.length; T.holdDelivery = { fn: 'protected-noop', ms: WRITE_HOLD_MS };
+    const t0 = Date.now();
+    const outcome = await T.page.evaluate(async () => {
+      const w = await import('/src/lib/app-write-session.ts'); const t = performance.now();
+      try { const r = await w.appWriteFetch('/.netlify/functions/protected-noop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"probe":"a6"}' }); return { kind: 'response', status: r.status, ms: Math.round(performance.now() - t) }; }
+      catch (e) { return { kind: 'error', name: String(e && e.name), ms: Math.round(performance.now() - t) }; }
+    });
+    // The caller has its outcome. Only under the r3 contract: a SECOND write attempt (operator-initiated, same "*" key)
+    // and a read, while the hold exists -- recorded always, asserted only with --contract=r3.
+    const n0 = T.log.filter((e) => e.fn === 'protected-noop').length;
+    const second = await T.page.evaluate(async () => {
+      const w = await import('/src/lib/app-write-session.ts'); const r = await import('/src/lib/read-session.ts'); const out = {}; const t = performance.now();
+      try { const x = await w.appWriteFetch('/.netlify/functions/protected-noop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"probe":"a6"}' }); out.write = { kind: 'response', status: x.status }; }
+      catch (e) { out.write = { kind: 'error', name: String(e && e.name), reason: e && e.reason ? String(e.reason) : null }; }
+      out.writeMs = Math.round(performance.now() - t);
+      try { const rb = await r.readFetch('/.netlify/functions/ghl-contacts'); out.read = rb.status; } catch (e) { out.read = 'threw:' + String(e && e.name); }
+      return out;
+    }).catch((e) => ({ evaluateFailed: String(e).slice(0, 80) }));
+    const secondWritesSent = T.log.filter((e) => e.fn === 'protected-noop').length - n0;
+    await sleep(Math.max(0, WRITE_HOLD_MS + 5000 - (Date.now() - t0))); await settleServer(10000);
+    const writes = T.log.slice(base0).filter((e) => e.fn === 'protected-noop');
+    const first = writes.slice(0, n0 - T.log.slice(0, base0).filter((e) => e.fn === 'protected-noop').length);
+    const row = { scenario: 'WRITE-ABANDON', contract: CONTRACT, holdMs: WRITE_HOLD_MS, outcome, firstWritesSent: first.length, writeServerStatus: first.map((e) => e.status),
+      writeDelivered: first.map((e) => !e.undelivered), second, secondWritesSent, totalWritesOverWindow: writes.length,
+      serverPending: PENDING, blobInflight: blobs.inflightTotal(), unfinished: unfinished(T),
+      otherRequestsDuringHold: T.log.slice(base0).filter((e) => e.fn !== 'protected-noop' && e.t0 >= t0 && e.t0 <= t0 + WRITE_HOLD_MS).map((e) => `${e.fn}:${e.status}`) };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check(`WRITE-ABANDON (isolated; delivery held ${WRITE_HOLD_MS} ms): the first write is sent EXACTLY ONCE and never re-sent automatically; total writes over hold + 5 s = first + only the operator's explicit second attempt; the server-side write settles (0 pending, 0 Blob in flight)${WRITE_DEADLINE_MS ? `; the caller gives up by ${WRITE_DEADLINE_MS} ms (+1 s) with an error (uncertain), not a success` : '; caller outcome RECORDED only'}${CONTRACT === 'r3' ? '; r3: the first error is LaneUncertain, the second write is rejected LaneNotSent(uncertain_pending) with 0 requests sent, and a read still answers 200' : ''}`, async () => {
+      assert.equal(row.firstWritesSent, 1, JSON.stringify(row));
+      assert.equal(row.totalWritesOverWindow, row.firstWritesSent + row.secondWritesSent, 'no automatic re-send ' + JSON.stringify(row));
+      assert.equal(row.serverPending, 0); assert.equal(row.blobInflight, 0); assert.equal(row.unfinished, 0);
+      if (WRITE_DEADLINE_MS) { assert.equal(outcome.kind, 'error', JSON.stringify(outcome)); assert.ok(outcome.ms <= WRITE_DEADLINE_MS + 1000, JSON.stringify(outcome)); }
+      if (CONTRACT === 'r3') {
+        assert.equal(outcome.name, 'LaneUncertain', JSON.stringify(outcome));
+        assert.deepEqual([second.write && second.write.name, second.write && second.write.reason, row.secondWritesSent], ['LaneNotSent', 'uncertain_pending', 0], JSON.stringify(second));
+        assert.equal(second.read, 200, 'reads proceed while the write hold exists ' + JSON.stringify(second));
+      }
+    });
+    await T.ctx.close();
+  }
+  // ── EXPIRY vs REVOCATION (direct, real handlers): two different refusals ──
+  await check('EXPIRY vs REVOCATION: a TIME-EXPIRED session (cookie issued 31 days ago) is refused 401 at the cookie, before any session-store access, with no "revoked" reason; a REVOKED session is refused 401 with reason "revoked" after the store check; both with zero GHL', async () => {
+    fresh(0); const S = await bindSession(14);
+    const expired = readAuth.issueReadSession('brad@example.invalid', readAuth.appReadConfig(), Date.now() - 31 * 24 * 3600 * 1000, S.sid, S.epoch, { aetag: S.aetag, setag: S.setag }).token;
+    const b0 = blobs.log.length; ghlCalls = 0;
+    const e = await handlerFor('ghl-contacts')(ev({ cookie: expired }));
+    const eb = JSON.parse(e.body);
+    assert.deepEqual([e.statusCode, ghlCalls, blobs.log.length - b0], [401, 0, 0], 'expired: 401, 0 GHL, 0 store requests ' + e.body);
+    assert.notEqual(eb.reason, 'revoked', 'expiry is not reported as revocation');
+    assert.equal((await rev.revokeSession(S.sid, S.epoch, 'test', { event: NF })).kind, 'verified');
+    const b1 = blobs.log.length; ghlCalls = 0;
+    const r = await handlerFor('ghl-contacts')(ev({ cookie: S.cookie }));
+    assert.deepEqual([r.statusCode, JSON.parse(r.body).reason, ghlCalls], [401, 'revoked', 0], r.body);
+    assert.ok(blobs.log.length - b1 >= 1, 'revocation is decided by the session-store check');
+    RESULTS.push({ scenario: 'EXPIRY-vs-REVOKED', expired: { status: e.statusCode, by: eb.by, reason: eb.reason || null }, revoked: { status: r.statusCode, reason: JSON.parse(r.body).reason } });
+  });
   // ── SAVE (direct, real handlers): the saving token authorizes a write; malformed refused ──
-  await check('SAVE: a signed-in operator mints a saving token (200, never printed) and the protected writer answers 200 {ok:true,sent:false}; a malformed body -> 400 malformed', async () => {
+  await check('SAVE (direct; the no-op authorization transport -- NOT a persisted business save): a signed-in operator mints a saving token (200, never printed) and the protected writer answers 200 {ok:true,sent:false}; a malformed body -> 400 malformed', async () => {
     fresh(0); const S = await bindSession(3);
     const mint = await handlerFor('app-write-token')(ev({ method: 'POST', cookie: S.cookie, headers: { 'x-iaos-session': 'saving-token' } }));
     assert.equal(mint.statusCode, 200, 'mint status');
