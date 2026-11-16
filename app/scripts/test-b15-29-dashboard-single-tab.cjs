@@ -54,7 +54,7 @@ const WRITE_HOLD_MS = Number(arg('write-hold-ms', '25000'));
    every write) -> a later write is rejected at once with LaneNotSent("uncertain_pending") and NOTHING is sent; reads
    still proceed; no automatic release or retry. Without --contract the client outcome is recorded only. */
 const CONTRACT = arg('contract', null);
-const WRITE_DEADLINE_MS = arg('write-deadline-ms', null) !== null ? Number(arg('write-deadline-ms')) : CONTRACT === 'r3' ? 20000 : null;
+const WRITE_DEADLINE_MS = arg('write-deadline-ms', null) !== null ? Number(arg('write-deadline-ms')) : (CONTRACT === 'r3' || CONTRACT === 'r4') ? 20000 : null;
 const LATENCIES = arg('latencies', '10,40,100').split(',').map(Number);
 const ORIGIN = 'https://proof.example.invalid';
 const SITE = '07ca1f1a-60fd-4229-a076-528970957912';
@@ -66,12 +66,34 @@ Object.assign(process.env, {
 });
 const blobs = createFakeBlobs({ siteID: SITE });
 let ghlCalls = 0;
+/* GHL upstream fixture. Lists answer empty; for the r4 J-rows it is STATEFUL for the single-record reads and writes the
+   REAL ghl-write uses: GET/PUT /contacts/:id (customFields {id,value}), GET/POST /contacts/:id/notes, GET/PUT
+   /opportunities/:id (customFields {id,fieldValue}), each bound to the committed Test locationId (the boundary checks it). */
+const GHL = { contacts: new Map(), opps: new Map(), notes: [] , resetAll() { this.contacts.clear(); this.opps.clear(); this.notes.length = 0; } };
+let ghlWritesToGhl = 0;
 global.fetch = async (url, init = {}) => {
   const u = String(url);
   if (blobs.handles(u)) return blobs.fetch(url, init);
   ghlCalls += 1;
-  return new Response(JSON.stringify({ contacts: [], opportunities: [], conversations: [], pipelines: [{ id: 'fixture-pipeline', name: 'P', stages: [] }], events: [], meta: { total: 0 }, total: 0 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const m = String(init.method || 'GET').toUpperCase(); const U = new URL(u); const LOC = cfgLoc(); let mm;
+  const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s, headers: { 'Content-Type': 'application/json' } });
+  if ((mm = U.pathname.match(/^\/contacts\/([A-Za-z0-9_-]+)\/notes$/))) {
+    if (m === 'POST') { ghlWritesToGhl += 1; const n = { id: 'fxn' + (GHL.notes.length + 1), body: JSON.parse(init.body || '{}').body, dateAdded: new Date().toISOString(), contactId: mm[1] }; GHL.notes.push(n); return J({ note: n }, 201); }
+    return J({ notes: GHL.notes.filter((n) => n.contactId === mm[1]) });
+  }
+  if ((mm = U.pathname.match(/^\/contacts\/([A-Za-z0-9_-]+)$/)) && !['search', 'upsert'].includes(mm[1])) {
+    const c = GHL.contacts.get(mm[1]) || { id: mm[1], locationId: LOC, customFields: [] }; GHL.contacts.set(mm[1], c);
+    if (m === 'PUT') { ghlWritesToGhl += 1; for (const f of JSON.parse(init.body).customFields || []) { c.customFields = c.customFields.filter((x) => x.id !== f.id); if (f.field_value !== '' && f.field_value !== null) c.customFields.push({ id: f.id, value: f.field_value }); } }
+    return J({ contact: c });
+  }
+  if ((mm = U.pathname.match(/^\/opportunities\/([A-Za-z0-9_-]+)$/)) && !['search', 'pipelines'].includes(mm[1])) {
+    const o = GHL.opps.get(mm[1]) || { id: mm[1], locationId: LOC, contactId: 'ZyXwVuTsRqPoNmLkJiHg', customFields: [] }; GHL.opps.set(mm[1], o);
+    if (m === 'PUT') { ghlWritesToGhl += 1; for (const f of JSON.parse(init.body).customFields || []) { o.customFields = o.customFields.filter((x) => x.id !== f.id); o.customFields.push({ id: f.id, fieldValue: f.field_value }); } }
+    return J({ opportunity: o });
+  }
+  return J({ contacts: [], opportunities: [], conversations: [], pipelines: [{ id: 'fixture-pipeline', name: 'P', stages: [] }], events: [], meta: { total: 0 }, total: 0 });
 };
+const cfgLoc = () => require(path.join(APP, 'shared/ghl-config.ts')).getConfig('test').locationId;
 const cfg = require(path.join(APP, 'shared/ghl-config.ts'));
 const readAuth = require(path.join(FUNCTIONS, 'lib/app-read-auth.ts'));
 const rev = require(path.join(FUNCTIONS, 'lib/session-revocation.ts'));
@@ -138,15 +160,32 @@ async function main() {
       const checked = !UNCHECKED_FNS.has(fn);
       if (checked) { tab.inflight += 1; tab.maxInflight = Math.max(tab.maxInflight, tab.inflight); }
       PENDING += 1;
+      // J1: the SERVER execution itself is held (a slow Lambda): the handler starts only after holdServer.ms.
+      if (tab.holdServer && tab.holdServer.fn === fn && !(tab.holdServer.count-- <= 0)) { entry.serverHeldMs = tab.holdServer.ms; await sleep(tab.holdServer.ms); }
       let res;
       try { res = await h({ httpMethod: req.method(), headers, body: req.postData() || '', blobs: blobs.lambdaBlobs, queryStringParameters: Object.keys(q).length ? q : undefined, rawUrl: url, path: U.pathname }); }
       catch (e) { res = { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: '{"error":"handler threw"}' }; entry.threw = true; }
       finally { PENDING -= 1; if (checked) tab.inflight -= 1; }
       entry.status = res.statusCode; entry.t1 = Date.now(); entry.ms = entry.t1 - entry.t0;
       const hdrs = {}; for (const [k, v] of Object.entries(res.headers || {})) if (k.toLowerCase() !== 'set-cookie') hdrs[k] = String(v);
-      if (tab.holdDelivery && tab.holdDelivery.fn === fn) { entry.heldMs = tab.holdDelivery.ms; await sleep(tab.holdDelivery.ms); }   // origin already processed; only DELIVERY waits
+      if (tab.holdDelivery && tab.holdDelivery.fn === fn && !(tab.holdDelivery.count !== undefined && tab.holdDelivery.count-- <= 0)) { entry.heldMs = tab.holdDelivery.ms; await sleep(tab.holdDelivery.ms); }   // origin already processed; only DELIVERY waits
       entry.deliveredAt = Date.now();
       return route.fulfill({ status: res.statusCode, headers: hdrs, body: res.body || '' }).catch(() => { tab.fulfillFailed += 1; entry.undelivered = true; });
+    });
+    /* J4: an in-page fetch STALL for one function, set per page by window.__iaosStall = { fn, mode } -- 'body': headers
+       arrive at once, then a body stream that never ends and ignores cancel(); 'abort': a fetch that never settles and
+       ignores its AbortSignal. Nothing reaches the server for a stalled request. Off unless the test sets it. */
+    await ctx.addInitScript(() => {
+      const real = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const s = window.__iaosStall; const url = typeof input === 'string' ? input : (input && input.url) || '';
+        if (s && url.includes('/.netlify/functions/' + s.fn)) {
+          window.__iaosStallHits = (window.__iaosStallHits || 0) + 1;
+          if (s.mode === 'abort') return new Promise(() => {});
+          return Promise.resolve(new Response(new ReadableStream({ start() {}, pull() { return new Promise(() => {}); }, cancel() { return new Promise(() => {}); } }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return real(input, init);
+      };
     });
     tab.cookie = cookie;
     tab.ctx = ctx; tab.page = await ctx.newPage(); tab.page.on('pageerror', (e) => tab.errs.push(String(e).slice(0, 160)));
@@ -371,16 +410,157 @@ async function main() {
       serverPending: PENDING, blobInflight: blobs.inflightTotal(), unfinished: unfinished(T),
       otherRequestsDuringHold: T.log.slice(base0).filter((e) => e.fn !== 'protected-noop' && e.t0 >= t0 && e.t0 <= t0 + WRITE_HOLD_MS).map((e) => `${e.fn}:${e.status}`) };
     RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-    await check(`WRITE-ABANDON (isolated; delivery held ${WRITE_HOLD_MS} ms): the first write is sent EXACTLY ONCE and never re-sent automatically; total writes over hold + 5 s = first + only the operator's explicit second attempt; the server-side write settles (0 pending, 0 Blob in flight)${WRITE_DEADLINE_MS ? `; the caller gives up by ${WRITE_DEADLINE_MS} ms (+1 s) with an error (uncertain), not a success` : '; caller outcome RECORDED only'}${CONTRACT === 'r3' ? '; r3: the first error is LaneUncertain, the second write is rejected LaneNotSent(uncertain_pending) with 0 requests sent, and a read still answers 200' : ''}`, async () => {
+    await check(`WRITE-ABANDON (isolated; delivery held ${WRITE_HOLD_MS} ms): the first write is sent EXACTLY ONCE and never re-sent automatically; total writes over hold + 5 s = first + only the operator's explicit second attempt; the server-side write settles (0 pending, 0 Blob in flight)${WRITE_DEADLINE_MS ? `; the caller gives up by ${WRITE_DEADLINE_MS} ms (+1 s) with an error (uncertain), not a success` : '; caller outcome RECORDED only'}${(CONTRACT === 'r3' || CONTRACT === 'r4') ? '; r3/r4: the first error is LaneUncertain, the second write is rejected LaneNotSent(uncertain_pending) with 0 requests sent, and a read still answers 200' : ''}`, async () => {
       assert.equal(row.firstWritesSent, 1, JSON.stringify(row));
       assert.equal(row.totalWritesOverWindow, row.firstWritesSent + row.secondWritesSent, 'no automatic re-send ' + JSON.stringify(row));
       assert.equal(row.serverPending, 0); assert.equal(row.blobInflight, 0); assert.equal(row.unfinished, 0);
       if (WRITE_DEADLINE_MS) { assert.equal(outcome.kind, 'error', JSON.stringify(outcome)); assert.ok(outcome.ms <= WRITE_DEADLINE_MS + 1000, JSON.stringify(outcome)); }
-      if (CONTRACT === 'r3') {
+      if (CONTRACT === 'r3' || CONTRACT === 'r4') {
         assert.equal(outcome.name, 'LaneUncertain', JSON.stringify(outcome));
         assert.deepEqual([second.write && second.write.name, second.write && second.write.reason, row.secondWritesSent], ['LaneNotSent', 'uncertain_pending', 0], JSON.stringify(second));
         assert.equal(second.read, 200, 'reads proceed while the write hold exists ' + JSON.stringify(second));
       }
+    });
+    await T.ctx.close();
+  }
+  // ── r4 J-rows (Scotty's D2 r4 amendment §6, PROVISIONAL; 04_SCOTTY_D2_r4_AMENDMENT.md sha256 2a235ef6…312b): end-to-end
+  //    through the REAL ghl-write + CC r3 session check + the stateful GHL fixture + the browser. Asserted only with
+  //    --contract=r4 (every outcome is RECORDED regardless). Scotty owns the lane-unit rows P1–P9 (not duplicated). ──
+  const C = 'ZyXwVuTsRqPoNmLkJiHg', D = 'DdDdDdDdDdDdDdDdDdDd', O = 'AbCdEfGhIjKlMnOpQrSt';
+  const R4 = CONTRACT === 'r4';
+  const LANE_KEY = 'iaosLane.unresolved.v1';
+  /** One save through the app's REAL client (ghl.ts → write-command → appWriteFetch → lane), outcome only (never a token). */
+  const save = (T, kind, a) => T.page.evaluate(async ({ kind, a }) => {
+    const g = (await import('/src/lib/ghl.ts')).ghl; const t = performance.now();
+    try {
+      if (kind === 'note') await g.notes.create(a.c, a.t);
+      else if (kind === 'field') await g.contacts.setLastCallAttempt(a.c, new Date().toISOString());
+      else if (kind === 'opp') await g.opportunities.setAskingPrice(a.o, 150000);
+      return { kind: 'ok', ms: Math.round(performance.now() - t) };
+    } catch (e) { return { kind: 'error', name: String(e && e.name), reason: e && e.reason ? String(e.reason) : null, ms: Math.round(performance.now() - t) }; }
+  }, { kind, a }).catch((e) => ({ kind: 'evaluate_failed', msg: String(e).slice(0, 80) }));
+  const laneStore = (T) => T.page.evaluate((k) => { try { return JSON.parse(sessionStorage.getItem(k) || 'null'); } catch { return 'unparseable'; } }, LANE_KEY).catch(() => 'page_gone');
+  const writesTo = (T, from = 0) => T.log.slice(from).filter((e) => e.fn === 'ghl-write').length;
+  const recs = (st) => (st && Array.isArray(st.records) ? st.records : []);
+  const pending = (x) => x && x.name === 'LaneNotSent' && x.reason === 'uncertain_pending';
+  const uncertainOutcome = (x) => x && x.name === 'LaneUncertain';
+  /** A tab whose ghl-write response DELIVERY is held past the 20 s write deadline (origin processes it). */
+  const uncertainTab = async (n, firstKind, firstArg) => {
+    fresh(10); GHL.resetAll(); const S = await bindSession(n);
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+    T.holdDelivery = { fn: 'ghl-write', ms: WRITE_HOLD_MS, count: 1 };
+    const first = await save(T, firstKind, firstArg);
+    return { S, T, first };
+  };
+
+  // J1 reload before timeout, server still pending
+  {
+    fresh(10); GHL.resetAll(); const S = await bindSession(20);
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+    T.holdServer = { fn: 'ghl-write', ms: WRITE_HOLD_MS, count: 1 };
+    const b0 = T.log.length;
+    void save(T, 'note', { c: C, t: 'J1 note' });
+    for (let i = 0; i < 400 && !T.log.slice(b0).some((e) => e.fn === 'ghl-write'); i++) await sleep(10);
+    const serverGot = T.log.slice(b0).some((e) => e.fn === 'ghl-write');
+    await T.page.reload(); await rendered(T);
+    const afterReload = await laneStore(T);
+    const w0 = writesTo(T);
+    const second = await save(T, 'note', { c: C, t: 'J1 second' });
+    const secondWrites = writesTo(T) - w0;
+    await sleep(WRITE_HOLD_MS + 2000); await settleServer(10000);
+    const afterServer = await laneStore(T);
+    await T.page.getByRole('button', { name: 'Sign out' }).click().catch(() => {}); await sleep(1500); await settleServer();
+    const S2 = await bindSession(21); T.cookie = S2.cookie; await T.page.reload(); await sleep(2500); await settleServer();
+    const afterSignInOut = await laneStore(T);
+    const row = { scenario: 'J1', contract: CONTRACT, serverGot, afterReload, second, secondWrites, afterServer, afterSignInOut, ghlNotes: GHL.notes.length };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check(`J1 reload before timeout while the server write is still pending: the record is in ${LANE_KEY} after the reload (dispatching, key contact:C); a save on the same contact -> LaneNotSent(uncertain_pending) with 0 ghl-write; the record survives the server completing and a sign-out + sign-in${R4 ? '' : ' [recorded only: pass --contract=r4]'}`, async () => {
+      assert.ok(serverGot, 'the write reached the server before the reload');
+      if (!R4) return;
+      const r1 = recs(row.afterReload).filter((r) => r.key === `contact:${C}`);
+      assert.ok(r1.length === 1 && ['dispatching', 'uncertain'].includes(r1[0].state), JSON.stringify(row.afterReload));
+      assert.ok(pending(row.second), JSON.stringify(row.second)); assert.equal(row.secondWrites, 0);
+      assert.equal(recs(row.afterServer).filter((r) => r.key === `contact:${C}`).length, 1, 'kept after the server completed');
+      assert.equal(recs(row.afterSignInOut).filter((r) => r.key === `contact:${C}`).length, 1, 'kept across sign-out + sign-in');
+    });
+    await T.ctx.close();
+  }
+  // J2 identical pre-existing note does not clear the hold
+  {
+    fresh(10); GHL.resetAll(); GHL.notes.push({ id: 'fxn-pre', body: 'J2 identical text', dateAdded: '2026-01-01T00:00:00.000Z', contactId: C });
+    const S = await bindSession(22);
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+    T.holdDelivery = { fn: 'ghl-write', ms: WRITE_HOLD_MS, count: 1 };
+    const first = await save(T, 'note', { c: C, t: 'J2 identical text' });
+    const readback = await T.page.evaluate(async (c) => { const g = (await import('/src/lib/ghl.ts')).ghl; try { const r = await g.notes.list(c); return (r.notes || []).map((n) => n.body); } catch (e) { return 'threw:' + (e && e.name); } }, C);
+    const st = await laneStore(T); const w0 = writesTo(T);
+    const second = await save(T, 'note', { c: C, t: 'J2 other' }); const secondWrites = writesTo(T) - w0;
+    await sleep(3000); await settleServer(30000);
+    const row = { scenario: 'J2', contract: CONTRACT, first, readback, store: st, second, secondWrites };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check(`J2 identical pre-existing note: a save of text T on C times out (LaneUncertain); the readback lists T; the record is NOT removed; a save on C -> LaneNotSent(uncertain_pending), 0 ghl-write${R4 ? '' : ' [recorded only]'}`, async () => {
+      assert.ok(Array.isArray(row.readback) && row.readback.includes('J2 identical text'), 'the readback shows T ' + JSON.stringify(row.readback));
+      if (!R4) return;
+      assert.ok(uncertainOutcome(row.first), JSON.stringify(row.first));
+      assert.equal(recs(row.store).filter((r) => r.key === `contact:${C}`).length, 1, JSON.stringify(row.store));
+      assert.ok(pending(row.second), JSON.stringify(row.second)); assert.equal(row.secondWrites, 0);
+    });
+    await T.ctx.close();
+  }
+  // J3 symmetric contact-wide conflict prevention
+  {
+    const a = await uncertainTab(23, 'note', { c: C, t: 'J3 note' });
+    let w0 = writesTo(a.T); const field = await save(a.T, 'field', { c: C }); const fieldWrites = writesTo(a.T) - w0;
+    w0 = writesTo(a.T); const opp = await save(a.T, 'opp', { o: O }); const oppWrites = writesTo(a.T) - w0;
+    w0 = writesTo(a.T); const other = await save(a.T, 'note', { c: D, t: 'J3 on D' }); const otherWrites = writesTo(a.T) - w0;
+    await sleep(3000); await settleServer(30000); await a.T.ctx.close();
+    const b = await uncertainTab(24, 'opp', { o: O });
+    w0 = writesTo(b.T); const noteAfterStar = await save(b.T, 'note', { c: C, t: 'J3 after star' }); const noteAfterStarWrites = writesTo(b.T) - w0;
+    await sleep(3000); await settleServer(30000); await b.T.ctx.close();
+    const row = { scenario: 'J3', contract: CONTRACT, firstContact: a.first, field, fieldWrites, opp, oppWrites, other, otherWrites, firstStar: b.first, noteAfterStar, noteAfterStarWrites };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check(`J3 symmetry: an uncertain contact:C blocks a contact-field save on C and an opportunity ("*") save (both uncertain_pending, 0 ghl-write); a save on contact D proceeds (1 ghl-write, success); an uncertain "*" (opportunity) blocks a note save on C${R4 ? '' : ' [recorded only]'}`, async () => {
+      if (!R4) return;
+      assert.ok(uncertainOutcome(row.firstContact) && uncertainOutcome(row.firstStar), 'both first saves uncertain ' + JSON.stringify([row.firstContact, row.firstStar]));
+      assert.ok(pending(row.field) && row.fieldWrites === 0, JSON.stringify(row.field));
+      assert.ok(pending(row.opp) && row.oppWrites === 0, JSON.stringify(row.opp));
+      assert.deepEqual([row.other.kind, row.otherWrites], ['ok', 1], JSON.stringify(row.other));
+      assert.ok(pending(row.noteAfterStar) && row.noteAfterStarWrites === 0, JSON.stringify(row.noteAfterStar));
+    });
+  }
+  // J4 full-operation deadline with a never-ending body / an abort-ignoring fetch
+  {
+    const out = {};
+    for (const [fn, mode, label] of [['ghl-write', 'body', 'save, never-ending body'], ['ghl-write', 'abort', 'save, abort-ignoring fetch'], ['ghl-contacts', 'body', 'reader, never-ending body'], ['ghl-contacts', 'abort', 'reader, abort-ignoring fetch']]) {
+      fresh(10); GHL.resetAll(); const S = await bindSession(30);
+      const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+      await T.page.evaluate((s) => { window.__iaosStall = s; }, { fn, mode });
+      const t0 = Date.now();
+      const res = fn === 'ghl-write' ? await Promise.race([save(T, 'note', { c: C, t: 'J4' }), sleep(70000).then(() => ({ kind: 'not_settled_70s' }))])
+        : await Promise.race([T.page.evaluate(async () => { const r = await import('/src/lib/read-session.ts'); const t = performance.now(); try { const x = await r.readFetch('/.netlify/functions/ghl-contacts'); await x.text(); return { kind: 'ok', status: x.status, ms: Math.round(performance.now() - t) }; } catch (e) { return { kind: 'error', name: String(e && e.name), ms: Math.round(performance.now() - t) }; } }).catch((e) => ({ kind: 'evaluate_failed', msg: String(e).slice(0, 80) })), sleep(40000).then(() => ({ kind: 'not_settled_40s' }))]);
+      out[label] = { ...res, wallMs: Date.now() - t0, stallHits: await T.page.evaluate(() => window.__iaosStallHits || 0).catch(() => null) };
+      await T.ctx.close();
+    }
+    const row = { scenario: 'J4', contract: CONTRACT, out }; RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check(`J4 deadline: with a never-ending body and with an abort-ignoring fetch, a save settles (error) within 52 s (+2 s) and a reader within 22 s (+2 s)${R4 ? '' : ' [recorded only]'}`, async () => {
+      if (!R4) return;
+      for (const [label, r] of Object.entries(out)) {
+        const limit = label.startsWith('save') ? 54000 : 24000;
+        assert.ok(r.kind === 'error' && r.wallMs <= limit, `${label}: ${JSON.stringify(r)}`);
+      }
+    });
+  }
+  // J5 a save with an in-deadline response leaves no record (A1); healthy loads are the T-L rows above
+  {
+    fresh(10); GHL.resetAll(); const S = await bindSession(31);
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+    const res = await save(T, 'note', { c: C, t: 'J5 healthy' }); await settleServer();
+    const st = await laneStore(T);
+    const row = { scenario: 'J5', contract: CONTRACT, res, store: st, ghlNotes: GHL.notes.map((n) => n.body) };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check(`J5 healthy save: an in-deadline complete response -> success, the note is stored (GHL fixture), and ${LANE_KEY} holds no record for it${R4 ? '' : ' [record check only with --contract=r4]'}`, async () => {
+      assert.equal(row.res.kind, 'ok', JSON.stringify(row.res)); assert.ok(row.ghlNotes.includes('J5 healthy'));
+      if (R4) assert.equal(recs(row.store).length, 0, JSON.stringify(row.store));
     });
     await T.ctx.close();
   }
