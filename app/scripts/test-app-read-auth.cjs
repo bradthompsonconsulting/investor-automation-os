@@ -57,6 +57,12 @@ const { getConfig, projectRuntimeConfig, setRuntimeConfig } = require('../shared
 // B15-04: committed Test now carries the evaluation read budget (ENABLED, 100). This suite's subject is not the
 // budget (test-supplemental-read-budget.cjs covers it), so its Test config pins the counter OFF explicitly.
 { const cfg = require('../shared/ghl-config.ts'); cfg.getConfig('test').supplementalReadBudget = { enabled: cfg.SUPPLEMENTAL_READ_BUDGET_DISABLED, budgetId: 'offline-disabled', ceiling: 0 }; }
+/* B15-29 (H5 committed TEST oneLogin = ENABLED): this suite's subject is the LEGACY read session. Its Test config pins
+   One Login OFF in-process (the test-b15-29-one-login-server pattern), so every legacy-path case keeps its scope; the
+   per-reader "One Login ON" checks below turn it on explicitly and restore it. */
+const ONE_LOGIN_CFG = require('../shared/ghl-config.ts');
+const COMMITTED_TEST_ONE_LOGIN = ONE_LOGIN_CFG.getConfig('test').oneLogin;
+ONE_LOGIN_CFG.getConfig('test').oneLogin = ONE_LOGIN_CFG.ONE_LOGIN_DISABLED;
 
 let passed = 0, failed = 0;
 async function check(name, fn) {
@@ -240,7 +246,22 @@ function assertNoCors(res) {
       assertNoCors(res);
       route = null;
     });
+    await check(name + ': ONE LOGIN ON (the committed Test value) -- a LEGACY read session is refused before the handler: 401, no outbound request, no CORS grant', async () => {
+      outbound = []; setEnv('test'); route = () => ok({});
+      ONE_LOGIN_CFG.getConfig('test').oneLogin = ONE_LOGIN_CFG.ONE_LOGIN_ENABLED;
+      try {
+        const res = await handler({ httpMethod: 'GET', headers: { cookie: cookieFor(testCookie) }, queryStringParameters: q });
+        assert.equal(res.statusCode, 401, res.body);
+        assert.deepEqual(outbound, [], 'refused before any GHL request');
+        assertNoCors(res);
+      } finally { ONE_LOGIN_CFG.getConfig('test').oneLogin = ONE_LOGIN_CFG.ONE_LOGIN_DISABLED; route = null; }
+    });
   }
+  await check('B15-29: the committed TEST config carries One Login ENABLED (H5); this suite pins it OFF in-process for its legacy cases', async () => {
+    assert.equal(COMMITTED_TEST_ONE_LOGIN, ONE_LOGIN_CFG.ONE_LOGIN_ENABLED);
+    assert.equal(ONE_LOGIN_CFG.getConfig('test').oneLogin, ONE_LOGIN_CFG.ONE_LOGIN_DISABLED);
+    assert.equal(ONE_LOGIN_CFG.getConfig('production').oneLogin, ONE_LOGIN_CFG.ONE_LOGIN_DISABLED, 'Production committed OFF');
+  });
 
   // ---- 5. location separation --------------------------------------------------
   const TEST_LOC = getConfig('test').locationId, PROD_LOC = getConfig('production').locationId;

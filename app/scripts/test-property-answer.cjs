@@ -61,6 +61,11 @@ const ledger = require('../netlify/functions/lib/known-deal-ledger.ts');
 const opLib = require('../netlify/functions/lib/property-answer-operation.ts');
 const budgetLib = require('../netlify/functions/lib/evaluation-budget.ts');
 const config = cfgMod.getConfig('test');
+/* B15-29 (H5 committed TEST oneLogin = ENABLED): this suite exercises the LEGACY write session (Bearer app session).
+   It pins One Login OFF in-process for those cases (the test-b15-29-one-login-server pattern); the "One Login ON"
+   case near the end turns it on explicitly and restores it. */
+const COMMITTED_TEST_ONE_LOGIN = config.oneLogin;
+config.oneLogin = cfgMod.ONE_LOGIN_DISABLED;
 // The committed Test config carries the six real Test field ids; this suite only pins its own synthetic fixtures.
 const P = config.propertyAnswerFields;
 assert.deepEqual({ ...P }, { sellerReason: 'zqGxQc7nAspWmYglR2Qk', propertyStreet: 'vMejpjFmgI9ZWvfloaPW', propertyUnit: 'Ok4EFrJqtDqIn90FFiT9', propertyCity: 'lrHSGsOIBtH4f1s9YbVj', propertyState: 'WOaJHfbMz20YTPhD2lI5', propertyZip: 'qztxh0XDmiZrDBMauoJq' }, 'committed Test field ids');
@@ -1045,8 +1050,17 @@ async function t(name, fn) {
     assert.ok(spy.origins.length > 0); assert.deepEqual([...new Set(spy.origins)], ['https://services.leadconnectorhq.com']);
   });
 
-  // Count floor: the accepted run on 1b7fedaa passed 75; a silently skipped case can no longer exit 0.
-  const FLOOR = 75;
+  await t('B15-29 ONE LOGIN ON (the committed Test value): a LEGACY write session is refused for every action before any Blob or GHL request (401); the committed value is ENABLED and is restored OFF for this suite', async () => {
+    assert.equal(COMMITTED_TEST_ONE_LOGIN, cfgMod.ONE_LOGIN_ENABLED, 'committed Test carries One Login ENABLED (H5)');
+    fresh(); config.oneLogin = cfgMod.ONE_LOGIN_ENABLED;
+    try {
+      for (const action of ['context', 'check']) { const r = await post({ action, contactId: X1, opportunityId: DA }); assert.equal(r.status, 401, action + ' ' + JSON.stringify(r.body)); }
+      assert.equal(blobOps, 0); assert.equal(ghlCount(), 0);
+    } finally { config.oneLogin = cfgMod.ONE_LOGIN_DISABLED; }
+  });
+
+  // Count floor: the accepted run on 1b7fedaa passed 75 (+1 B15-29 One Login ON case); a silently skipped case can no longer exit 0.
+  const FLOOR = 76;
   if (count < FLOOR) { failures++; console.error(`FAIL floor: only ${count} cases passed (floor ${FLOOR})`); }
   finished = true;
   console.log(`property-answer: ${count} passed, ${failures} failed`);

@@ -528,6 +528,10 @@ jobs:
         run: node app/scripts/test-b15-29-one-login-server.cjs
       - name: One IAOS sign-in, saving module with the real handlers -- 29-day span on one sign-in, 30-day end, browser close, two devices, cross-tab Sign out, never re-sent, reminder checkpoints from the server expiry (INV-137, B15-29) - 50 checks
         run: node app/scripts/test-b15-29-one-login-client.cjs
+      - name: App read auth -- legacy read session (One Login pinned OFF in-process) + per-reader One Login ON refusal of a legacy cookie (INV-137, B15-29) - 182 checks
+        run: node app/scripts/test-app-read-auth.cjs
+      - name: Property answers -- legacy write session (One Login pinned OFF in-process) + One Login ON refusal before any Blob or GHL (INV-137, B15-29) - 76 cases
+        run: node app/scripts/test-property-answer.cjs
       - name: One IAOS sign-in on the real page -- one sign-in, Sign out stops another tab without any browser channel, unavailable is not signed out, drafts kept, persistent 30-day cookie (INV-137, B15-29) - 28 checks
         run: node app/scripts/test-b15-29-one-login-page.cjs
       - name: One IAOS sign-in, professional login experience on the real page -- entrance keeps the deep link, responsive, real restyled popup (Google stubbed), overlay keeps drafts and focus over an inert app, 5-day / 1-day reminders, Remind Me Later sends nothing, Log In Again = new 30-day session, expiry, Logout, outage is never a sign-in prompt (INV-137, B15-29) - 73 checks
