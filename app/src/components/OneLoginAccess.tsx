@@ -2,6 +2,7 @@ import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import OneLoginScreen, { ReminderDialog, type ScreenAction, type ScreenMessage } from "./OneLoginScreen";
 import { dismissReminder, dueReminder, nextReminderDelay, reminderDismissed, reminderMessage } from "../lib/session-reminder";
 import { READ_SESSION_ENDPOINT, READ_SESSION_LOST_EVENT } from "../lib/read-session";
+import { laneFetch, laneReset } from "../lib/protected-lane";   // B15-29 D2 r6
 import { SESSION_UNAVAILABLE_EVENT, SESSION_UNAVAILABLE_MARKER, oneLoginSessionScale } from "../lib/one-login";
 import { clearAppWriteToken, confirmAppWriteSession, pauseAppWriteForSignOut, primeAppWriteSession, replaceAppWriteSession, resumeAppWriteAccess } from "../lib/app-write-session";
 import { clearOperatorScopedData, operatorChangedSinceLastPage, rememberOperator } from "../lib/operator-partition";
@@ -347,7 +348,7 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
     setSlot({ kind: "flight", f }, "start:slot-flight");
     let res: Response | null = null;
     let body: any = JSON_FAILED;
-    try { res = await fetch(READ_SESSION_ENDPOINT, { cache: "no-store", credentials: "same-origin" }); ctxFlight.current = f.id; }
+    try { res = await laneFetch(READ_SESSION_ENDPOINT, { cache: "no-store", credentials: "same-origin" }, { kind: "status" }); ctxFlight.current = f.id; }
     catch { ctxFlight.current = f.id; res = null; }
     if (res) body = await res.json().catch(() => { ctxFlight.current = f.id; return JSON_FAILED; });
     ctxFlight.current = f.id;
@@ -394,7 +395,7 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
       };
     }
     request("none", "reset");
-    return () => { unmountedRef.current = true; cancelSlot("unmount"); };
+    return () => { unmountedRef.current = true; cancelSlot("unmount"); laneReset("unmounted"); };
   }, []);
 
   useEffect(() => {
@@ -405,6 +406,7 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
       // (cached and pending) are discarded NOW and saving waits until the status check confirms the new session.
       // Single-flight: queued and scheduled work is cancelled, the generation replaced, and a FRESH check starts at once.
       cancelSlot("signin");
+      laneReset("replaced");   // B15-29 D2 r6
       generation.current += 1; frozen.current = null; fx.setHandle(null);
       refusals.current = 0; exhausted.current = false;
       resumeAppWriteAccess();
@@ -464,6 +466,7 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
     // At the click, before any request: saving on this page stops, and earlier status answers are void; queued and
     // scheduled status work is cancelled (single-flight).
     cancelSlot("signout");
+    laneReset("signed_out");   // B15-29 D2 r6: every queued protected request is not sent
     pauseAppWriteForSignOut();
     generation.current += 1;
     const g = generation.current;

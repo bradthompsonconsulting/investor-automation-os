@@ -1,6 +1,9 @@
 /** Session stays in memory; it is neither business data nor a voice credential. */
 import { READ_SESSION_LOST_EVENT } from "./read-session";
 import { SESSION_UNAVAILABLE_EVENT, isSessionUnavailable, oneLoginActive } from "./one-login";
+import { AppWriteSignInRequired } from "./write-errors";
+import { laneFetch } from "./protected-lane";   // B15-29 D2 r6
+export { AppWriteSignInRequired };
 let session: { token: string; expiresAt: string } | null = null;
 /**
  * B15-04 C1–C4 r4 A3 -- UI partitioning only, never authority (the server verifies every request itself).
@@ -30,8 +33,6 @@ export function appWriteIdentity(): AppWriteIdentity {
 }
 /** Called after every session change (sign-in, sign-out, expiry detected, 401). Returns the unsubscribe function. */
 export function subscribeAppWriteSession(fn: () => void): () => void { listeners.add(fn); return () => { listeners.delete(fn); }; }
-/** Thrown before any request is sent: there is no current write session. */
-export class AppWriteSignInRequired extends Error {}
 export function setAppWriteSession(value: typeof session) { changed(value); }
 export async function appWriteFetch(url: string, init: RequestInit): Promise<Response> {
   if (oneLoginActive()) return oneLoginWriteFetch(url, init);
@@ -100,7 +101,7 @@ function adopt(value: { token: string; expiresAt: string }) {
 async function requestToken(): Promise<{ token: string; expiresAt: string }> {
   let res: Response;
   try {
-    res = await fetch(SAVING_TOKEN_ENDPOINT, { method: "POST", cache: "no-store", credentials: "same-origin", headers: { "X-IAOS-Session": "saving-token" } });
+    res = await laneFetch(SAVING_TOKEN_ENDPOINT, { method: "POST", cache: "no-store", credentials: "same-origin", headers: { "X-IAOS-Session": "saving-token" } }, { kind: "mint" });
   } catch { throw new AppWriteSignInRequired(SAVE_UNAVAILABLE_MESSAGE); }
   if (res.status === 401) {
     // The IAOS session itself is gone (expired, revoked, signed in before one sign-in): the read gate shows
@@ -145,7 +146,15 @@ async function savingToken(): Promise<string> {
 
 async function oneLoginWriteFetch(url: string, init: RequestInit): Promise<Response> {
   const token = await savingToken();   // throws before anything is sent
-  const response = await fetch(url, { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } });
+  // B15-29 D2 r6: through the protected lane (one request in flight; an unresolved record persisted before sending).
+  // Re-checked at the dispatch turn: a Sign out on this page, or a replaced / ended session, means it is never sent.
+  const response = await laneFetch(url, { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } }, {
+    kind: "write",
+    beforeDispatch: () => {
+      if (pausedBySignOut) throw new AppWriteSignInRequired(SAVE_SIGNED_OUT_MESSAGE);
+      if (session?.token !== token) throw new AppWriteSignInRequired(SAVE_SIGN_IN_ENDED_MESSAGE);
+    },
+  });
   // Refused: drop this token so the NEXT save asks again, and let the read gate re-check. This save is NOT re-sent.
   if (response.status === 401) { if (session?.token === token) discardToken(); signal(READ_SESSION_LOST_EVENT); }
   else if (await isSessionUnavailable(response)) signal(SESSION_UNAVAILABLE_EVENT);

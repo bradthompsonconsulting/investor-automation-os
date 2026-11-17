@@ -6,6 +6,7 @@
  * forwards it: same-origin fetches carry it automatically, and nothing here
  * touches localStorage, sessionStorage or IndexedDB.
  */
+import { laneFetch } from "./protected-lane";
 import { SESSION_UNAVAILABLE_EVENT, isSessionUnavailable, oneLoginActive } from "./one-login";
 
 export const READ_SESSION_ENDPOINT = "/.netlify/functions/app-read-session";
@@ -36,7 +37,7 @@ export async function isReadAuthRefusal(res: Response): Promise<boolean> {
 
 /** Fetch one of the nine GHL read functions. Signals the gate on a read-auth refusal. */
 export async function readFetch(url: string, init?: RequestInit): Promise<Response> {
-  const res = await fetch(url, { ...init, credentials: "same-origin" });
+  const res = await laneFetch(url, { ...init, credentials: "same-origin" }, { kind: "read" });   // B15-29 D2 r6
   if (typeof window !== "undefined" && await isReadAuthRefusal(res)) {
     window.dispatchEvent(new Event(READ_SESSION_LOST_EVENT));
   } else if (typeof window !== "undefined" && oneLoginActive() && await isSessionUnavailable(res)) {
