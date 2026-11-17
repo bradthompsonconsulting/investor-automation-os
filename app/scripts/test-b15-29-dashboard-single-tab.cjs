@@ -60,7 +60,7 @@ const LANE = CONTRACT === 'r6' || CONTRACT === 'r4';
 /* --only=J1,J4,D,SC,...  run only the named lane / rendered scenarios (and skip the healthy-load and earlier browser rows). */
 const ONLY = arg('only', null);
 const want = (id) => !ONLY || ONLY.split(',').includes(id);
-/* --mutation=skip-logout | bypass-stall  NEGATIVE CONTROLS: the named precondition must then FAIL (J1/D4/D5 sign-out; J4 stall). */
+/* --mutation=skip-logout | bypass-stall | dup-send | no-replace  NEGATIVE CONTROLS: the named precondition must then FAIL (J1/D4/D5 sign-out; J4 stall). */
 const MUTATION = arg('mutation', null);
 const fx = require('./harness/seller-call-offer-ready-fixture.cjs');
 const WRITE_DEADLINE_MS = arg('write-deadline-ms', null) !== null ? Number(arg('write-deadline-ms')) : (CONTRACT === 'r3' || CONTRACT === 'r4') ? 20000 : null;
@@ -215,6 +215,8 @@ async function main() {
       if (tab.holdDelivery && tab.holdDelivery.fn === fn && !(tab.holdDelivery.count !== undefined && tab.holdDelivery.count-- <= 0)) { entry.heldMs = tab.holdDelivery.ms; await sleep(tab.holdDelivery.ms); }   // origin already processed; only DELIVERY waits
       // J6′: a malformed reply for one function (the server processed the request; only the delivered body differs).
       if (tab.rewrite && tab.rewrite.fn === fn && tab.rewrite.count-- > 0) { entry.rewritten = true; res = { ...res, body: tab.rewrite.body }; }
+      // D6 popup: the status answer's expiresAt is moved so the session reminder falls due during the test (page clock).
+      if (tab.patchJson && tab.patchJson.fn === fn && res.statusCode === 200) { try { res = { ...res, body: JSON.stringify(tab.patchJson.patch(JSON.parse(res.body))) }; entry.patched = true; } catch { /* non-JSON: delivered as is */ } }
       entry.deliveredAt = Date.now();
       // --mutation=dup-send (NEGATIVE CONTROL for SC2): the FIRST ghl-write of a tab is replayed once to the server, as a
       // client that blindly re-sent would; SC2's one-send-per-item precondition must then FAIL.
@@ -847,6 +849,135 @@ async function main() {
       });
       await T.ctx.close();
     }
+  }
+  // ── D6 / SC3 (Bones I1): LIVE-PAGE stale-completion isolation, NO reload. A save is DISPATCHED and processed by the
+  //    server; only its response DELIVERY is held. The SAME operator's session is then replaced in the open page --
+  //    (status) the page's own status check (focus) sees a new session tag, or (popup) after a revoke the page's sign-in
+  //    popup posts "iaos-app-read-signed-in" -- and only then is the old success / error response released. The old
+  //    caller continuation must not clear or alter the new session's drafts/UI and must not issue its follow-on
+  //    marker. --mutation=no-replace skips the replacement (negative control: the lane assertions must then FAIL,
+  //    because the old continuation legitimately completes). Preconditions are asserted on every run. ──
+  const redErrors = (T, id) => noteRow(T, id).evaluate((tr) => [...tr.querySelectorAll('div')].filter((d) => getComputedStyle(d).color === 'rgb(248, 113, 113)' && d.textContent.trim()).map((d) => d.textContent.trim())).catch(() => null);
+  if (want('D6')) {
+    /* Triggers as agreed with Scotty (Relay/direct 2026-11-17):
+       STATUS: the replacement (a new same-operator session tag) is QUEUED behind the held save -- the status check
+         cannot pre-empt it. So the old answer lands first and its OWN result is legitimate (success clears the C draft;
+         an old 409 shows its error truthfully). What is stale is the FOLLOW-ON: the queued status answer is applied
+         before the lastCallAttempt is dispatched, so that follow-on must never be sent.
+       POPUP: the 1-day session reminder's Log In Again falls due WHILE the save is out (page clock), the relogin popup
+         posts "iaos-app-read-signed-in", THEN the old answer is released. The old continuation must change nothing. */
+    const out = {};
+    const ONE_DAY = 24 * 3600 * 1000;
+    for (const [via, outcome] of [['status', 'success'], ['status', 'error'], ['popup', 'success'], ['popup', 'error']]) {
+      const label = `${via}/${outcome}`;
+      fresh(10); GHL.resetAll(); GHL.seedList([C, D]); const S = await bindSession(46);
+      const T = await openTab(S.cookie);
+      if (via === 'popup') {
+        await T.page.clock.install();
+        const expiresAt = new Date(Date.now() + ONE_DAY + 8000).toISOString();
+        T.patchJson = { fn: 'app-read-session', patch: (b) => (b && b.signedIn ? { ...b, expiresAt } : b) };
+      }
+      await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+      let laterShown = false;
+      if (via === 'popup') {
+        await T.page.evaluate(() => { window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange')); });
+        laterShown = await T.page.getByTestId('session-reminder-later').click({ timeout: 8000 }).then(() => true).catch(() => false);
+        await settleServer();
+      }
+      if (outcome === 'error') GHL.failNote = 'post500';
+      const HOLD = via === 'popup' ? 15000 : 9000; T.holdDelivery = { fn: 'ghl-write', ms: HOLD, count: 1 };
+      const b0 = T.log.length;
+      const typed = await typeNote(T, C, 'D6 old-session note');
+      for (let i = 0; i < 1500 && !T.log.slice(b0).some((e) => e.fn === 'ghl-write' && e.status !== undefined); i++) await sleep(10);
+      const oldWrite = T.log.slice(b0).find((e) => e.fn === 'ghl-write');
+      const processedBeforeReplace = !!oldWrite && oldWrite.status !== undefined && oldWrite.deliveredAt === undefined;
+      const tRep = Date.now(); const s0 = T.log.length;
+      const rep = { skipped: MUTATION === 'no-replace' };
+      if (!rep.skipped) {
+        const S2 = await bindSession(47); T.cookie = S2.cookie;   // the session object is never logged
+        if (via === 'status') {
+          await T.page.evaluate(() => { window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange')); });
+        } else {
+          await T.page.clock.fastForward(9000);
+          rep.reminder = await T.page.getByTestId('session-reminder-log-in').click({ timeout: 8000 }).then(() => true).catch(() => false);
+          const signIn = T.page.getByTestId('one-login-sign-in');
+          const [pop] = await Promise.all([T.ctx.waitForEvent('page', { timeout: 8000 }).catch(() => null), signIn.click({ timeout: 8000 }).catch(() => null)]);
+          if (pop) { await pop.waitForLoadState('domcontentloaded').catch(() => {}); rep.posted = await pop.evaluate(() => { window.opener.postMessage({ type: 'iaos-app-read-signed-in' }, location.origin); return true; }).catch(() => false); }
+          rep.postedAt = Date.now();
+        }
+      }
+      if (via === 'status') await noteInput(T, D).fill('D6 new-session draft', { timeout: 4000 }).catch(() => {});
+      GHL.failNote = null;
+      await sleep(HOLD + 4000); await settleServer(10000); await sleep(500);
+      const afterRelease = T.log.slice(b0).filter((e) => oldWrite && e !== oldWrite);
+      const statusAfter = T.log.slice(s0).filter((e) => e.fn === 'app-read-session' && e.status === 200);
+      const row = { scenario: 'D6', variant: label, mutation: MUTATION, typed, laterShown, oldWriteStatus: oldWrite && oldWrite.status, processedBeforeReplace,
+        deliveredAfterReplace: !!oldWrite && oldWrite.deliveredAt >= tRep, postedBeforeRelease: via !== 'popup' || rep.skipped || (!!rep.postedAt && !!oldWrite && rep.postedAt < oldWrite.deliveredAt),
+        replacement: rep, statusAnsweredAfter: statusAfter.length,
+        followOn: afterRelease.filter((e) => e.fn === 'ghl-write').map((e) => `${e.op}:${e.status}`),
+        cDraftAfter: await noteInput(T, C).inputValue().catch(() => null), dDraftAfter: via === 'status' ? await noteInput(T, D).inputValue().catch(() => null) : null,
+        cInput: await noteRow(T, C).evaluate((tr) => { const i = tr.querySelector('input[placeholder]'); return i ? { disabled: i.disabled, placeholder: i.placeholder } : null; }).catch(() => null),
+        cErrors: await redErrors(T, C), dErrors: await redErrors(T, D), errs: T.errs };
+      out[label] = row; RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+      await T.ctx.close();
+    }
+    await check('D6 preconditions (decisive, every variant): the old save was DISPATCHED and PROCESSED by the server while its response was undelivered; the replacement step ran in the OPEN page with no reload; status path: a status answer under the new session followed; popup path: the 5-day reminder was dismissed, the 1-day reminder Log In Again and the relogin sign-in opened the popup, which POSTED its message BEFORE the old answer was released', async () => {
+      for (const [label, r] of Object.entries(out)) {
+        assert.ok(r.typed && r.processedBeforeReplace && r.deliveredAfterReplace, `${label}: ordering ${JSON.stringify(r)}`);
+        if (r.replacement.skipped) continue;
+        if (label.startsWith('status')) assert.ok(r.statusAnsweredAfter >= 1, `${label}: no status answer after the replacement`);
+        else assert.ok(r.laterShown && r.replacement.reminder && r.replacement.posted && r.postedBeforeRelease, `${label}: popup ${JSON.stringify(r.replacement)}`);
+      }
+    });
+    await laneCheck('D6 lane (I1, live page): status path -- the old answer\'s own result is kept truthfully (success: C draft cleared, no red text; 409: its error shown, C draft kept) but its FOLLOW-ON lastCallAttempt is never sent, and the new session\'s D draft is unchanged; popup path -- the released old success or 409 changes NOTHING (C draft kept, no red text, 0 further ghl-write); both paths: the C note box is editable again with its normal placeholder', async () => {
+      for (const [label, r] of Object.entries(out)) {
+        assert.deepEqual(r.followOn, [], `${label}: follow-on ${JSON.stringify(r.followOn)}`);
+        assert.deepEqual(r.cInput, { disabled: false, placeholder: 'Note (any text = attempted)…' }, `${label}: marker ${JSON.stringify(r.cInput)}`);
+        assert.equal((r.dErrors || []).length, 0, `${label}: D ${JSON.stringify(r.dErrors)}`);
+        if (label === 'status/success') { assert.equal(r.cDraftAfter, ''); assert.equal((r.cErrors || []).length, 0, JSON.stringify(r.cErrors)); }
+        if (label === 'status/error') { assert.equal(r.cDraftAfter, 'D6 old-session note'); assert.equal((r.cErrors || []).length, 1, JSON.stringify(r.cErrors)); }
+        if (label.startsWith('status')) assert.equal(r.dDraftAfter, 'D6 new-session draft');
+        if (label.startsWith('popup')) { assert.equal(r.cDraftAfter, 'D6 old-session note', label); assert.equal((r.cErrors || []).length, 0, `${label}: ${JSON.stringify(r.cErrors)}`); }
+      }
+    });
+  }
+  if (want('SC3')) {
+    const T0 = cfg.getConfig('test'); const prevScs = T0.sellerConversationSave; T0.sellerConversationSave = cfg.SELLER_CONVERSATION_SAVE_ENABLED;
+    try {
+      fresh(10); GHL.resetAll(); fx.reset(); GHL.fx = true; const S = await bindSession(52);
+      const T = await openTab(S.cookie, { fxReaders: true, initOverride: { sellerConversationSave: true, oneLogin: true } });
+      T.holdDelivery = { fn: 'ghl-write', ms: 9000, count: 1 };
+      await T.page.goto(`${base}/scripts/harness/app-routes/index.html?start=${encodeURIComponent(`/contacts/${fx.CONTACT}/seller-call`)}`);
+      const ok = await T.page.getByTestId('sc-card').waitFor({ timeout: 60000 }).then(() => true).catch(() => false);
+      await T.page.getByTestId('sc-readiness-status').waitFor({ timeout: 30000 }).catch(() => {}); await sleep(300);
+      const tid = (id) => T.page.getByTestId(id);
+      const press = async (id) => { try { await tid(id).click({ timeout: 4000 }); return true; } catch { return false; } };
+      const fill = async (id, v) => { try { await tid(id).fill(v, { timeout: 4000 }); return true; } catch { return false; } };
+      await press('sc-nav-opening'); await fill('sc-field-opening-response', 'Open to talking');
+      await press('sc-nav-occupancy'); await tid('sc-field-occupancy-occupancy').selectOption('Tenant Occupied').catch(() => {});
+      await press('sc-nav-timing'); await fill('sc-field-timing-timing', 'Close by March 1');
+      await fill('sc-call-notes', 'SC3 old-session call.'); await press('sc-nav-summary');
+      const b0 = T.log.length; await press('sc-save');
+      for (let i = 0; i < 1500 && !T.log.slice(b0).some((e) => e.fn === 'ghl-write' && e.status !== undefined); i++) await sleep(10);
+      const oldWrite = T.log.slice(b0).find((e) => e.fn === 'ghl-write'); const tRep = Date.now();
+      const processedBeforeReplace = !!oldWrite && oldWrite.status !== undefined && oldWrite.deliveredAt === undefined;
+      const s0 = T.log.length; let rep = { skipped: MUTATION === 'no-replace' };
+      if (!rep.skipped) { const S2 = await bindSession(53); T.cookie = S2.cookie; await T.page.evaluate(() => { window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange')); }); }
+      await fill('sc-call-notes', 'SC3 new-session notes.');
+      const w1 = T.log.length;
+      await sleep(12000); await settleServer(10000); await sleep(500);
+      const results = await T.page.locator('[data-testid="sc-save-plan"] > li').evaluateAll((els) => els.map((e) => [e.getAttribute('data-testid').replace('sc-save-item-', ''), e.getAttribute('data-result')])).catch(() => null);
+      const row = { scenario: 'SC3', mutation: MUTATION, ok, processedBeforeReplace, deliveredAfterReplace: !!oldWrite && oldWrite.deliveredAt >= tRep, replacement: rep,
+        laterWrites: T.log.slice(w1).filter((e) => e.fn === 'ghl-write' && e !== oldWrite).map((e) => `${e.op}:${e.status}`), statusAnsweredAfter: T.log.slice(s0).filter((e) => e.fn === 'app-read-session' && e.status === 200).length, notesAfter: await tid('sc-call-notes').inputValue().catch(() => null), results, errs: T.errs };
+      RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+      await check('SC3 preconditions (decisive): the first Save-at-Summary item was dispatched and processed while its response was undelivered at the same-operator replacement (status path, NO reload); a status answer under the new session followed (it is queued behind the held item); the old response was released afterwards', async () => {
+        assert.ok(row.ok && row.processedBeforeReplace && row.deliveredAfterReplace, JSON.stringify(row)); if (!row.replacement.skipped) assert.ok(row.statusAnsweredAfter >= 1, 'a status answer under the new session followed');
+      });
+      await laneCheck('SC3 lane (I1, Seller Call continuation): the queued replacement is applied before the next item -- the OLD Save-at-Summary continuation sends NO further item writes, and the new session\'s call-notes draft is unchanged', async () => {
+        assert.deepEqual(row.laterWrites, [], JSON.stringify(row.laterWrites)); assert.equal(row.notesAfter, 'SC3 new-session notes.');
+      });
+      await T.ctx.close();
+    } finally { T0.sellerConversationSave = prevScs; GHL.fx = false; }
   }
   // ── SC: the RENDERED Seller Call "Save at Summary" (real App route, one sign-in, real ghl-write) ──
   //    Readers are answered at FUNCTION level by scripts/harness/seller-call-offer-ready-fixture.cjs (as in the
