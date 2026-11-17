@@ -1936,7 +1936,8 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
       for (let k = 0; k < N; k++) blobs.rule({ method: 'PUT', key: sKey(Bs.sid), status: 409, errorBody: body, headers: { 'x-nf-request-id': 'Bearer eyJ' } });
       assert.equal((await rev.checkSession(Bs, 'test', { event: NF })).kind, 'unavailable', 'checkSession: the A6 persistent-409 result');
       assert.equal(blobs.bodyPulls(), N * 7, `every attempt read its whole body (${N} x (6 chunks + end)): the existing arrayBuffer path`); assert.equal(blobs.bodyCancels(), 0, 'no diagnostic cancel');
-      for (let k = 0; k < N; k++) blobs.rule({ method: 'PUT', key: sKey(Bs.sid), status: 409, errorBody: body });
+      // item 29: sign-out starts a fresh round after one exhausted stage, so PERSISTENT for sign-out is every round.
+      for (let k = 0; k < N * rev.SIGNOUT_ROUNDS; k++) blobs.rule({ method: 'PUT', key: sKey(Bs.sid), status: 409, errorBody: body });
       const rv = await rev.revokeSession(Bs.sid, Bs.epoch, 'test', { event: NF });
       assert.ok(rv.kind !== 'verified', 'revokeSession on a persistent 409: not verified (' + rv.kind + ')');
       reset(); for (let k = 0; k < N; k++) blobs.rule({ method: 'PUT', key: ANCHOR_KEY, status: 409, errorBody: body });
@@ -2108,23 +2109,29 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     await rev.checkSession(B1, 'test', { event: NF, sleep: noSleep });
     for (const key of [sKey(B1.sid), ANCHOR_KEY]) { const P = putsTo(key, b0); assert.equal(P.length, 4); assert.equal(new Set(P.map((e) => `${e.key}|${e.body}|${e.ifMatch}|${e.ifNoneMatch}`)).size, 1, key); }
   });
-  await check('CC10 sign-out stage 1 (the unconditional revoked write): 409 once -> re-attempted -> verified; 409 x4 -> unconfirmed (no readback sent)', async () => {
+  await check('CC10 sign-out stage 1 (the unconditional revoked write): 409 once -> re-attempted -> verified; 409 x4 (one exhausted stage) -> a fresh round -> verified (item 29); 409 through EVERY round (4 x SIGNOUT_ROUNDS) -> unconfirmed (no readback sent)', async () => {
     reset(); let B1 = await bind(48); let b0 = blobs.log.length;
     blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409, unconditionalOnly: true });
     assert.deepEqual(await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF, sleep: noSleep }), { kind: 'verified' });
     assert.deepEqual(reqs(sKey(B1.sid)).slice(-3), ['PUT', 'PUT', 'PUT if-match']);
     B1 = await bind(49); b0 = blobs.log.length; for (let k = 0; k < 4; k++) blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409, unconditionalOnly: true });
+    assert.deepEqual(await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF, sleep: noSleep }), { kind: 'verified' }, 'item 29: one exhausted stage -> a fresh round');
+    assert.deepEqual(putsTo(sKey(B1.sid), b0).map((e) => e.ifMatch ? 'im' : 'u'), ['u', 'u', 'u', 'u', 'u', 'im']);
+    B1 = await bind(47); b0 = blobs.log.length; for (let k = 0; k < 4 * rev.SIGNOUT_ROUNDS; k++) blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409, unconditionalOnly: true });
     const r = await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF, sleep: noSleep });
-    assert.equal(r.kind, 'unconfirmed'); assert.equal(putsTo(sKey(B1.sid), b0).length, 4); assert.equal(putsTo(sKey(B1.sid), b0).filter((e) => e.ifMatch).length, 0, 'no readback after an unconfirmed stage 1');
+    assert.equal(r.kind, 'unconfirmed'); assert.equal(putsTo(sKey(B1.sid), b0).length, 4 * rev.SIGNOUT_ROUNDS); assert.equal(putsTo(sKey(B1.sid), b0).filter((e) => e.ifMatch).length, 0, 'no readback after an unconfirmed stage 1');
   });
-  await check('CC11 sign-out stage 2 (the If-Match readback): 409 once -> re-attempted -> verified; 409 x4 -> unconfirmed', async () => {
+  await check('CC11 sign-out stage 2 (the If-Match readback): 409 once -> re-attempted -> verified; 409 x4 (one exhausted stage) -> a fresh round -> verified (item 29); 409 on the readback in EVERY round -> unconfirmed', async () => {
     reset(); let B1 = await bind(70); let b0 = blobs.log.length;
     blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409, ifMatchOnly: true });
     assert.deepEqual(await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF, sleep: noSleep }), { kind: 'verified' });
     assert.deepEqual(putsTo(sKey(B1.sid), b0).map((e) => e.ifMatch ? 'im' : 'u'), ['u', 'im', 'im']);
     B1 = await bind(71); b0 = blobs.log.length; for (let k = 0; k < 4; k++) blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409, ifMatchOnly: true });
+    assert.deepEqual(await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF, sleep: noSleep }), { kind: 'verified' }, 'item 29: one exhausted stage -> a fresh round');
+    assert.deepEqual(putsTo(sKey(B1.sid), b0).map((e) => e.ifMatch ? 'im' : 'u'), ['u', 'im', 'im', 'im', 'im', 'u', 'im']);
+    B1 = await bind(69); b0 = blobs.log.length; for (let k = 0; k < 4 * rev.SIGNOUT_ROUNDS; k++) blobs.rule({ method: 'PUT', key: sKey(B1.sid), status: 409, ifMatchOnly: true });
     const r = await rev.revokeSession(B1.sid, B1.epoch, 'test', { event: NF, sleep: noSleep });
-    assert.equal(r.kind, 'unconfirmed'); assert.deepEqual(putsTo(sKey(B1.sid), b0).map((e) => e.ifMatch ? 'im' : 'u'), ['u', 'im', 'im', 'im', 'im']);
+    assert.equal(r.kind, 'unconfirmed'); assert.deepEqual(putsTo(sKey(B1.sid), b0).map((e) => e.ifMatch ? 'im' : 'u'), Array.from({ length: rev.SIGNOUT_ROUNDS }, () => ['u', 'im', 'im', 'im', 'im']).flat());
   });
   await check('CC12 revocation (design r4 E3\'): (a) checks STARTED after a verified sign-out never return active -- plain, contended, sustained, transport, deadline; (b\') after verified no active-bytes write is applied (each 412 or an unapplied 409), final bytes revoked, also with the applied-loser fake; (c) overlap: the check\'s OWN conditional session PUT origin-applied 200 before the revoke, delivery held, then verified, then active (stated limitation), with a negative control delaying that PUT; (d) a timely 412 on one branch while the other hangs to the deadline -> revoked (both mirrors); (d\') a late 412 -> unavailable; (d\'\') 200 + a hang -> unavailable', async () => {
     reset(); const B1 = await bind(72); const SK = sKey(B1.sid);
