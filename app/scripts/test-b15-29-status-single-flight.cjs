@@ -7,7 +7,8 @@
  *
  * Rows (ids from the design): D1 D2p D3 D4p D5 D6 D7 D8a D8b D9 D10 D11 D12 D13 D14 D15 D16 D17 D18 D19 D19pos D20
  * D21a D21b D21c D22a D22b D22c D23p D24 D25p D25q D26T D26S D27a D27b ST1 ST2 BUILD;
- * B15-29 D2 lane: LW1 LW2 LW3 LW4 ISO1 (caller wiring and live-page isolation).
+ * B15-29 D2 lane: LW1 LW2 LW3 LW4 ISO1 (caller wiring and live-page isolation); LW5 LW6a LW6b (Bones I1: a dispatched
+ *   Dashboard save across a same-operator replacement -- status path and popup path).
  *
  *   node scripts/test-b15-29-status-single-flight.cjs                     all rows, unmutated (every row must pass)
  *   node scripts/test-b15-29-status-single-flight.cjs --controls          every mutation control (see MUTATIONS)
@@ -27,6 +28,7 @@ const HARNESS = '/scripts/harness/one-login-dashboard/index.html';
 const OLA = path.join(APP, 'src/components/OneLoginAccess.tsx');
 const READ_SESSION = path.join(APP, 'src/lib/read-session.ts');
 const AWS_FILE = path.join(APP, 'src/lib/app-write-session.ts');
+const DASH = path.join(APP, 'src/pages/Dashboard.tsx');
 const GHL = path.join(APP, 'src/lib/ghl.ts');
 
 const arg = (k) => { const a = process.argv.find((x) => x.startsWith(`--${k}=`)); return a ? a.slice(k.length + 3) : null; };
@@ -76,6 +78,8 @@ const MUTATIONS = {
   'read-bypasses-lane':       { targets: ['LW1'], edits: [R(READ_SESSION, '  const res = await laneFetch(url, { ...init, credentials: "same-origin" }, { kind: "read" });   // B15-29 D2 r6', '  const res = await fetch(url, { ...init, credentials: "same-origin" });')] },
   'write-bypasses-lane':      { targets: ['LW2'], edits: [R(AWS_FILE, '  const response = await laneFetch(url, { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } }, {', '  const response = await fetch(url, { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } }, {')] },
   'no-lane-reset-on-signout': { targets: ['LW3'], edits: [R(OLA, '    laneReset("signed_out");   // B15-29 D2 r6: every queued protected request is not sent\n', '')] },
+  'status-not-held-until-applied': { targets: ['LW5'], edits: [R(OLA, '{ kind: "status", holdUntilApplied: true }', '{ kind: "status" }')] },
+  'dashboard-ignores-session': { targets: ['LW5', 'LW6a', 'LW6b'], edits: [R(DASH, '    const live = captureAppWriteSession();\n    setSavingIds', '    const live = () => true;\n    setSavingIds')] },
   'no-lane-reset-on-signin':  { targets: ['ISO1'], edits: [R(OLA, '      laneReset("replaced");   // B15-29 D2 r6\n', '')] },
   // r5 structural controls (Bones, review of 64a0959): a deliberate bypass must be caught by the structural row.
   'bypass-ownership-setter':  { targets: ['ST1'], edits: [R(OLA, '    setSlot({ kind: "idle" }, "complete:slot-idle");', '    slotRef.current = { kind: "idle" };')] },
@@ -709,16 +713,89 @@ async function main() {
     S.net.queue['ghl-contacts'] = [{ status: 200, json: [marker] }];
     await until(() => shown(p, 'read-access-signed-in'), 8000); await settle(p, 6);
     const text = ((await p.locator('#root').innerText().catch(() => '')) || '').toLowerCase();
-    const t = await trace(p);
-    const lateAppliedA = t.some((r) => r.rule === 'apply' && r.op === 'adoptSession' && r.unmounted === false && false);
     // The old generation's queued work (here the save's token mint, queued behind the held status) is never sent:
     // laneReset("replaced") rejects it, and the save settles NOT SENT (AppWriteSignInRequired) with zero writes.
     const oldMintSent = S.net.log.filter((e) => e.fn === 'app-write-token').slice(mintsBefore).some((e) => e.n < S.net.log.findIndex((x) => x.fn === 'app-read-session' && x.answered === 200 && x.state === 'signed_in' && x.n > 0));
     row('ISO1', st.state === 'rejected' && st.notSent === true && writes(S).length === 0 && !oldMintSent && !text.includes('sessionmark') && await shown(p, 'read-access-signed-in'),
       { st, writes: writes(S).length, oldMintSent, markerShown: text.includes('sessionmark') });
-    void lateAppliedA;
     await S.ctx.close();
   };
+
+  /*
+   * Bones I1 (review of 1dca78a): a REAL rendered Dashboard note save, already DISPATCHED (held at the server), across a
+   * same-operator session replacement in the open page (no reload).
+   *  - Popup path (deliberate sign-in from the session reminder's Log In Again): the replacement is known at once, so
+   *    the old answer -- success (LW6a) or error (LW6b) -- arrives STALE: the draft is kept, no result text, no
+   *    follow-on lastCallAttempt; only the row's own "Saving…" marker is released.
+   *  - Status path (LW5): the lane runs the re-check AFTER the in-flight save, so the save's own answer is known before
+   *    the replacement can be; its FOLLOW-ON write is then stale: never sent, and its refusal is not shown.
+   */
+  const NOTE_PH = 'input[placeholder="Note (any text = attempted)…"], input[placeholder="Saving…"]';
+  const dashRow = (p, name) => p.locator('tr', { hasText: name }).first();
+  const rowState = async (p, name) => {
+    const r = dashRow(p, name);
+    return { draft: await r.locator(NOTE_PH).first().inputValue().catch(() => null), placeholder: await r.locator(NOTE_PH).first().getAttribute('placeholder').catch(() => null),
+      red: await r.locator('div[style*="color: rgb(248, 113, 113)"]').count().catch(() => -1) };
+  };
+  const ops = (S) => writes(S).map((e) => { try { return JSON.parse(e.body).operation; } catch { return '?'; } });
+  async function typeNoteAndBlur(p, name, text) {
+    const box = dashRow(p, name).locator(NOTE_PH).first();
+    await box.fill(text); await box.press('Tab');
+  }
+  async function dismissReminder(p) { if (await shown(p, 'session-reminder-later')) { await p.getByTestId('session-reminder-later').first().click().catch(() => {}); await settle(p, 2); } }
+  const NAME1 = 'Lee Example';
+
+  ROWS.LW5 = async () => {
+    const S = await newSession('LW5'); const p = await signedInDashboard(S); await dismissReminder(p);
+    S.net.answer['ghl-write'] = { status: 200, json: { confirmed: true } };
+    holdNext(S, 'ghl-write');
+    await typeNoteAndBlur(p, NAME1, 'old-session note');
+    await waitHeld(S, 'ghl-write');
+    S.net.answer['app-read-session'] = signedIn('opA', 's-new', 'h-new');           // SAME operator, a NEW session
+    const n = statusGets(S);
+    await fire(p, 'focus'); await settle(p, 3);
+    const queuedBehindSave = statusGets(S) === n;                                   // lane: the re-check waits for the save
+    await release(S, 'ghl-write', NOTE_OK('n-old'), p);
+    await until(() => S.net.log.some((e) => e.fn === 'app-read-session' && e.n >= 0 && e.answered === 200 && statusGets(S) > n));
+    await settle(p, 8); await tick(p, 25_000); await settle(p, 4);
+    const st = await rowState(p, NAME1);
+    row('LW5', queuedBehindSave && ops(S).join() === 'note.create' && st.red === 0 && st.placeholder === 'Note (any text = attempted)…' && await shown(p, 'read-access-signed-in'),
+      { queuedBehindSave, ops: ops(S), st });
+    await S.ctx.close();
+  };
+  async function popupReplacementMidSave(tag, oldAnswer) {
+    const S = await newSession(tag); const p = await signedInDashboard(S);
+    // The session now ends 1 day + 8 s from the PAGE clock: the 5-day reminder is due (dismissed: the page is usable),
+    // and the 1-day reminder falls due 8 s later -- WHILE the note save is out (the reminder makes the page inert, so a
+    // save cannot be typed under it; this is how a deliberate sign-in meets a dispatched save in one tab).
+    const pageNow = await p.evaluate(() => Date.now());
+    S.net.answer['app-read-session'] = { status: 200, json: { ...signedIn().json, expiresAt: new Date(pageNow + 86_400_000 + 8_000).toISOString() } };
+    await fire(p, 'focus'); await until(() => shown(p, 'session-reminder-later')); await dismissReminder(p);
+    S.net.answer['ghl-write'] = { status: 200, json: { confirmed: true } };
+    holdNext(S, 'ghl-write');
+    await typeNoteAndBlur(p, NAME1, `old-session note ${tag}`);
+    await waitHeld(S, 'ghl-write');
+    await tick(p, 9_000);                                                         // the 1-day checkpoint, save still out
+    const reminder = await shown(p, 'session-reminder-log-in');
+    // a deliberate same-operator sign-in from the reminder's Log In Again, while the save is out
+    await p.getByTestId('session-reminder-log-in').first().click().catch(() => {});
+    await settle(p, 2);
+    S.net.answer['app-read-session'] = signedIn('opA', `s-${tag}`, `h-${tag}`);
+    const btn = p.getByTestId('one-login-sign-in').first();
+    const [popup] = await Promise.all([p.waitForEvent('popup'), btn.click()]);
+    await popup.evaluate(() => window.opener.postMessage({ type: 'iaos-app-read-signed-in' }, location.origin));
+    await settle(p, 3);
+    await release(S, 'ghl-write', oldAnswer, p);                                    // the OLD answer, now stale
+    await until(() => shown(p, 'read-access-signed-in'), 10_000);
+    await settle(p, 8); await tick(p, 25_000); await settle(p, 4);
+    const st = await rowState(p, NAME1);
+    const ok = reminder && ops(S).join() === 'note.create' && st.draft === `old-session note ${tag}` && st.red === 0 &&
+      st.placeholder === 'Note (any text = attempted)…' && await shown(p, 'read-access-signed-in');
+    row(tag, ok, { reminder, ops: ops(S), st });
+    await S.ctx.close();
+  }
+  ROWS.LW6a = () => popupReplacementMidSave('LW6a', NOTE_OK('n-stale'));
+  ROWS.LW6b = () => popupReplacementMidSave('LW6b', { status: 409, json: { error: 'Write refused or unconfirmed; refresh and inspect before retrying' } });
 
   ROWS.D20 = async () => {
     const S = await newSession('D20'); const p = await signedInDashboard(S);

@@ -25,10 +25,15 @@ const AWS = path.join(APP, 'src/lib/app-write-session.ts');
 const arg = (k) => { const a = process.argv.find((x) => x.startsWith(`--${k}=`)); return a ? a.slice(k.length + 3) : null; };
 const MUTATE = arg('mutate');
 
-const R = (find, repl) => ({ find, repl });
+const R = (find, repl, file = 'lane') => ({ find, repl, file });
+const COORD = path.join(APP, 'src/lib/seller-conversation-save.ts');
 const MUTATIONS = {
   'persist-after-fetch':     { targets: ['P1'], edits: [R('    live = e;\n    void dispatch(e, holdId);', '    live = e;\n    void dispatch(e, holdId);'), R('      if (r === "corrupt" || r === "unreadable" || !writeRecords([...r, rec])) { settle(e, null, new LaneNotSent("persist_failed")); continue; }', '      queueMicrotask(() => { if (r !== "corrupt" && r !== "unreadable") writeRecords([...r, rec]); });')] },
   'dispatch-on-persist-fail':{ targets: ['P2'], edits: [R('      if (r === "corrupt" || r === "unreadable" || !writeRecords([...r, rec])) { settle(e, null, new LaneNotSent("persist_failed")); continue; }', '      if (r !== "corrupt" && r !== "unreadable") writeRecords([...r, rec]);')] },
+  'no-hold-until-applied':   { targets: ['P15'], edits: [R('  if (out && e.holdUntilApplied) {', '  if (false) {')] },
+  'no-record-validation':    { targets: ['P12'], edits: [R('  if (!isEnvelope(v)) return "corrupt";\n  if (v.env !== envId()) return [];\n  return v.records.every(isRecord) ? v.records : "corrupt";', '  const w = v as Stored; if (!w || w.v !== 1 || !Array.isArray(w.records)) return "corrupt";\n  return w.env === envId() ? w.records : [];')] },
+  'no-generation-on-reset':  { targets: ['P13', 'P14'], edits: [R('  epoch += 1;\n  sessionGen += 1;', '  epoch += 1;')] },
+  'coordinator-ignores-session': { targets: ['P14'], edits: [R('        if (!live()) { this.restore(dealKey, id, prev); break; }\n        if (outcome.kind', '        if (outcome.kind', 'coord')] },
   'key-under-iaos-prefix':   { targets: ['P3'], edits: [R('export const UNRESOLVED_KEY = "iaosLane.unresolved.v1";', 'export const UNRESOLVED_KEY = "iaos.lane.unresolved.v1";')] },
   'one-directional-wildcard':{ targets: ['P5'], edits: [R('const conflicts = (a: string, b: string) => a === "*" || b === "*" || a === b;', 'const conflicts = (a: string, b: string) => a === "*" || a === b;')] },
   'no-dispatch-recheck':     { targets: ['P5'], edits: [R('      { const why = blocked(e.meta.key); if (why) { settle(e, null, new LaneNotSent(why)); continue; } }\n', '')] },
@@ -52,15 +57,16 @@ if (process.argv.includes('--controls')) {
   console.log(`\nB15-29 protected lane controls: ${Object.keys(MUTATIONS).length - bad}/${Object.keys(MUTATIONS).length} controls caught their target`);
   process.exit(bad ? 1 : 0);
 }
-let laneSource = fs.readFileSync(LANE, 'utf8').replace(/\r\n/g, '\n');
+const sources = { lane: fs.readFileSync(LANE, 'utf8').replace(/\r\n/g, '\n'), coord: fs.readFileSync(COORD, 'utf8').replace(/\r\n/g, '\n') };
 if (MUTATE) {
   const m = MUTATIONS[MUTATE]; if (!m) { console.error(`FAILED: unknown --mutate=${MUTATE}`); process.exit(2); }
   for (const e of m.edits || []) {
-    const n = laneSource.split(e.find).length - 1;
+    const n = sources[e.file].split(e.find).length - 1;
     if (n !== 1) { console.error(`FAILED: ${MUTATE} edit matched ${n} times: ${JSON.stringify(e.find.slice(0, 70))}`); process.exit(2); }
-    laneSource = laneSource.split(e.find).join(e.repl);
+    sources[e.file] = sources[e.file].split(e.find).join(e.repl);
   }
 }
+const laneSource = sources.lane;
 
 // ── virtual clock ── (the real timer is kept for the per-row watchdog only)
 const realSetTimeout = global.setTimeout; const realClearTimeout = global.clearTimeout;
@@ -117,6 +123,14 @@ function freshLane() {
   const out = ts.transpileModule(laneSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
   const m = new Module(LANE, module); m.filename = LANE; m.paths = Module._nodeModulePaths(path.dirname(LANE)); m._compile(out, LANE);
   require.cache[LANE] = m; m.loaded = true;
+  return m.exports;
+}
+/** The Seller Call coordinator, compiled from (possibly mutated) source, using the CURRENT lane module. */
+function freshCoord() {
+  delete require.cache[COORD];
+  const out = ts.transpileModule(sources.coord, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+  const m = new Module(COORD, module); m.filename = COORD; m.paths = Module._nodeModulePaths(path.dirname(COORD)); m._compile(out, COORD);
+  require.cache[COORD] = m; m.loaded = true;
   return m.exports;
 }
 function reset() { mem.clear(); calls.length = 0; script = []; stallHits = 0; snapshotAtFetch = null; storage.failSet = false; storage.failGet = false; storage.tamper = false; storage.setCalls.length = 0; timers.clear(); }
@@ -279,6 +293,86 @@ const ROWS = {
     const o2 = await client.send('contact.occupancy', 'c1', { value: 'vacant' }, 'rq-2', () => {});   // held contact -> not sent
     row('P11', stallHits === 1 && o1.kind === 'uncertain' && o2.kind === 'refused' && /\[uncertain_pending\]$/.test(o2.message) && !/^Not sent: Not sent/.test(o2.message) && calls.filter((c) => c.url.endsWith('ghl-write')).length === 1,
       { o1: o1.kind, o2, writes: calls.filter((c) => c.url.endsWith('ghl-write')).length }); },
+  async P12() { // Bones I2: a parseable but malformed stored state fails closed (zero dispatch) and is never overwritten
+    reset(); let L = freshLane();
+    script = [{ kind: 'answer', status: 200, body: { note: { id: 'n0' } } }];
+    const first = await outcome(L.laneFetch(...WRITE('c0'), { kind: 'write' }));
+    const env = JSON.parse(mem.get('iaosLane.unresolved.v1')).env;
+    const good = { holdId: 'h1', key: 'contact:c9', requestId: null, operation: 'note.create', createdAt: 1, state: 'uncertain' };
+    const variants = {
+      'empty record': { v: 1, env, records: [{}] },
+      'null record': { v: 1, env, records: [null] },
+      'invalid key (number)': { v: 1, env, records: [{ ...good, key: 5 }] },
+      'invalid key (contact:)': { v: 1, env, records: [{ ...good, key: 'contact:' }] },
+      'invalid state': { v: 1, env, records: [{ ...good, state: 'done' }] },
+      'missing holdId': { v: 1, env, records: [{ ...good, holdId: undefined }] },
+      'missing env': { v: 1, records: [good] },
+      'env not a string': { v: 1, env: 7, records: [good] },
+      'records not an array': { v: 1, env, records: { 0: good } },
+      'wrong version': { v: 2, env, records: [] },
+    };
+    const out = {};
+    for (const [name, value] of Object.entries(variants)) {
+      calls.length = 0; const text = JSON.stringify(value); mem.set('iaosLane.unresolved.v1', text);
+      script = [{ kind: 'answer', status: 200, body: { note: { id: 'nx' } } }];
+      const w = await outcome(L.laneFetch(...WRITE('c1'), { kind: 'write' }));
+      out[name] = { blocked: !w.ok && w.e.reason === 'uncertain_pending', calls: calls.length, kept: mem.get('iaosLane.unresolved.v1') === text };
+    }
+    // a VALID envelope of ANOTHER environment stays isolated: the write is sent
+    calls.length = 0; mem.set('iaosLane.unresolved.v1', JSON.stringify({ v: 1, env: 'another-location', records: [{ ...good, key: 'contact:c1' }] }));
+    script = [{ kind: 'answer', status: 200, body: { note: { id: 'ny' } } }];
+    const iso = await outcome(L.laneFetch(...WRITE('c1'), { kind: 'write' }));
+    row('P12', first.ok && Object.values(out).every((x) => x.blocked && x.calls === 0 && x.kept) && iso.ok && calls.length === 1, { out, isolated: iso.ok, isoCalls: calls.length }); },
+  async P13() { // Bones I1: the protected-session generation (Sign out, deliberate sign-in, server-confirmed replacement)
+    reset(); const L = freshLane(); const A = require(AWS);
+    const g0 = L.captureSession(); const stableBefore = g0();
+    L.laneReset('replaced'); const afterReplaced = g0();
+    const g1 = L.captureSession(); L.laneReset('signed_out'); const afterSignedOut = g1();
+    const g2 = A.captureAppWriteSession(); A.replaceAppWriteSession(); const afterServerReplace = g2();
+    const g3 = A.captureAppWriteSession(); A.pauseAppWriteForSignOut(); const afterPause = g3();
+    const g4 = A.captureAppWriteSession(); A.resumeAppWriteAccess(); const afterSignIn = g4();
+    const g5 = A.captureAppWriteSession(); const stillLive = g5();
+    let sent = 0; const follow = A.whileSessionLive(g0, async () => { sent += 1; return 'sent'; });
+    const f = await outcome(follow('c1'));
+    const liveFollow = await outcome(A.whileSessionLive(g5, async () => 'sent')());
+    row('P13', stableBefore && !afterReplaced && !afterSignedOut && !afterServerReplace && !afterPause && !afterSignIn && stillLive &&
+      !f.ok && f.e instanceof A.AppWriteSignInRequired && f.e.name === 'AppWriteSessionChanged' && sent === 0 && liveFollow.ok && liveFollow.r === 'sent',
+      { stableBefore, afterReplaced, afterSignedOut, afterServerReplace, afterPause, afterSignIn, stillLive, follow: f.e && f.e.name, sent }); },
+  async P14() { // Bones I1: the Seller Call coordinator's continuation after a replacement mid-write
+    reset(); const L = freshLane(); const S = freshCoord();
+    const run = async (replace) => {
+      const sends = []; let answer; let late;
+      const client = { requestId: () => `rq-${sends.length}`, now: () => '2026-11-17T12:00:00.000Z', readNotes: async () => [], readOccupancy: async () => null,
+        captureSession: () => L.captureSession(),
+        send: (op, t, args, rid, onLate) => { sends.push(op); late = onLate; return new Promise((r) => { answer = r; }); } };
+      const co = new S.SellerConversationSaveCoordinator();
+      const plan = { items: [], unsaved: true, writes: [
+        { id: 'note', label: 'n', action: 'write', line: '', signature: 's-note', write: { kind: 'note', body: () => 'b' } },
+        { id: 'occupancy', label: 'o', action: 'write', line: '', signature: 's-occ', write: { kind: 'occupancy', value: 'vacant' } }] };
+      let confirmed = 0;
+      const done = co.save('d1', 'c1', plan, client, { onConfirmed: () => { confirmed += 1; } });
+      await flush(); const savingShown = co.results('d1').note && co.results('d1').note.status;
+      if (replace) L.laneReset('replaced');
+      answer({ kind: 'confirmed' }); await flush();
+      await flush(); if (sends.length > 1) answer({ kind: 'confirmed' });   // (a stale continuation must not send it; answered so a regression fails, not hangs)
+      await done; if (late) late({ kind: 'confirmed' }); await flush();
+      return { sends: sends.length, confirmed, savingShown, note: co.results('d1').note ? co.results('d1').note.status : null, busy: co.busy() };
+    };
+    const stale = await run(true); const live = await run(false);
+    row('P14', stale.savingShown === 'saving' && stale.sends === 1 && stale.confirmed === 0 && stale.note === null && !stale.busy &&
+      live.sends === 2 && live.confirmed === 2 && live.note === 'confirmed', { stale, live }); },
+  async P15() { // Bones I1: a status answer holds the lane until the page applied it (laneApplied); then the queued write goes
+    reset(); const L = freshLane();
+    script = [{ kind: 'answer', status: 200, body: { state: 'signed_in' } }, { kind: 'answer', status: 200, body: { note: { id: 'n1' } } }];
+    const st = L.laneFetch('/.netlify/functions/app-read-session', {}, { kind: 'status', holdUntilApplied: true });
+    const w = outcome(L.laneFetch(...WRITE('c1'), { kind: 'write' }));
+    await st; await flush(); await flush(); const beforeApplied = calls.length;
+    L.laneApplied(); L.laneApplied(); await flush(); const wr = await w;
+    // without the flag (reads, mints, writes) the lane continues at once
+    script = [{ kind: 'answer', status: 200, body: [] }, { kind: 'answer', status: 200, body: { note: { id: 'n2' } } }];
+    const rd = L.laneFetch(...READ(), { kind: 'read' }); const w2 = outcome(L.laneFetch(...WRITE('c2'), { kind: 'write' }));
+    await rd; const w2r = await w2;
+    row('P15', beforeApplied === 1 && wr.ok && calls.length === 4 && w2r.ok, { beforeApplied, calls: calls.length }); },
   async P10() { const c = freshLane().classifyRelease; const T = (b) => JSON.stringify(b);
     const cases = [
       ['auth401', c('call-log-barrier', { action: 'begin' }, 401, T({ error: 'Application write sign-in required' })), 'release'],
