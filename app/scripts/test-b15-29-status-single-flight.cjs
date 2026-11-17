@@ -6,7 +6,8 @@
  * Harness-only instrumentation (VITE_IAOS_STATUS_PROBE=1): window.__iaosStatusProbe and window.__iaosStatusTrace.
  *
  * Rows (ids from the design): D1 D2p D3 D4p D5 D6 D7 D8a D8b D9 D10 D11 D12 D13 D14 D15 D16 D17 D18 D19 D19pos D20
- * D21a D21b D21c D22a D22b D22c D23p D24 D25p D25q D26T D26S D27a D27b ST1 ST2 BUILD.
+ * D21a D21b D21c D22a D22b D22c D23p D24 D25p D25q D26T D26S D27a D27b ST1 ST2 BUILD;
+ * B15-29 D2 lane: LW1 LW2 LW3 LW4 ISO1 (caller wiring and live-page isolation).
  *
  *   node scripts/test-b15-29-status-single-flight.cjs                     all rows, unmutated (every row must pass)
  *   node scripts/test-b15-29-status-single-flight.cjs --controls          every mutation control (see MUTATIONS)
@@ -25,6 +26,7 @@ const APP = path.resolve(__dirname, '..');
 const HARNESS = '/scripts/harness/one-login-dashboard/index.html';
 const OLA = path.join(APP, 'src/components/OneLoginAccess.tsx');
 const READ_SESSION = path.join(APP, 'src/lib/read-session.ts');
+const AWS_FILE = path.join(APP, 'src/lib/app-write-session.ts');
 const GHL = path.join(APP, 'src/lib/ghl.ts');
 
 const arg = (k) => { const a = process.argv.find((x) => x.startsWith(`--${k}=`)); return a ? a.slice(k.length + 3) : null; };
@@ -70,6 +72,11 @@ const MUTATIONS = {
   'json-bypasses-apply':      { targets: ['D21c'], record: { D21c: ['setStatus'] }, edits: [R(OLA, '.catch(() => { ctxFlight.current = f.id; return JSON_FAILED; })', '.catch(() => { ctxFlight.current = f.id; fx.setStatus({ kind: "unavailable", message: UNAVAILABLE_TEXT }); return JSON_FAILED; })')] },
   // D19 (Captain GO 2026-11-15): a reader that echoes the refused response body into its error must be caught by D19.
   'reader-echoes-body':       { targets: ['D19'], edits: [R(GHL, '        throw readerFailure("ghl-contacts", res.status);', '        throw new Error(`ghl-contacts → ${res.status}: ${await res.text()}`);')] },
+  // B15-29 D2 lane (Captain GO 2026-11-17): caller wiring and live-page cancellation must be load-bearing.
+  'read-bypasses-lane':       { targets: ['LW1'], edits: [R(READ_SESSION, '  const res = await laneFetch(url, { ...init, credentials: "same-origin" }, { kind: "read" });   // B15-29 D2 r6', '  const res = await fetch(url, { ...init, credentials: "same-origin" });')] },
+  'write-bypasses-lane':      { targets: ['LW2'], edits: [R(AWS_FILE, '  const response = await laneFetch(url, { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } }, {', '  const response = await fetch(url, { ...init, headers: { ...init.headers, Authorization: `Bearer ${token}` } }, {')] },
+  'no-lane-reset-on-signout': { targets: ['LW3'], edits: [R(OLA, '    laneReset("signed_out");   // B15-29 D2 r6: every queued protected request is not sent\n', '')] },
+  'no-lane-reset-on-signin':  { targets: ['ISO1'], edits: [R(OLA, '      laneReset("replaced");   // B15-29 D2 r6\n', '')] },
   // r5 structural controls (Bones, review of 64a0959): a deliberate bypass must be caught by the structural row.
   'bypass-ownership-setter':  { targets: ['ST1'], edits: [R(OLA, '    setSlot({ kind: "idle" }, "complete:slot-idle");', '    slotRef.current = { kind: "idle" };')] },
   'bypass-apply-wrapper':     { targets: ['ST2'], edits: [R(OLA, '    if (r.kind === "unavailable") { fx.setStatus({ kind: "unavailable", message: UNAVAILABLE_TEXT }); return; }',
@@ -162,8 +169,11 @@ async function main() {
       if (url.startsWith(base) && !url.includes('/.netlify/functions/')) return route.continue();
       if (!url.includes('/.netlify/functions/')) { foreign.push(url); return route.abort(); }
       const fn = new URL(url).pathname.replace(/^.*\/\.netlify\/functions\//, '');
-      const entry = { tag, fn, method: req.method(), n: net.log.length };
+      const entry = { tag, fn, method: req.method(), n: net.log.length, body: req.postData() || null, auth: req.headers()['authorization'] || null };
       net.log.push(entry);
+      const checked = /^(app-read-session|app-write-token|ghl-|call-log-barrier|current-offer-barrier|repair-approval-save|property-answer|generate-contract-pdf)/.test(fn);
+      if (checked) { net.live = (net.live || 0) + 1; net.maxLive = Math.max(net.maxLive || 0, net.live); }
+      const done = () => { if (checked) net.live -= 1; };
       const q = net.queue[fn];
       let spec = q && q.length ? q.shift() : net.answer[fn];
       if (typeof spec === 'function') spec = spec(entry);
@@ -175,9 +185,11 @@ async function main() {
       }
       entry.answered = spec ? (spec.abort ? 'abort' : spec.status) : 404;
       entry.state = spec && spec.json && spec.json.state;
-      if (!spec) return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: `unmodelled ${fn}` }) });
-      if (spec.abort) return route.abort();
-      return route.fulfill({ status: spec.status, contentType: 'application/json', body: spec.raw !== undefined ? spec.raw : JSON.stringify(spec.json) });
+      try {
+        if (!spec) return await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: `unmodelled ${fn}` }) });
+        if (spec.abort) return await route.abort();
+        return await route.fulfill({ status: spec.status, contentType: 'application/json', body: spec.raw !== undefined ? spec.raw : JSON.stringify(spec.json) });
+      } finally { done(); }
     });
     return { ctx, net, tag };
   }
@@ -200,7 +212,7 @@ async function main() {
   const holdNext = (S, fn) => { (S.net.queue[fn] ||= []).push({ hold: true }); };
   const heldOf = (S, fn) => S.net.held.filter((h) => h.fn === fn && !h.released);
   const waitHeld = (S, fn, k = 1) => until(() => heldOf(S, fn).length >= k);
-  const release = async (S, fn, spec, p) => { const h = heldOf(S, fn)[0]; if (!h) throw new Error(`nothing held for ${fn}`); h.release(spec); await until(() => h.entry.answered !== undefined); if (p) await settle(p); };
+  const release = async (S, fn, spec, p) => { await until(() => heldOf(S, fn).length > 0, 8000); const h = heldOf(S, fn)[0]; if (!h) throw new Error(`nothing held for ${fn}`); h.release(spec); await until(() => h.entry.answered !== undefined); if (p) await settle(p); };
   const shown = (p, id) => p.getByTestId(id).first().isVisible().catch(() => false);
   /** The status line's Sign out (DOM click: Playwright's 'stable' wait needs animation frames, which the paused clock holds). */
   const clickSignOut = (p) => p.getByTestId('read-access-signed-in').locator('button').first().evaluate((b) => b.click());
@@ -257,14 +269,18 @@ async function main() {
   }
   const releaseReader = (S, fn, spec, p) => release(S, fn, spec || S.net.answer[fn], p);
   /** D4′ steps 1–4: a reachable refusal-only scheduled backoff (scheduledId k). Returns the probe state. */
+  /* B15-29 D2 lane (r6): ONE protected request in flight, FIFO. The status re-check F3 started by R1's refusal is
+     QUEUED in the lane behind the remaining readers (single-flight already counts it as the flight, so R2's refusal
+     still invalidates it and queues a pending revalidation). R3 and R4 then complete, F3 is dispatched and held. */
   async function toScheduled(S) {
     const r = await rb(S);
     holdNext(S, 'app-read-session');
-    await releaseReader(S, 'ghl-contacts', READ_401, r.p);            // R1 401 -> refusal 1 while idle -> F3 at once
-    await waitHeld(S, 'app-read-session');
+    await releaseReader(S, 'ghl-contacts', READ_401, r.p);            // R1 401 -> refusal 1 while idle -> F3 started (queued in the lane)
     const s1 = await sample(r.p, 'D4p.F3');
-    await releaseReader(S, 'ghl-mailers', READ_401, r.p);             // R2 401 during F3 -> refusals 2, F3 invalidated, pending
+    await releaseReader(S, 'ghl-mailers', READ_401, r.p);             // R2 401 while F3 is the flight -> refusals 2, F3 invalidated, pending
     const s2 = await sample(r.p, 'D4p.pending');
+    for (const fn of ['ghl-opportunities', 'ghl-conversations']) await releaseReader(S, fn, null, r.p);   // the lane then dispatches F3
+    await waitHeld(S, 'app-read-session');
     const appWriteBefore = count(S, 'app-write-token');
     await release(S, 'app-read-session', signedIn('opA', 's1', 'hX'), r.p);   // F3 answers signed_in: NOT applied
     const s3 = await sample(r.p, 'D4p.scheduled');
@@ -307,7 +323,6 @@ async function main() {
     await tick(p, 999); const before = statusGets(S) - b;
     await tick(p, 1); const at = statusGets(S) - b;
     const started = (await trace(p)).filter((x) => x.rule === 'apply' && x.op === 'start').pop();   // the fired request carries the merged queued item
-    for (const fn of ['ghl-opportunities', 'ghl-conversations']) await releaseReader(S, fn, null, p);
     await settle(p);
     const ok = r.s1.slotKind === 'flight' && r.s2.pendingHeld === true &&
       r.s3.slotKind === 'scheduled' && typeof k === 'number' && r.s3.pendingHeld === false && r.s3.queuedHeld === true && r.s3.timersArmed === 1 &&
@@ -367,45 +382,48 @@ async function main() {
     holdNext(S, 'app-read-session');
     const [popup] = await Promise.all([p.waitForEvent('popup'), p.getByTestId('one-login-sign-in').first().click()]);
     await popup.evaluate(() => window.opener.postMessage({ type: 'iaos-app-read-signed-in' }, location.origin));
-    await waitHeld(S, 'app-read-session', 2);
+    // B15-29 D2 lane: F2 starts at once (single-flight slot) but is QUEUED in the lane until F1 settles -- never concurrent.
+    await until(async () => { const x = await probe(p); return x && x.currentFlightId !== idF1; });
     await settle(p);
     const idF2 = (await probe(p)).currentFlightId;
-    return { p, idF1, idF2 };
+    const queuedWhileF1 = heldOf(S, 'app-read-session').length === 1;
+    return { p, idF1, idF2, queuedWhileF1 };
   }
   const appliedFor = (t, id) => t.filter((r) => r.rule === 'apply' && r.flight === id && !['start', 'schedule'].includes(r.op));
   ROWS.D7 = async () => {
-    const S = await newSession('D7'); const { p, idF1, idF2 } = await overlap(S);
+    const S = await newSession('D7'); const { p, idF1, idF2, queuedWhileF1 } = await overlap(S);
     const n = statusGets(S);
-    await release(S, 'app-read-session', signedIn('opA', 'sOld', 'hOld'), p);   // OLD first, while F2 owns the slot
+    await release(S, 'app-read-session', signedIn('opA', 'sOld', 'hOld'), p);   // OLD first, while F2 owns the slot (queued in the lane)
     const t = await trace(p);
     const stillOut = await shown(p, 'read-access-recovery') && !(await shown(p, 'read-access-signed-in'));
-    await release(S, 'app-read-session', signedIn('opA', 'sNew', 'hNew'), p);
+    await release(S, 'app-read-session', signedIn('opA', 'sNew', 'hNew'), p);   // the lane then dispatched F2
     await until(() => shown(p, 'read-access-signed-in'));
-    row('D7', idF1 !== idF2 && appliedFor(t, idF1).length === 0 && stillOut && statusGets(S) === n && await shown(p, 'read-access-signed-in'),
-      { idF1, idF2, appliedF1: appliedFor(t, idF1).map((r) => r.op), stillOut, extra: statusGets(S) - n });
+    row('D7', idF1 !== idF2 && queuedWhileF1 && appliedFor(t, idF1).length === 0 && stillOut && statusGets(S) === n + 1 && await shown(p, 'read-access-signed-in'),
+      { idF1, idF2, queuedWhileF1, appliedF1: appliedFor(t, idF1).map((r) => r.op), stillOut, sentAfterF1: statusGets(S) - n });
     await S.ctx.close();
   };
   ROWS.D8a = async () => {
-    const S = await newSession('D8a'); const { p, idF1, idF2 } = await overlap(S);
+    const S = await newSession('D8a'); const { p, idF1, idF2, queuedWhileF1 } = await overlap(S);
     const n = statusGets(S);
     await release(S, 'app-read-session', signedIn('opA', 'sOld', 'hOld'), p);
+    await waitHeld(S, 'app-read-session');                           // the lane dispatched F2 (held)
     const x = await probe(p);
-    row('D8a', x.slotKind === 'flight' && x.currentFlightId === idF2 && x.pendingHeld === false && statusGets(S) === n, { idF1, idF2, probe: x, extra: statusGets(S) - n });
+    row('D8a', queuedWhileF1 && x.slotKind === 'flight' && x.currentFlightId === idF2 && x.pendingHeld === false && statusGets(S) === n + 1, { idF1, idF2, queuedWhileF1, probe: x, sentAfterF1: statusGets(S) - n });
     await release(S, 'app-read-session', signedIn('opA', 'sNew', 'hNew'), p);
     await S.ctx.close();
   };
   ROWS.D8b = async () => {
-    const S = await newSession('D8b'); const { p, idF1, idF2 } = await overlap(S);
+    const S = await newSession('D8b'); const { p, idF1, idF2, queuedWhileF1 } = await overlap(S);
     const n = statusGets(S);
-    const hOld = heldOf(S, 'app-read-session')[0]; const hNew = heldOf(S, 'app-read-session')[1];
-    hNew.release(signedIn('opA', 'sNew', 'hNew')); await until(() => hNew.entry.answered !== undefined); await settle(p);
+    await tick(p, 2000); await settle(p);                            // F1 still in flight: the lane does not send F2
+    const notSentDuringF1 = statusGets(S) === n && heldOf(S, 'app-read-session').length === 1;
+    await release(S, 'app-read-session', signedIn('opA', 'sOld', 'hOld'), p);   // F1 settles (late, old generation)
+    await release(S, 'app-read-session', signedIn('opA', 'sNew', 'hNew'), p);   // then F2
     await until(() => shown(p, 'read-access-signed-in'));
-    const x1 = await probe(p);
-    hOld.release(signedIn('opA', 'sOld', 'hOld')); await until(() => hOld.entry.answered !== undefined); await settle(p);
     await tick(p, 2000);
     const t = await trace(p); const x2 = await probe(p);
-    row('D8b', x1.slotKind === 'idle' && appliedFor(t, idF1).length === 0 && x2.slotKind === 'idle' && x2.timersArmed === 0 && statusGets(S) === n && await shown(p, 'read-access-signed-in'),
-      { idF1, idF2, x1: x1.slotKind, appliedF1: appliedFor(t, idF1).map((r) => r.op), x2, extra: statusGets(S) - n });
+    row('D8b', queuedWhileF1 && notSentDuringF1 && appliedFor(t, idF1).length === 0 && x2.slotKind === 'idle' && x2.timersArmed === 0 && statusGets(S) === n + 1 && await shown(p, 'read-access-signed-in'),
+      { idF1, idF2, queuedWhileF1, notSentDuringF1, appliedF1: appliedFor(t, idF1).map((r) => r.op), x2, sent: statusGets(S) - n });
     await S.ctx.close();
   };
 
@@ -592,6 +610,116 @@ async function main() {
     });
     row('ST2', start > 0 && end > start && bad.length === 0, { rawTable: [start + 1, end + 1], bad });
   };
+  /*
+   * B15-29 D2 r6 lane -- caller wiring and LIVE-PAGE isolation on the real Dashboard page (Captain GO 2026-11-17).
+   * Saves are issued through the page's OWN module instances (dynamic import of /src/lib/ghl.ts -> write-command ->
+   * appWriteFetch -> the lane), alongside the real Dashboard readers. No reload anywhere: Bones requires live-page
+   * proof (a reload destroys the old JS context).
+   */
+  const pageSave = (p, contactId, text) => p.evaluate(async ({ contactId, text }) => {
+    const { ghl } = await import('/src/lib/ghl.ts'); const { AppWriteSignInRequired } = await import('/src/lib/write-errors.ts');
+    window.__laneSaves = window.__laneSaves || [];
+    const rec = { contactId, state: 'pending' }; window.__laneSaves.push(rec);
+    ghl.notes.create(contactId, text).then(() => { rec.state = 'confirmed'; }, (e) => { rec.state = 'rejected'; rec.name = e && e.name; rec.reason = e && e.reason; rec.notSent = e instanceof AppWriteSignInRequired; rec.message = String(e && e.message); });
+    return window.__laneSaves.length - 1;
+  }, { contactId, text });
+  const saveState = (p, i) => p.evaluate((i) => ({ ...window.__laneSaves[i] }), i);
+  const laneRecords = (p) => p.evaluate(() => { try { const v = sessionStorage.getItem('iaosLane.unresolved.v1'); return v ? JSON.parse(v).records : []; } catch { return 'unreadable'; } });
+  const NOTE_OK = (id) => ({ status: 200, json: { note: { id, body: 'x' } } });
+  const writes = (S) => S.net.log.filter((e) => e.fn === 'ghl-write');
+
+  ROWS.LW1 = async () => {
+    const S = await newSession('LW1'); const p = await signedInDashboard(S);
+    holdNext(S, 'ghl-contacts'); await fire(p, LOST); await settle(p, 4);       // revalidation path too
+    await until(() => heldOf(S, 'ghl-contacts').length > 0 || true, 500);
+    row('LW1', (S.net.maxLive || 0) === 1 && READERS.every((fn) => count(S, fn) >= 1), { maxLive: S.net.maxLive, statusGets: statusGets(S) });
+    await S.ctx.close();
+  };
+  ROWS.LW2 = async () => {
+    const S = await newSession('LW2');
+    for (const fn of READERS) (S.net.queue[fn] ||= []).push({ hold: true });
+    S.net.queue['ghl-write'] = [NOTE_OK('n-lw2')];
+    const p = await openTab(S);
+    await until(() => shown(p, 'read-access-signed-in')); await until(() => count(S, 'app-write-token') >= 1); await settle(p, 4);
+    await waitHeld(S, READERS.find((fn) => heldOf(S, fn).length) || 'ghl-contacts');
+    const firstHeld = S.net.held.find((h) => !h.released).fn;
+    const queuedReaders = READERS.filter((fn) => count(S, fn) === 0).length;
+    const i = await pageSave(p, 'c1', 'lane note');
+    await settle(p, 4); const writesWhileReaderLive = writes(S).length;
+    await release(S, firstHeld, S.net.answer[firstHeld], p);
+    await until(() => writes(S).length === 1); await settle(p, 4);
+    const order = S.net.log.filter((e) => READERS.includes(e.fn) || e.fn === 'ghl-write').map((e) => e.fn);
+    for (const fn of READERS) if (heldOf(S, fn).length) await release(S, fn, S.net.answer[fn], p);
+    for (const fn of READERS) { await until(() => count(S, fn) >= 1, 3000); if (heldOf(S, fn).length) await release(S, fn, S.net.answer[fn], p); }
+    await until(async () => (await saveState(p, i)).state !== 'pending', 5000);
+    const st = await saveState(p, i); const w = writes(S)[0]; const body = w && JSON.parse(w.body || '{}');
+    const n503 = S.net.log.filter((e) => e.answered === 503).length;
+    row('LW2', queuedReaders >= 2 && writesWhileReaderLive === 0 && order.indexOf('ghl-write') === 1 && writes(S).length === 1 && st.state === 'confirmed' &&
+      w.auth === 'Bearer offline-token' && body.operation === 'note.create' && body.targetId === 'c1' && body.args && body.args.body === 'lane note' && typeof body.requestId === 'string' &&
+      (await laneRecords(p)).length === 0 && (S.net.maxLive || 0) === 1 && n503 === 0,
+      { queuedReaders, writesWhileReaderLive, order, st, auth: w && w.auth, maxLive: S.net.maxLive, n503 });
+    await S.ctx.close();
+  };
+  ROWS.LW3 = async () => {
+    const S = await newSession('LW3'); const p = await signedInDashboard(S);
+    holdNext(S, 'app-read-session'); await fire(p, 'focus'); await waitHeld(S, 'app-read-session');
+    const i = await pageSave(p, 'c1', 'queued then sign out'); await settle(p, 3);
+    const queued = writes(S).length === 0;
+    await clickSignOut(p); await until(async () => (await saveState(p, i)).state !== 'pending', 5000);
+    const st = await saveState(p, i);
+    await release(S, 'app-read-session', signedIn(), p); await tick(p, 30_000);
+    row('LW3', queued && st.state === 'rejected' && st.name === 'LaneNotSent' && st.reason === 'signed_out' && writes(S).length === 0 && (await laneRecords(p)).length === 0,
+      { queued, st, writes: writes(S).length });
+    await S.ctx.close();
+  };
+  ROWS.LW4 = async () => {
+    const S = await newSession('LW4'); const p = await signedInDashboard(S);
+    holdNext(S, 'ghl-write');
+    const a = await pageSave(p, 'c1', 'uncertain'); await waitHeld(S, 'ghl-write');
+    await tick(p, 20_000); await until(async () => (await saveState(p, a)).state !== 'pending', 5000);
+    const sa = await saveState(p, a); const recs = await laneRecords(p);
+    const b = await pageSave(p, 'c1', 'second on same contact'); await until(async () => (await saveState(p, b)).state !== 'pending', 5000);
+    const sb = await saveState(p, b);
+    S.net.queue['ghl-write'] = [NOTE_OK('n-c2')];
+    const c = await pageSave(p, 'c2', 'other contact'); await until(async () => (await saveState(p, c)).state !== 'pending', 5000);
+    const sc = await saveState(p, c);
+    const sent = writes(S).length; await tick(p, 120_000); await settle(p, 3);
+    row('LW4', sa.state === 'rejected' && sa.name === 'LaneUncertain' && Array.isArray(recs) && recs.length === 1 && recs[0].key === 'contact:c1' && recs[0].state === 'uncertain' &&
+      sb.name === 'LaneNotSent' && sb.reason === 'uncertain_pending' && sc.state === 'confirmed' && sent === 2 && writes(S).length === 2,
+      { sa, recs, sb, sc, sent, after: writes(S).length });
+    await S.ctx.close();
+  };
+  ROWS.ISO1 = async () => {
+    const S = await newSession('ISO1'); const p = await signedInDashboard(S);
+    S.net.queue['app-read-session'] = [REVOKED];                          // make the in-page sign-in reachable (overlay)
+    await fire(p, 'focus'); await until(() => shown(p, 'one-login-sign-in'));
+    const marker = { ...CONTACTS[0], id: 'c-old', firstName: 'Olde', lastName: 'Sessionmark', phone: '+15555551077' };
+    holdNext(S, 'app-read-session');                                     // a status flight of the OLD generation, held
+    await fire(p, 'focus'); await waitHeld(S, 'app-read-session');
+    const mintsBefore = count(S, 'app-write-token');
+    const i = await pageSave(p, 'c1', 'queued before replacement'); await settle(p, 3);
+    S.net.answer['app-read-session'] = signedIn('opB', 'sB', 'hB');      // the replacement session is operator B
+    S.net.answer['ghl-contacts'] = { status: 200, json: CONTACTS };
+    const [popup] = await Promise.all([p.waitForEvent('popup'), p.getByTestId('one-login-sign-in').first().click()]);
+    await popup.evaluate(() => window.opener.postMessage({ type: 'iaos-app-read-signed-in' }, location.origin));
+    await until(async () => (await saveState(p, i)).state !== 'pending', 5000);
+    const st = await saveState(p, i);
+    // the OLD generation's held answer now arrives LATE, carrying operator A and a marker contact list
+    await release(S, 'app-read-session', signedIn('opA', 'sA-old', 'hA-old'), p);
+    S.net.queue['ghl-contacts'] = [{ status: 200, json: [marker] }];
+    await until(() => shown(p, 'read-access-signed-in'), 8000); await settle(p, 6);
+    const text = ((await p.locator('#root').innerText().catch(() => '')) || '').toLowerCase();
+    const t = await trace(p);
+    const lateAppliedA = t.some((r) => r.rule === 'apply' && r.op === 'adoptSession' && r.unmounted === false && false);
+    // The old generation's queued work (here the save's token mint, queued behind the held status) is never sent:
+    // laneReset("replaced") rejects it, and the save settles NOT SENT (AppWriteSignInRequired) with zero writes.
+    const oldMintSent = S.net.log.filter((e) => e.fn === 'app-write-token').slice(mintsBefore).some((e) => e.n < S.net.log.findIndex((x) => x.fn === 'app-read-session' && x.answered === 200 && x.state === 'signed_in' && x.n > 0));
+    row('ISO1', st.state === 'rejected' && st.notSent === true && writes(S).length === 0 && !oldMintSent && !text.includes('sessionmark') && await shown(p, 'read-access-signed-in'),
+      { st, writes: writes(S).length, oldMintSent, markerShown: text.includes('sessionmark') });
+    void lateAppliedA;
+    await S.ctx.close();
+  };
+
   ROWS.D20 = async () => {
     const S = await newSession('D20'); const p = await signedInDashboard(S);
     holdNext(S, 'app-read-session');
@@ -659,7 +787,7 @@ async function main() {
   ROWS.D23p = async () => {
     const S = await newSession('D23p'); const r = await toScheduled(S); const p = r.p;
     const n = statusGets(S);
-    await releaseReader(S, 'ghl-opportunities', READ_401, p);         // refusal 3 -> exhaustion; refusal-only work cancelled
+    await fire(p, LOST);                                             // refusal 3 (lane: no reader is outstanding after F3) -> exhaustion; refusal-only work cancelled
     const x = await sample(p, 'D23p.exhausted');
     await tick(p, 2000);
     row('D23p', x.exhausted === true && x.timersArmed === 0 && x.slotKind === 'idle' && x.scheduledId === null && statusGets(S) === n, { x, extra: statusGets(S) - n });
@@ -686,7 +814,7 @@ async function main() {
     const S = await newSession('D25p'); const r = await toScheduled(S); const p = r.p;
     const k = r.s3.scheduledId;
     await fire(p, 'visibilitychange');                               // the scheduled work becomes fresh
-    await releaseReader(S, 'ghl-opportunities', READ_401, p);         // refusal 3 -> exhaustion; fresh work KEPT
+    await fire(p, LOST);                                             // refusal 3 (lane: no reader is outstanding after F3) -> exhaustion; fresh work KEPT
     const x = await sample(p, 'D25p.exhausted');
     const n = statusGets(S);
     await tick(p, 1000);
