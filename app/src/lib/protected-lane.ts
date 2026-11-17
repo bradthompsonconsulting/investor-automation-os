@@ -61,11 +61,12 @@ export type UnresolvedRecord = { holdId: string; key: string; requestId: string 
 type Stored = { v: 1; env: string; records: UnresolvedRecord[] };
 const envId = (): string => { try { return String((getRuntimeConfig() as { locationId?: unknown }).locationId ?? ""); } catch { return ""; } };
 const store = (): Storage | null => { try { return typeof sessionStorage === "undefined" ? null : sessionStorage; } catch { return null; } };
-/** The records, or "corrupt" (an unreadable stored value is treated as a wildcard hold: fail closed). */
-function readRecords(): UnresolvedRecord[] | "corrupt" {
+/** The records, "unreadable" (the storage itself refused the read: earlier holds cannot be known), or "corrupt" (an
+ *  unparseable stored value). Both fail closed as a wildcard hold; unreadable storage reports persist_failed. */
+function readRecords(): UnresolvedRecord[] | "corrupt" | "unreadable" {
   const s = store(); if (!s) return [];
   let raw: string | null;
-  try { raw = s.getItem(UNRESOLVED_KEY); } catch { return "corrupt"; }
+  try { raw = s.getItem(UNRESOLVED_KEY); } catch { return "unreadable"; }
   if (raw === null) return [];
   try {
     const v = JSON.parse(raw) as Stored;
@@ -79,12 +80,14 @@ function writeRecords(records: UnresolvedRecord[]): boolean {
   try { s.setItem(UNRESOLVED_KEY, text); return s.getItem(UNRESOLVED_KEY) === text; } catch { return false; }
 }
 const conflicts = (a: string, b: string) => a === "*" || b === "*" || a === b;
-function conflicting(key: string): boolean {
+/** Why a write with this key may not be sent now, or null. */
+function blocked(key: string): "uncertain_pending" | "persist_failed" | null {
   const r = readRecords();
-  return r === "corrupt" || r.some((x) => conflicts(x.key, key));
+  if (r === "unreadable") return "persist_failed";
+  return r === "corrupt" || r.some((x) => conflicts(x.key, key)) ? "uncertain_pending" : null;
 }
 function setRecordState(holdId: string, state: "uncertain" | "remove"): void {
-  const r = readRecords(); if (r === "corrupt") return;
+  const r = readRecords(); if (r === "corrupt" || r === "unreadable") return;
   writeRecords(state === "remove" ? r.filter((x) => x.holdId !== holdId) : r.map((x) => (x.holdId === holdId ? { ...x, state } : x)));
 }
 
@@ -193,12 +196,12 @@ function pump(): void {
     if (Date.now() - e.enqueuedAt >= LANE_MAX_WAIT_MS) { settle(e, null, new LaneNotSent("waited")); continue; }
     let holdId: string | null = null;
     if (e.kind === "write" && e.meta) {
-      if (conflicting(e.meta.key)) { settle(e, null, new LaneNotSent("uncertain_pending")); continue; }
+      { const why = blocked(e.meta.key); if (why) { settle(e, null, new LaneNotSent(why)); continue; } }
       try { e.beforeDispatch?.(); } catch (err) { settle(e, null, err instanceof AppWriteSignInRequired ? err : new LaneNotSent("aborted")); continue; }
       const r = readRecords();
       holdId = crypto.randomUUID();
       const rec: UnresolvedRecord = { holdId, key: e.meta.key, requestId: e.meta.requestId, operation: e.meta.operation, createdAt: Date.now(), state: "dispatching" };
-      if (r === "corrupt" || !writeRecords([...r, rec])) { settle(e, null, new LaneNotSent("persist_failed")); continue; }
+      if (r === "corrupt" || r === "unreadable" || !writeRecords([...r, rec])) { settle(e, null, new LaneNotSent("persist_failed")); continue; }
     }
     if (e.waitTimer) { clearTimeout(e.waitTimer); e.waitTimer = null; }
     live = e;
@@ -269,7 +272,7 @@ export function laneFetch(url: string, init: RequestInit, opts: { kind: LaneKind
     const meta = opts.kind === "write" ? writeMeta(url, init) : null;
     const e: Entry = { kind: opts.kind, url, init, enqueuedAt: Date.now(), epoch, meta, beforeDispatch: opts.beforeDispatch, resolve, reject, done: false, waitTimer: null };
     if (init.signal?.aborted) { settle(e, null, new LaneNotSent("aborted")); return; }
-    if (meta && conflicting(meta.key)) { settle(e, null, new LaneNotSent("uncertain_pending")); return; }
+    { const why = meta && blocked(meta.key); if (why) { settle(e, null, new LaneNotSent(why)); return; } }
     if (queue.length >= LANE_MAX_QUEUED) { settle(e, null, new LaneNotSent("full")); return; }
     queue.push(e);
     e.waitTimer = setTimeout(() => { if (!e.done && queue.includes(e)) dropQueued(e, "waited"); }, LANE_MAX_WAIT_MS);
