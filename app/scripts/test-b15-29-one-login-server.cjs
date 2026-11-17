@@ -510,6 +510,35 @@ const signTok = (claims, secret) => { const crypto = require('node:crypto'); con
     assert.equal((await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF, fetch: late, now: () => t })).kind, 'unconfirmed');
   });
 
+  // B15-29 item 29 (EXPIRED triage): a stage that ends ONLY because its 409 re-attempts were exhausted starts a fresh
+  // round (stage 1 again + stage 2 on that round's ETag), at most SIGNOUT_ROUNDS, inside the same deadline; nothing
+  // else is retried.
+  const C409 = { method: 'PUT', status: 409 };
+  const n409 = (k) => Array.from({ length: k }, () => ({ ...C409 }));
+  await check('A19 sign-out: the readback exhausts its 409 re-attempts (same-key contention) -> a fresh round (PUT, PUT If-Match on the NEW ETag) -> verified; the next check is revoked', async () => {
+    reset(); const b = await bind(13); blobs.log.length = 0; blobs.rule({ method: 'PUT' }, ...n409(4));
+    assert.deepEqual(await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF }), { kind: 'verified' });
+    assert.deepEqual(reqs(sKey(b.sid)), ['PUT', 'PUT if-match', 'PUT if-match', 'PUT if-match', 'PUT if-match', 'PUT', 'PUT if-match']);
+    assert.deepEqual(await rev.checkSession(b, 'test', { event: NF }), { kind: 'revoked' });
+  });
+  await check('A19b sign-out: 409 exhaustion in EVERY round -> NOT confirmed after exactly SIGNOUT_ROUNDS rounds (bounded; never verified without both 200s)', async () => {
+    reset(); const b = await bind(14); blobs.log.length = 0;
+    const R = rev.SIGNOUT_ROUNDS; assert.equal(R, 3);
+    blobs.rule(...Array.from({ length: R }, () => [{ method: 'PUT' }, ...n409(4)]).flat());
+    assert.equal((await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF })).kind, 'unconfirmed');
+    assert.equal(reqs(sKey(b.sid)).filter((x) => x === 'PUT').length, R, 'exactly SIGNOUT_ROUNDS stage-1 writes');
+  });
+  await check('A19c sign-out: stage 1 exhausts its 409 re-attempts -> a fresh round -> verified', async () => {
+    reset(); const b = await bind(15); blobs.log.length = 0; blobs.rule(...n409(4));
+    assert.deepEqual(await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF }), { kind: 'verified' });
+    assert.deepEqual(reqs(sKey(b.sid)), ['PUT', 'PUT', 'PUT', 'PUT', 'PUT', 'PUT if-match']);
+  });
+  await check('A19d sign-out: a 412 readback is still FINAL (no fresh round) -> NOT confirmed, exactly two writes', async () => {
+    reset(); const b = await bind(16); blobs.log.length = 0; blobs.rule({ method: 'PUT' }, { method: 'PUT', status: 412 });
+    assert.equal((await rev.revokeSession(b.sid, b.epoch, 'test', { event: NF })).kind, 'unconfirmed');
+    assert.deepEqual(reqs(sKey(b.sid)), ['PUT', 'PUT if-match']);
+  });
+
   // =========================================================================== T
   reset(); flag(true);
   const mint = (e) => load('app-write-token')(e);

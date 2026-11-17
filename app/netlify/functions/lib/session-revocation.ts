@@ -396,7 +396,7 @@ function reasonOf(r: Conflicted | null): string {
   if (r.why === "deadline" || r.why === "transport" || r.why === "attempts" || r.why === "etag") return r.why;
   return r.status === 200 || r.status === 412 ? "none" : "status_other";
 }
-function logSessionCheck(deployment: string, entry: { op: "check" | "signin" | "signout"; kind: string; reason: string; a: Conflicted | null; b: Conflicted | null; ms: number }): void {
+function logSessionCheck(deployment: string, entry: { op: "check" | "signin" | "signout"; kind: string; reason: string; a: Conflicted | null; b: Conflicted | null; ms: number; round?: number }): void {
   if (deployment !== "test") return;
   try {
     const reason = LOG_REASONS.has(entry.reason) ? entry.reason : "status_other";
@@ -406,6 +406,8 @@ function logSessionCheck(deployment: string, entry: { op: "check" | "signin" | "
       attempts: [clampInt(entry.a?.attempts, 0, CONFLICT_MAX_ATTEMPTS), clampInt(entry.b?.attempts, 0, CONFLICT_MAX_ATTEMPTS)],
       conflicts: [clampInt(entry.a?.conflicts, 0, CONFLICT_MAX_ATTEMPTS), clampInt(entry.b?.conflicts, 0, CONFLICT_MAX_ATTEMPTS)],
       ms: clampInt(entry.ms, 0, 10_000),
+      // Sign-out only, and only when a fresh round was needed (round 1 lines are byte-identical to before).
+      ...(entry.round && entry.round > 1 ? { round: clampInt(entry.round, 2, SIGNOUT_ROUNDS) } : {}),
     };
     console.warn("[iaos-session-check]", JSON.stringify(line));
   } catch { /* a logging failure never alters authorization */ }
@@ -525,8 +527,20 @@ export type RevokeResult = { kind: "verified" } | { kind: "unconfirmed"; reason:
 
 /**
  * Sign out: the revoked bytes unconditionally, then the same bytes onlyIfMatch the first answer's ETag (a
- * write-based readback). Verified ONLY if both answered 200. Bounded by SIGNOUT_BUDGET_MS. Idempotent.
+ * write-based readback). Verified ONLY if both answered 200 in the same round. Bounded by SIGNOUT_BUDGET_MS.
+ * Idempotent.
+ *
+ * B15-29 item 29 (EXPIRED triage, 2026-11-17): under a queued burst, the tab's concurrent session checks rewrite the
+ * SAME session key (identical bytes, onlyIfMatch their own read), and the provider answers same-key race losers 409.
+ * Observed: stage 1 landed, then stage 2 exhausted its 409 re-attempts (`conflict_exhausted`) -> unconfirmed, while
+ * an idempotent retry verified ~1.5 s later. A stage that ends ONLY because its 409 re-attempts were EXHAUSTED
+ * therefore starts a fresh ROUND (stage 1 again, then stage 2 against that round's new ETag), at most SIGNOUT_ROUNDS
+ * rounds, inside the SAME absolute deadline (never extended). Every other outcome is unchanged and final: a 412,
+ * 5xx, lost acknowledgement, missing ETag, transport failure or deadline -> unconfirmed. "verified" still requires
+ * BOTH stages of ONE round to answer 200. Safe to repeat: stage 1 can only move the record toward revoked, and a
+ * concurrent check can only rewrite the bytes it read with that read's ETag (a stale pre-revoke read gets 412).
  */
+export const SIGNOUT_ROUNDS = 3;
 export async function revokeSession(sid: string, epoch: string, deployment: string, opts: OpOpts = {}): Promise<RevokeResult> {
   if (!isCanonicalSid(sid) || !isCanonicalEpoch(epoch) || (deployment !== "test" && deployment !== "production")) return { kind: "unconfirmed", reason: "refused_input" };
   const ctx = context(opts.env ?? process.env, deployment, opts.budgetMs ?? SIGNOUT_BUDGET_MS, opts);
@@ -534,18 +548,24 @@ export async function revokeSession(sid: string, epoch: string, deployment: stri
   const key = sessionKey(deployment, sid);
   const text = sessionRecordText(deployment, epoch, sid, "revoked");
   const t0 = ctx.now();
-  const log = (kind: string, a: Conflicted | null, b: Conflicted | null, reason?: string) =>
-    logSessionCheck(deployment, { op: "signout", kind, reason: reason ?? reasonOf(b && b.status !== 200 ? b : a), a, b, ms: ctx.now() - t0 });
-  // Stage 1: the revoked bytes, unconditionally (idempotent: the same bytes; it can only move the record toward revoked).
-  const written = await conflictBounded(ctx, () => once(ctx, (s) => s.set(key, text)));
-  if (written.why || written.status !== 200 || !isCanonicalEtag(written.etag)) { log("unconfirmed", written, null); return { kind: "unconfirmed", reason: written.why ?? "revoke_not_written" }; }
-  // Stage 2: the same bytes onlyIfMatch stage 1's ETag (frozen), a write-based readback.
-  const wTag = written.etag as string;
-  const back = await conflictBounded(ctx, () => once(ctx, (s) => s.set(key, text, { onlyIfMatch: wTag })));
-  if (back.why || back.status !== 200) { log("unconfirmed", written, back); return { kind: "unconfirmed", reason: back.why ?? "revoke_not_current" }; }
-  if (ctx.now() > ctx.deadline) { log("unconfirmed", written, back, "deadline"); return { kind: "unconfirmed", reason: "deadline" }; }
-  if (written.conflicts > 0 || back.conflicts > 0) log("verified", written, back, "none");
-  return { kind: "verified" };
+  const log = (kind: string, a: Conflicted | null, b: Conflicted | null, reason?: string, round?: number) =>
+    logSessionCheck(deployment, { op: "signout", kind, reason: reason ?? reasonOf(b && b.status !== 200 ? b : a), a, b, ms: ctx.now() - t0, ...(round && round > 1 ? { round } : {}) });
+  const exhausted = (r: Conflicted) => r.stopped === "exhausted" && r.status === 409 && r.why === null;
+  for (let round = 1; ; round += 1) {
+    const more = round < SIGNOUT_ROUNDS && ctx.deadline - ctx.now() >= MIN_START_MS;
+    // Stage 1: the revoked bytes, unconditionally (idempotent: the same bytes; it can only move the record toward revoked).
+    const written = await conflictBounded(ctx, () => once(ctx, (s) => s.set(key, text)));
+    if (exhausted(written) && more) continue;
+    if (written.why || written.status !== 200 || !isCanonicalEtag(written.etag)) { log("unconfirmed", written, null, undefined, round); return { kind: "unconfirmed", reason: written.why ?? "revoke_not_written" }; }
+    // Stage 2: the same bytes onlyIfMatch THIS round's stage-1 ETag (frozen), a write-based readback.
+    const wTag = written.etag as string;
+    const back = await conflictBounded(ctx, () => once(ctx, (s) => s.set(key, text, { onlyIfMatch: wTag })));
+    if (exhausted(back) && round < SIGNOUT_ROUNDS && ctx.deadline - ctx.now() >= MIN_START_MS) continue;
+    if (back.why || back.status !== 200) { log("unconfirmed", written, back, undefined, round); return { kind: "unconfirmed", reason: back.why ?? "revoke_not_current" }; }
+    if (ctx.now() > ctx.deadline) { log("unconfirmed", written, back, "deadline", round); return { kind: "unconfirmed", reason: "deadline" }; }
+    if (written.conflicts > 0 || back.conflicts > 0 || round > 1) log("verified", written, back, "none", round);
+    return { kind: "verified" };
+  }
 }
 
 // ------------------------------------------------------------------ handle ---
