@@ -19,11 +19,14 @@ import { setAppWriteSession } from "../../../src/lib/app-write-session";
 /* B15-03 slice C: a test may ask (via an init script, before this module runs) for the Save-enabled projection --
    computed by the REAL projectRuntimeConfig from the Test config with only the sentinel switched -- and for a
    placeholder write session (the test answers ghl-write itself). Without it, nothing here changes. */
-declare global { interface Window { __iaosHarnessOverride?: { sellerConversationSave?: boolean; writeSession?: boolean } } }
+/* B15-29 (INV-137): `oneLogin: true` adds `oneLogin: { active: true }`, as the server's runtime config does only while
+   ONE_LOGIN_ENABLED (the same addition the one-login-dashboard harness makes). Absent, nothing here changes. */
+declare global { interface Window { __iaosHarnessOverride?: { sellerConversationSave?: boolean; writeSession?: boolean; oneLogin?: boolean } } }
 const override = window.__iaosHarnessOverride ?? {};
-setRuntimeConfig(override.sellerConversationSave
+const projected = override.sellerConversationSave
   ? projectRuntimeConfig({ ...getConfig("test"), sellerConversationSave: SELLER_CONVERSATION_SAVE_ENABLED }, "test")
-  : projectRuntimeConfig(getConfig("test")));
+  : projectRuntimeConfig(getConfig("test"));
+setRuntimeConfig(override.oneLogin ? { ...projected, oneLogin: { active: true } } : projected);
 if (override.writeSession) setAppWriteSession({ token: "offline-harness", expiresAt: "2099-01-01T00:00:00.000Z" });
 
 const before = import.meta.glob("./AppBefore.tsx");

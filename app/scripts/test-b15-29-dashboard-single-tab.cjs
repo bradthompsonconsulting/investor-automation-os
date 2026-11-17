@@ -54,6 +54,15 @@ const WRITE_HOLD_MS = Number(arg('write-hold-ms', '25000'));
    every write) -> a later write is rejected at once with LaneNotSent("uncertain_pending") and NOTHING is sent; reads
    still proceed; no automatic release or retry. Without --contract the client outcome is recorded only. */
 const CONTRACT = arg('contract', null);
+/* --contract=r6: assert the D2 lane contract (Scotty r4 + r5 + r6, design ACCEPTED by Bones 2026-11-17) against a
+   client that implements it. r4 is accepted as an alias for the r4-era rows. Without it, lane checks are NOT-RUN. */
+const LANE = CONTRACT === 'r6' || CONTRACT === 'r4';
+/* --only=J1,J4,D,SC,...  run only the named lane / rendered scenarios (and skip the healthy-load and earlier browser rows). */
+const ONLY = arg('only', null);
+const want = (id) => !ONLY || ONLY.split(',').includes(id);
+/* --mutation=skip-logout | bypass-stall  NEGATIVE CONTROLS: the named precondition must then FAIL (J1/D4/D5 sign-out; J4 stall). */
+const MUTATION = arg('mutation', null);
+const fx = require('./harness/seller-call-offer-ready-fixture.cjs');
 const WRITE_DEADLINE_MS = arg('write-deadline-ms', null) !== null ? Number(arg('write-deadline-ms')) : (CONTRACT === 'r3' || CONTRACT === 'r4') ? 20000 : null;
 const LATENCIES = arg('latencies', '10,40,100').split(',').map(Number);
 const ORIGIN = 'https://proof.example.invalid';
@@ -69,7 +78,10 @@ let ghlCalls = 0;
 /* GHL upstream fixture. Lists answer empty; for the r4 J-rows it is STATEFUL for the single-record reads and writes the
    REAL ghl-write uses: GET/PUT /contacts/:id (customFields {id,value}), GET/POST /contacts/:id/notes, GET/PUT
    /opportunities/:id (customFields {id,fieldValue}), each bound to the committed Test locationId (the boundary checks it). */
-const GHL = { contacts: new Map(), opps: new Map(), notes: [] , resetAll() { this.contacts.clear(); this.opps.clear(); this.notes.length = 0; } };
+const GHL = { contacts: new Map(), opps: new Map(), notes: [], list: [], failNote: null, fx: false,
+  resetAll() { this.contacts.clear(); this.opps.clear(); this.notes.length = 0; this.list = []; this.failNote = null; this.fx = false; },
+  /** Lead Queue rows for the rendered Dashboard: contacts WITH a phone (the Lead Queue filter). */
+  seedList(ids) { this.list = ids.map((id, i) => ({ id, firstName: 'Fixture', lastName: 'Lead' + (i + 1), phone: '+1555555011' + i, tags: [], customFields: [], dateAdded: '2026-11-01T00:00:00.000Z' })); } };
 let ghlWritesToGhl = 0;
 global.fetch = async (url, init = {}) => {
   const u = String(url);
@@ -77,7 +89,11 @@ global.fetch = async (url, init = {}) => {
   ghlCalls += 1;
   const m = String(init.method || 'GET').toUpperCase(); const U = new URL(u); const LOC = cfgLoc(); let mm;
   const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s, headers: { 'Content-Type': 'application/json' } });
+  if (GHL.fx) { const r = fxUpstream(m, U, init, LOC, J); if (r) return r; }
+  if (U.pathname === '/contacts' || U.pathname === '/contacts/') return J({ contacts: GHL.list, meta: {} });
   if ((mm = U.pathname.match(/^\/contacts\/([A-Za-z0-9_-]+)\/notes$/))) {
+    if (m === 'POST' && GHL.failNote === 'post500') return J({ message: 'fixture fault' }, 500);
+    if (m === 'POST' && GHL.failNote === 'noReadback') return J({ note: { id: 'fxn-ghost', body: JSON.parse(init.body || '{}').body, contactId: mm[1] } }, 201);
     if (m === 'POST') { ghlWritesToGhl += 1; const n = { id: 'fxn' + (GHL.notes.length + 1), body: JSON.parse(init.body || '{}').body, dateAdded: new Date().toISOString(), contactId: mm[1] }; GHL.notes.push(n); return J({ note: n }, 201); }
     return J({ notes: GHL.notes.filter((n) => n.contactId === mm[1]) });
   }
@@ -93,6 +109,23 @@ global.fetch = async (url, init = {}) => {
   }
   return J({ contacts: [], opportunities: [], conversations: [], pipelines: [{ id: 'fixture-pipeline', name: 'P', stages: [] }], events: [], meta: { total: 0 }, total: 0 });
 };
+/* SC: ghl-write's own GHL calls for the Seller Call fixture contact / deal go to the SAME state the page's readers are
+   answered from (seller-call-offer-ready-fixture.cjs), so the page's readback sees exactly what the real handler wrote. */
+function fxUpstream(m, U, init, LOC, J) {
+  let mm;
+  if ((mm = U.pathname.match(/^\/contacts\/([A-Za-z0-9_-]+)\/notes$/)) && mm[1] === fx.CONTACT) {
+    if (m === 'POST') { ghlWritesToGhl += 1; const n = { id: 'rh-' + (fx.state.notes.length + 1), body: JSON.parse(init.body || '{}').body, dateAdded: new Date().toISOString() }; fx.state.notes.push(n); return J({ note: { ...n, contactId: fx.CONTACT } }, 201); }
+    return J({ notes: fx.state.notes.map((x) => ({ ...x })) });
+  }
+  if ((mm = U.pathname.match(/^\/contacts\/([A-Za-z0-9_-]+)$/)) && mm[1] === fx.CONTACT) {
+    if (m === 'PUT') { ghlWritesToGhl += 1; for (const f of JSON.parse(init.body).customFields || []) { fx.state.contactFields = fx.state.contactFields.filter((x) => x.id !== f.id); if (f.field_value !== '' && f.field_value !== null) fx.state.contactFields.push({ id: f.id, value: f.field_value }); } }
+    return J({ contact: { id: fx.CONTACT, locationId: LOC, firstName: fx.FIRST, lastName: 'Fixture', customFields: fx.state.contactFields.map((f) => ({ ...f })) } });
+  }
+  if ((mm = U.pathname.match(/^\/opportunities\/([A-Za-z0-9_-]+)$/)) && mm[1] === fx.OPP) {
+    const o = fx.answer({ kind: 'opp-read', target: fx.OPP }).body.opportunity; return J({ opportunity: { ...o, locationId: LOC } });
+  }
+  return null;
+}
 const cfgLoc = () => require(path.join(APP, 'shared/ghl-config.ts')).getConfig('test').locationId;
 const cfg = require(path.join(APP, 'shared/ghl-config.ts'));
 const readAuth = require(path.join(FUNCTIONS, 'lib/app-read-auth.ts'));
@@ -111,6 +144,7 @@ const PROTECTED_READERS = ['ghl-contacts', 'ghl-mailers', 'ghl-opportunities', '
 const anchorText = (epoch = 'fixture-epoch-0001') => JSON.stringify({ env: 'test', epoch, kind: 'iaos-session-revocation-authority', siteID: SITE, state: 'open', v: 1 });
 const sid = (n) => Buffer.alloc(16, n).toString('base64url');
 const NF = { headers: { 'x-nf-site-id': SITE }, blobs: blobs.lambdaBlobs };
+async function revokeSession(S) { return rev.revokeSession(S.sid, S.epoch, 'test', { event: NF }); }
 async function bindSession(n) {
   const g = await rev.beginSession(sid(n), 'test', { event: NF });
   if (g.kind !== 'issued') throw new Error('fixture bind: ' + JSON.stringify(g));
@@ -120,6 +154,9 @@ const ev = ({ method = 'GET', cookie = null, headers = {}, body = '' } = {}) => 
 const fresh = (latencyMs) => { blobs.reset(); blobs.put('iaos-session-authority', 'authority', anchorText()); blobs.setConflictMode(latencyMs ? { latencyMs } : null); ghlCalls = 0; };
 
 let checks = 0, failures = 0; const RESULTS = [];
+let notRun = 0;
+/** A check of the D2 LANE CONTRACT itself: NOT-RUN (never PASS) unless --contract=r6 is given. */
+async function laneCheck(name, fn) { if (!LANE) { notRun += 1; console.log('NOT-RUN (requires the unimplemented D2 client lane; --contract=r6)  ' + name); return; } return check(name, fn); }
 async function check(name, fn) { checks += 1; try { await fn(); console.log('PASS  ' + name); } catch (e) { failures += 1; console.log('FAIL  ' + name + ' -- ' + (e && e.message)); } }
 
 async function main() {
@@ -130,7 +167,7 @@ async function main() {
   const HARNESS = '/scripts/harness/one-login-dashboard/index.html';
   const server = await createServer({ root: APP, configFile: false, plugins: [react(), tailwindcss()], logLevel: 'error', clearScreen: false,
     server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false },
-    optimizeDeps: { entries: [HARNESS.slice(1)], include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-router-dom', 'lucide-react'] } });
+    optimizeDeps: { entries: [HARNESS.slice(1), 'scripts/harness/app-routes/index.html'], include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react-router-dom', 'lucide-react'] } });
   await server.listen();
   const base = server.resolvedUrls.local[0].replace(/\/$/, '');
   const browser = await chromium.launch();
@@ -141,9 +178,10 @@ async function main() {
      number of SESSION-CHECKED handler executions from this tab in flight at once (inflight / maxInflight: the D2 lane
      bound); handlers that are still running after the browser gave up (aborted / closed page) keep running here, as
      a Lambda would, and are counted in the global PENDING until they settle. */
-  async function openTab(cookie) {
-    const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
-    const tab = { log: [], foreign: [], errs: [], inflight: 0, maxInflight: 0, fulfillFailed: 0 };
+  async function openTab(cookie, opts = {}) {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 }, timezoneId: 'America/Chicago', locale: 'en-US' });
+    const tab = { log: [], foreign: [], errs: [], inflight: 0, maxInflight: 0, fulfillFailed: 0, fxReaders: !!opts.fxReaders };
+    if (opts.initOverride) await ctx.addInitScript((o) => { window.__iaosHarnessOverride = o; }, opts.initOverride);
     await ctx.route('**/*', async (route) => {
       const req = route.request(); const url = req.url();
       if (url.endsWith('/app-read-login.html')) return route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>login</title>' });
@@ -151,6 +189,12 @@ async function main() {
       if (!url.includes('/.netlify/functions/')) { tab.foreign.push(url); return route.abort(); }
       const U = new URL(url); const fn = U.pathname.replace(/^.*\/\.netlify\/functions\//, '');
       const entry = { fn, method: req.method(), t0: Date.now() }; tab.log.push(entry);
+      if (fn === 'ghl-write') { try { entry.op = JSON.parse(req.postData() || '{}').operation; } catch { /* unparseable: recorded without op */ } }
+      // SC: content readers answered at function level from the Seller Call fixture (session/token/sign-out/write stay REAL).
+      if (tab.fxReaders && req.method() === 'GET' && !['app-read-session', 'iaos-runtime-config'].includes(fn)) {
+        const a = fx.answer(fx.classify(url, 'GET', null)); entry.status = a.status; entry.t1 = Date.now(); entry.fx = true;
+        return route.fulfill({ status: a.status, contentType: 'application/json', body: JSON.stringify(a.body) }).catch(() => { tab.fulfillFailed += 1; });
+      }
       const h = handlerFor(fn);
       if (!h) { entry.status = 404; entry.t1 = Date.now(); return route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"no handler"}' }).catch(() => { tab.fulfillFailed += 1; }); }
       const headers = { origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'x-nf-site-id': SITE };
@@ -169,6 +213,8 @@ async function main() {
       entry.status = res.statusCode; entry.t1 = Date.now(); entry.ms = entry.t1 - entry.t0;
       const hdrs = {}; for (const [k, v] of Object.entries(res.headers || {})) if (k.toLowerCase() !== 'set-cookie') hdrs[k] = String(v);
       if (tab.holdDelivery && tab.holdDelivery.fn === fn && !(tab.holdDelivery.count !== undefined && tab.holdDelivery.count-- <= 0)) { entry.heldMs = tab.holdDelivery.ms; await sleep(tab.holdDelivery.ms); }   // origin already processed; only DELIVERY waits
+      // J6′: a malformed reply for one function (the server processed the request; only the delivered body differs).
+      if (tab.rewrite && tab.rewrite.fn === fn && tab.rewrite.count-- > 0) { entry.rewritten = true; res = { ...res, body: tab.rewrite.body }; }
       entry.deliveredAt = Date.now();
       return route.fulfill({ status: res.statusCode, headers: hdrs, body: res.body || '' }).catch(() => { tab.fulfillFailed += 1; entry.undelivered = true; });
     });
@@ -201,6 +247,10 @@ async function main() {
     try { return { out: await fn(), lines }; } finally { console.warn = w0; } };
   const classes = (lines) => lines.reduce((a, l) => { const k = `${l.op}:${l.kind}:${l.reason}`; a[k] = (a[k] || 0) + 1; return a; }, {});
 
+  // WARM-UP (not counted): one load of each harness page so Vite's first-request dependency optimisation (and its
+  // page reload) happens before any measured run.
+  { fresh(0); const S = await bindSession(99); const W = await openTab(S.cookie); await W.page.goto(`${base}${HARNESS}`); await rendered(W, 90000); await W.page.goto(`${base}/scripts/harness/app-routes/index.html`).catch(() => {}); await W.page.waitForFunction(() => typeof window.__iaosAppSource === 'string', null, { timeout: 90000 }).catch(() => {}); await settleServer(); await W.ctx.close(); }
+  if (!ONLY) {
   // ── T-L: single-tab Dashboard loads at each latency ──
   for (const L of LATENCIES) {
     const runs = [];
@@ -423,11 +473,16 @@ async function main() {
     });
     await T.ctx.close();
   }
-  // ── r4 J-rows (Scotty's D2 r4 amendment §6, PROVISIONAL; 04_SCOTTY_D2_r4_AMENDMENT.md sha256 2a235ef6…312b): end-to-end
-  //    through the REAL ghl-write + CC r3 session check + the stateful GHL fixture + the browser. Asserted only with
-  //    --contract=r4 (every outcome is RECORDED regardless). Scotty owns the lane-unit rows P1–P9 (not duplicated). ──
+  }
+  // ── D2 lane rows (Scotty's D2 r4 §6 + r5/r6, design ACCEPTED by Bones 2026-11-17: 07_SCOTTY_D2_r6_DELTA.md sha256
+  //    1e524f3c…49b5). End-to-end through the REAL ghl-write + CC r3 session check + the stateful GHL fixture + the
+  //    browser. Two kinds of check:
+  //      check(...)      PRECONDITIONS and behaviour that hold with or without the lane (asserted on every run);
+  //      laneCheck(...)  the lane contract itself -- reported NOT-RUN unless --contract=r6 is given against a client that
+  //                      implements the lane. Nothing lane-only is ever printed as PASS on the current client.
+  //    Scotty owns the lane-unit / classifier / exact fake-clock rows (P1–P10, P6a–P7′); none are duplicated here. ──
   const C = 'ZyXwVuTsRqPoNmLkJiHg', D = 'DdDdDdDdDdDdDdDdDdDd', O = 'AbCdEfGhIjKlMnOpQrSt';
-  const R4 = CONTRACT === 'r4';
+  const R4 = LANE;
   const LANE_KEY = 'iaosLane.unresolved.v1';
   /** One save through the app's REAL client (ghl.ts → write-command → appWriteFetch → lane), outcome only (never a token). */
   const save = (T, kind, a) => T.page.evaluate(async ({ kind, a }) => {
@@ -437,56 +492,82 @@ async function main() {
       else if (kind === 'field') await g.contacts.setLastCallAttempt(a.c, new Date().toISOString());
       else if (kind === 'opp') await g.opportunities.setAskingPrice(a.o, 150000);
       return { kind: 'ok', ms: Math.round(performance.now() - t) };
-    } catch (e) { return { kind: 'error', name: String(e && e.name), reason: e && e.reason ? String(e.reason) : null, ms: Math.round(performance.now() - t) }; }
+    } catch (e) { return { kind: 'error', name: String(e && e.name), reason: e && e.reason ? String(e.reason) : null, msg: String(e && e.message).slice(0, 120), ms: Math.round(performance.now() - t) }; }
   }, { kind, a }).catch((e) => ({ kind: 'evaluate_failed', msg: String(e).slice(0, 80) }));
   const laneStore = (T) => T.page.evaluate((k) => { try { return JSON.parse(sessionStorage.getItem(k) || 'null'); } catch { return 'unparseable'; } }, LANE_KEY).catch(() => 'page_gone');
   const writesTo = (T, from = 0) => T.log.slice(from).filter((e) => e.fn === 'ghl-write').length;
   const recs = (st) => (st && Array.isArray(st.records) ? st.records : []);
+  const held = (st, key) => recs(st).filter((r) => r.key === key).length;
   const pending = (x) => x && x.name === 'LaneNotSent' && x.reason === 'uncertain_pending';
   const uncertainOutcome = (x) => x && x.name === 'LaneUncertain';
-  /** A tab whose ghl-write response DELIVERY is held past the 20 s write deadline (origin processes it). */
-  const uncertainTab = async (n, firstKind, firstArg) => {
-    fresh(10); GHL.resetAll(); const S = await bindSession(n);
+  const directReader = async (cookie) => { const r = await handlerFor('ghl-contacts')(ev({ cookie })); let reason = null; try { reason = JSON.parse(r.body).reason || null; } catch { /* none */ } return { status: r.statusCode, reason }; };
+  /** Sign out through the real UI; a failed click is a FAILED PRECONDITION, never swallowed. --mutation=skip-logout skips it (negative control). */
+  const signOutUi = async (T) => {
+    if (MUTATION === 'skip-logout') return { clicked: false, mutation: true };
+    const n0 = T.log.filter((e) => e.fn === 'app-signout').length;
+    try { await T.page.getByRole('button', { name: 'Sign out' }).click({ timeout: 6000 }); } catch (e) { return { clicked: false, error: String(e).slice(0, 100) }; }
+    for (let i = 0; i < 200 && !T.log.slice(0).filter((e) => e.fn === 'app-signout').slice(n0).some((e) => e.status !== undefined); i++) await sleep(25);
+    const so = T.log.filter((e) => e.fn === 'app-signout').slice(n0);
+    return { clicked: true, signoutStatus: so.map((e) => e.status) };
+  };
+  /** Install the J4 stall. --mutation=bypass-stall leaves the stall OFF (negative control: the stall precondition must then fail). */
+  const installStall = (T, s) => (MUTATION === 'bypass-stall' ? Promise.resolve() : T.page.evaluate((x) => { window.__iaosStall = x; }, s));
+  const openDash = async (n, { list = true } = {}) => {
+    fresh(10); GHL.resetAll(); if (list) GHL.seedList([C, D]); const S = await bindSession(n);
     const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+    return { S, T };
+  };
+  /** A tab whose first ghl-write response DELIVERY is held past the 20 s write deadline (the origin processes it). */
+  const uncertainTab = async (n, firstKind, firstArg) => {
+    const { S, T } = await openDash(n);
     T.holdDelivery = { fn: 'ghl-write', ms: WRITE_HOLD_MS, count: 1 };
     const first = await save(T, firstKind, firstArg);
     return { S, T, first };
   };
 
-  // J1 reload before timeout, server still pending
-  {
-    fresh(10); GHL.resetAll(); const S = await bindSession(20);
-    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+  // ── J1 reload before timeout, server still pending; decisive sign-out / revocation / replacement-readiness ──
+  if (want('J1')) {
+    const { S, T } = await openDash(20);
     T.holdServer = { fn: 'ghl-write', ms: WRITE_HOLD_MS, count: 1 };
     const b0 = T.log.length;
     void save(T, 'note', { c: C, t: 'J1 note' });
     for (let i = 0; i < 400 && !T.log.slice(b0).some((e) => e.fn === 'ghl-write'); i++) await sleep(10);
-    const serverGot = T.log.slice(b0).some((e) => e.fn === 'ghl-write');
-    await T.page.reload(); await rendered(T);
+    const firstWrite = T.log.slice(b0).find((e) => e.fn === 'ghl-write');
+    const pendingAtReload = !!firstWrite && firstWrite.status === undefined;
+    await T.page.reload(); const reRendered = await rendered(T);
     const afterReload = await laneStore(T);
     const w0 = writesTo(T);
     const second = await save(T, 'note', { c: C, t: 'J1 second' });
     const secondWrites = writesTo(T) - w0;
     await sleep(WRITE_HOLD_MS + 2000); await settleServer(10000);
+    const firstSettled = !!firstWrite && firstWrite.status !== undefined;
     const afterServer = await laneStore(T);
-    await T.page.getByRole('button', { name: 'Sign out' }).click().catch(() => {}); await sleep(1500); await settleServer();
-    const S2 = await bindSession(21); T.cookie = S2.cookie; await T.page.reload(); await sleep(2500); await settleServer();
+    const so = await signOutUi(T); await settleServer();
+    const oldCookieAfter = await directReader(S.cookie);
+    const S2 = await bindSession(21); T.cookie = S2.cookie; await T.page.reload(); const replacementReady = await rendered(T); await settleServer();
     const afterSignInOut = await laneStore(T);
-    const row = { scenario: 'J1', contract: CONTRACT, serverGot, afterReload, second, secondWrites, afterServer, afterSignInOut, ghlNotes: GHL.notes.length };
+    const w1 = writesTo(T); const third = await save(T, 'note', { c: C, t: 'J1 third' }); const thirdWrites = writesTo(T) - w1;
+    await settleServer(30000);
+    const row = { scenario: 'J1', contract: CONTRACT, mutation: MUTATION, pendingAtReload, reRendered, firstSettled, afterReload, second, secondWrites, afterServer, signOut: so, oldCookieAfter, replacementReady, afterSignInOut, third, thirdWrites };
     RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-    await check(`J1 reload before timeout while the server write is still pending: the record is in ${LANE_KEY} after the reload (dispatching, key contact:C); a save on the same contact -> LaneNotSent(uncertain_pending) with 0 ghl-write; the record survives the server completing and a sign-out + sign-in${R4 ? '' : ' [recorded only: pass --contract=r4]'}`, async () => {
-      assert.ok(serverGot, 'the write reached the server before the reload');
-      if (!R4) return;
+    await check('J1 preconditions (decisive): the first write was STILL PENDING on the server at the reload; the page re-rendered; the server write later completed; Sign out was actually clicked and app-signout answered 200; the OLD session is then refused 401 "revoked" at a real reader; the replacement session renders the Dashboard', async () => {
+      assert.ok(row.pendingAtReload, 'pending at reload'); assert.ok(row.reRendered, 're-rendered'); assert.ok(row.firstSettled, 'server write settled');
+      assert.ok(row.signOut.clicked, 'Sign out clicked ' + JSON.stringify(row.signOut)); assert.deepEqual(row.signOut.signoutStatus, [200], JSON.stringify(row.signOut));
+      assert.deepEqual([row.oldCookieAfter.status, row.oldCookieAfter.reason], [401, 'revoked'], JSON.stringify(row.oldCookieAfter));
+      assert.ok(row.replacementReady, 'replacement session rendered');
+    });
+    await laneCheck(`J1 lane: the record is in ${LANE_KEY} after the reload (dispatching|uncertain, contact:C); a same-contact save -> LaneNotSent(uncertain_pending), 0 ghl-write; the record survives the server completing AND the verified sign-out + replacement sign-in, where a same-contact save is still refused with 0 ghl-write`, async () => {
       const r1 = recs(row.afterReload).filter((r) => r.key === `contact:${C}`);
       assert.ok(r1.length === 1 && ['dispatching', 'uncertain'].includes(r1[0].state), JSON.stringify(row.afterReload));
       assert.ok(pending(row.second), JSON.stringify(row.second)); assert.equal(row.secondWrites, 0);
-      assert.equal(recs(row.afterServer).filter((r) => r.key === `contact:${C}`).length, 1, 'kept after the server completed');
-      assert.equal(recs(row.afterSignInOut).filter((r) => r.key === `contact:${C}`).length, 1, 'kept across sign-out + sign-in');
+      assert.equal(held(row.afterServer, `contact:${C}`), 1, 'kept after the server completed');
+      assert.equal(held(row.afterSignInOut, `contact:${C}`), 1, 'kept across sign-out + sign-in');
+      assert.ok(pending(row.third), JSON.stringify(row.third)); assert.equal(row.thirdWrites, 0);
     });
     await T.ctx.close();
   }
-  // J2 identical pre-existing note does not clear the hold
-  {
+  // ── J2 identical pre-existing note does not clear the hold ──
+  if (want('J2')) {
     fresh(10); GHL.resetAll(); GHL.notes.push({ id: 'fxn-pre', body: 'J2 identical text', dateAdded: '2026-01-01T00:00:00.000Z', contactId: C });
     const S = await bindSession(22);
     const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
@@ -498,17 +579,18 @@ async function main() {
     await sleep(3000); await settleServer(30000);
     const row = { scenario: 'J2', contract: CONTRACT, first, readback, store: st, second, secondWrites };
     RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-    await check(`J2 identical pre-existing note: a save of text T on C times out (LaneUncertain); the readback lists T; the record is NOT removed; a save on C -> LaneNotSent(uncertain_pending), 0 ghl-write${R4 ? '' : ' [recorded only]'}`, async () => {
-      assert.ok(Array.isArray(row.readback) && row.readback.includes('J2 identical text'), 'the readback shows T ' + JSON.stringify(row.readback));
-      if (!R4) return;
+    await check('J2 precondition: the readback lists the pre-existing identical text T', async () => {
+      assert.ok(Array.isArray(row.readback) && row.readback.includes('J2 identical text'), JSON.stringify(row.readback));
+    });
+    await laneCheck('J2 lane: a save of T on C times out (LaneUncertain); the record is NOT removed by the identical readback; a save on C -> LaneNotSent(uncertain_pending), 0 ghl-write', async () => {
       assert.ok(uncertainOutcome(row.first), JSON.stringify(row.first));
-      assert.equal(recs(row.store).filter((r) => r.key === `contact:${C}`).length, 1, JSON.stringify(row.store));
+      assert.equal(held(row.store, `contact:${C}`), 1, JSON.stringify(row.store));
       assert.ok(pending(row.second), JSON.stringify(row.second)); assert.equal(row.secondWrites, 0);
     });
     await T.ctx.close();
   }
-  // J3 symmetric contact-wide conflict prevention
-  {
+  // ── J3 symmetric contact-wide conflict prevention ──
+  if (want('J3')) {
     const a = await uncertainTab(23, 'note', { c: C, t: 'J3 note' });
     let w0 = writesTo(a.T); const field = await save(a.T, 'field', { c: C }); const fieldWrites = writesTo(a.T) - w0;
     w0 = writesTo(a.T); const opp = await save(a.T, 'opp', { o: O }); const oppWrites = writesTo(a.T) - w0;
@@ -519,50 +601,304 @@ async function main() {
     await sleep(3000); await settleServer(30000); await b.T.ctx.close();
     const row = { scenario: 'J3', contract: CONTRACT, firstContact: a.first, field, fieldWrites, opp, oppWrites, other, otherWrites, firstStar: b.first, noteAfterStar, noteAfterStarWrites };
     RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-    await check(`J3 symmetry: an uncertain contact:C blocks a contact-field save on C and an opportunity ("*") save (both uncertain_pending, 0 ghl-write); a save on contact D proceeds (1 ghl-write, success); an uncertain "*" (opportunity) blocks a note save on C${R4 ? '' : ' [recorded only]'}`, async () => {
-      if (!R4) return;
-      assert.ok(uncertainOutcome(row.firstContact) && uncertainOutcome(row.firstStar), 'both first saves uncertain ' + JSON.stringify([row.firstContact, row.firstStar]));
+    await laneCheck('J3 lane symmetry: an uncertain contact:C blocks a contact-field save on C and an opportunity ("*") save (uncertain_pending, 0 ghl-write); a save on contact D proceeds (1 ghl-write, ok); an uncertain "*" blocks a note save on C', async () => {
+      assert.ok(uncertainOutcome(row.firstContact) && uncertainOutcome(row.firstStar), JSON.stringify([row.firstContact, row.firstStar]));
       assert.ok(pending(row.field) && row.fieldWrites === 0, JSON.stringify(row.field));
       assert.ok(pending(row.opp) && row.oppWrites === 0, JSON.stringify(row.opp));
       assert.deepEqual([row.other.kind, row.otherWrites], ['ok', 1], JSON.stringify(row.other));
       assert.ok(pending(row.noteAfterStar) && row.noteAfterStarWrites === 0, JSON.stringify(row.noteAfterStar));
     });
   }
-  // J4 full-operation deadline with a never-ending body / an abort-ignoring fetch
-  {
+  // ── J4 deadline with a never-ending body / an abort-ignoring fetch; decisive stall precondition ──
+  if (want('J4')) {
     const out = {};
     for (const [fn, mode, label] of [['ghl-write', 'body', 'save, never-ending body'], ['ghl-write', 'abort', 'save, abort-ignoring fetch'], ['ghl-contacts', 'body', 'reader, never-ending body'], ['ghl-contacts', 'abort', 'reader, abort-ignoring fetch']]) {
-      fresh(10); GHL.resetAll(); const S = await bindSession(30);
-      const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
-      await T.page.evaluate((s) => { window.__iaosStall = s; }, { fn, mode });
-      const t0 = Date.now();
+      const { T } = await openDash(30);
+      await installStall(T, { fn, mode });
+      const t0 = Date.now(); const w0 = writesTo(T);
       const res = fn === 'ghl-write' ? await Promise.race([save(T, 'note', { c: C, t: 'J4' }), sleep(70000).then(() => ({ kind: 'not_settled_70s' }))])
         : await Promise.race([T.page.evaluate(async () => { const r = await import('/src/lib/read-session.ts'); const t = performance.now(); try { const x = await r.readFetch('/.netlify/functions/ghl-contacts'); await x.text(); return { kind: 'ok', status: x.status, ms: Math.round(performance.now() - t) }; } catch (e) { return { kind: 'error', name: String(e && e.name), ms: Math.round(performance.now() - t) }; } }).catch((e) => ({ kind: 'evaluate_failed', msg: String(e).slice(0, 80) })), sleep(40000).then(() => ({ kind: 'not_settled_40s' }))]);
-      out[label] = { ...res, wallMs: Date.now() - t0, stallHits: await T.page.evaluate(() => window.__iaosStallHits || 0).catch(() => null) };
+      const wallMs = Date.now() - t0;
+      const stallHits = await T.page.evaluate(() => window.__iaosStallHits || 0).catch(() => null);
+      const store = await laneStore(T);
+      let follow = null, followWrites = null;
+      if (fn === 'ghl-write' && res.kind === 'error') { await T.page.evaluate(() => { window.__iaosStall = null; }).catch(() => {}); const f0 = writesTo(T); follow = await save(T, 'note', { c: C, t: 'J4 follow' }); followWrites = writesTo(T) - f0; }
+      out[label] = { ...res, wallMs, stallHits, serverWritesDuringStall: writesTo(T) - w0 - (followWrites || 0), store, follow, followWrites };
       await T.ctx.close();
     }
-    const row = { scenario: 'J4', contract: CONTRACT, out }; RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-    await check(`J4 deadline: with a never-ending body and with an abort-ignoring fetch, a save settles (error) within 52 s (+2 s) and a reader within 22 s (+2 s)${R4 ? '' : ' [recorded only]'}`, async () => {
-      if (!R4) return;
+    const row = { scenario: 'J4', contract: CONTRACT, mutation: MUTATION, out }; RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check('J4 precondition (decisive): the injected stall was REACHED in every case (stallHits >= 1) and the stalled request never reached the server (0 ghl-write while stalled)', async () => {
+      for (const [label, r] of Object.entries(out)) { assert.ok(r.stallHits >= 1, `${label}: stall not reached ${JSON.stringify(r)}`); if (label.startsWith('save')) assert.equal(r.serverWritesDuringStall, 0, label); }
+    });
+    await laneCheck('J4 lane: each stalled SAVE settles as dispatched-uncertain (LaneUncertain) within 52 s (+2 s diagnostic tolerance) with its contact:C hold retained and a following same-contact save refused (uncertain_pending, 0 ghl-write); each stalled READ fails safely (error, no hold) within 22 s (+2 s). Exact 22/30/52 s arithmetic is Scotty\'s fake-clock P6a–P7′.', async () => {
       for (const [label, r] of Object.entries(out)) {
-        const limit = label.startsWith('save') ? 54000 : 24000;
-        assert.ok(r.kind === 'error' && r.wallMs <= limit, `${label}: ${JSON.stringify(r)}`);
+        if (label.startsWith('save')) {
+          assert.ok(r.kind === 'error' && r.name === 'LaneUncertain' && r.wallMs <= 54000, `${label}: ${JSON.stringify(r)}`);
+          assert.equal(held(r.store, `contact:${C}`), 1, `${label}: hold ${JSON.stringify(r.store)}`);
+          assert.ok(pending(r.follow) && r.followWrites === 0, `${label}: follow ${JSON.stringify(r.follow)}`);
+        } else {
+          assert.ok(r.kind === 'error' && r.wallMs <= 24000, `${label}: ${JSON.stringify(r)}`);
+          assert.equal(recs(r.store).length, 0, `${label}: a read creates no hold`);
+        }
       }
     });
   }
-  // J5 a save with an in-deadline response leaves no record (A1); healthy loads are the T-L rows above
-  {
-    fresh(10); GHL.resetAll(); const S = await bindSession(31);
-    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
-    const res = await save(T, 'note', { c: C, t: 'J5 healthy' }); await settleServer();
+  // ── J5 (corrected, R5-1) healthy note confirmed by the {note:{id}} envelope -> released -> the attempt marker follows ──
+  if (want('J5')) {
+    const { T } = await openDash(31);
+    const res = await save(T, 'note', { c: C, t: 'J5 healthy' });
+    const mid = await laneStore(T);
+    const res2 = await save(T, 'field', { c: C }); await settleServer();
     const st = await laneStore(T);
-    const row = { scenario: 'J5', contract: CONTRACT, res, store: st, ghlNotes: GHL.notes.map((n) => n.body) };
+    const noteResp = T.log.filter((e) => e.fn === 'ghl-write').map((e) => e.status);
+    const row = { scenario: 'J5', contract: CONTRACT, res, mid, res2, store: st, writeStatuses: noteResp, ghlNotes: GHL.notes.map((n) => n.body), cFields: (GHL.contacts.get(C) || {}).customFields || [] };
     RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-    await check(`J5 healthy save: an in-deadline complete response -> success, the note is stored (GHL fixture), and ${LANE_KEY} holds no record for it${R4 ? '' : ' [record check only with --contract=r4]'}`, async () => {
+    await check('J5 healthy: the real ghl-write answers the note with the {note:{id,...}} envelope (200), the note is stored in the fixture, and the following lastCallAttempt write succeeds and lands on contact C', async () => {
       assert.equal(row.res.kind, 'ok', JSON.stringify(row.res)); assert.ok(row.ghlNotes.includes('J5 healthy'));
-      if (R4) assert.equal(recs(row.store).length, 0, JSON.stringify(row.store));
+      assert.equal(row.res2.kind, 'ok', JSON.stringify(row.res2)); assert.deepEqual(row.writeStatuses, [200, 200]); assert.ok(row.cFields.length >= 1, 'attempt fields written');
+    });
+    await laneCheck(`J5 lane (R5-1): after the confirmed note, ${LANE_KEY} holds NO contact:C record (released on the nested note.id envelope), so the attempt marker was not blocked; no record remains at the end`, async () => {
+      assert.equal(held(row.mid, `contact:${C}`), 0, JSON.stringify(row.mid)); assert.equal(recs(row.store).length, 0, JSON.stringify(row.store));
     });
     await T.ctx.close();
+  }
+  // ── F1 regression: a COMPLETE in-deadline but UNCERTAIN/ambiguous ghl-write response must RETAIN the hold ──
+  if (want('F1')) {
+    const out = {};
+    for (const mode of ['post500', 'noReadback']) {
+      const { T } = await openDash(32);
+      GHL.failNote = mode;
+      const first = await save(T, 'note', { c: C, t: `F1 ${mode}` });
+      const firstStatus = (T.log.filter((e) => e.fn === 'ghl-write').slice(-1)[0] || {}).status;
+      const st0 = await laneStore(T);
+      GHL.failNote = null;
+      let w0 = writesTo(T); const sameField = await save(T, 'field', { c: C }); const sameFieldWrites = writesTo(T) - w0;
+      w0 = writesTo(T); const star = await save(T, 'opp', { o: O }); const starWrites = writesTo(T) - w0;
+      w0 = writesTo(T); const otherC = await save(T, 'note', { c: D, t: 'F1 on D' }); const otherWrites = writesTo(T) - w0;
+      await T.page.reload(); await rendered(T); await settleServer();
+      const st1 = await laneStore(T);
+      w0 = writesTo(T); const afterReload = await save(T, 'note', { c: C, t: 'F1 after reload' }); const afterReloadWrites = writesTo(T) - w0;
+      await settleServer(10000);
+      out[mode] = { first, firstStatus, st0, sameField, sameFieldWrites, star, starWrites, otherC, otherWrites, st1, afterReload, afterReloadWrites };
+      await T.ctx.close();
+    }
+    const row = { scenario: 'F1', contract: CONTRACT, out }; RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check('F1 precondition: the REAL ghl-write answers each fixture fault IN DEADLINE with an uncertain/ambiguous 409 (never 200), and the caller gets an error (not a success)', async () => {
+      for (const [mode, r] of Object.entries(out)) { assert.equal(r.firstStatus, 409, `${mode}: ${JSON.stringify(r.first)}`); assert.equal(r.first.kind, 'error', mode); }
+    });
+    await laneCheck('F1 lane (r5/r6 release rule): the uncertain 409 RETAINS contact:C; same-contact and "*" saves send 0 requests (uncertain_pending) before AND after a reload; contact D proceeds', async () => {
+      for (const [mode, r] of Object.entries(out)) {
+        assert.equal(held(r.st0, `contact:${C}`), 1, `${mode} st0`); assert.equal(held(r.st1, `contact:${C}`), 1, `${mode} st1`);
+        assert.ok(pending(r.sameField) && r.sameFieldWrites === 0, `${mode} same`); assert.ok(pending(r.star) && r.starWrites === 0, `${mode} star`);
+        assert.ok(pending(r.afterReload) && r.afterReloadWrites === 0, `${mode} reload`);
+        assert.deepEqual([r.otherC.kind, r.otherWrites], ['ok', 1], `${mode} D`);
+      }
+    });
+  }
+  // ── J6 / J6′ (R5-2): call-log reservation -> ordinary save -> readback; malformed reservation reply -> "*" retained ──
+  if (want('J6')) {
+    const out = {};
+    for (const variant of ['J6', 'J6prime']) {
+      const { T } = await openDash(33);
+      if (variant === 'J6prime') T.rewrite = { fn: 'call-log-barrier', count: 1, body: '{"state":"reserved-ish"}' };
+      const op = 'j6op' + Math.random().toString(36).slice(2, 14);
+      const begin = await T.page.evaluate(async ({ c, op }) => {
+        const m = await import('/src/lib/call-log-barrier-client.ts');
+        try { const r = await m.beginOperation(c, op, 'No Answer', 'Call (reported by Brad in IAOS): No Answer'); return { kind: 'ok', state: r && r.state }; }
+        catch (e) { return { kind: 'error', name: String(e && e.name), reason: e && e.reason ? String(e.reason) : null, msg: String(e && e.message).slice(0, 120) }; }
+      }, { c: C, op }).catch((e) => ({ kind: 'evaluate_failed', msg: String(e).slice(0, 80) }));
+      const beginStatus = (T.log.filter((e) => e.fn === 'call-log-barrier').slice(-1)[0] || {}).status;
+      const st0 = await laneStore(T);
+      const w0 = writesTo(T); const after = await save(T, 'note', { c: C, t: `${variant} ordinary save` }); const afterWrites = writesTo(T) - w0;
+      const readback = await T.page.evaluate(async (c) => { const g = (await import('/src/lib/ghl.ts')).ghl; try { const r = await g.notes.list(c); return (r.notes || []).map((n) => n.body); } catch (e) { return 'threw:' + (e && e.name); } }, C);
+      await settleServer(10000);
+      out[variant] = { begin, beginStatus, st0, after, afterWrites, readback };
+      await T.ctx.close();
+    }
+    const row = { scenario: 'J6', contract: CONTRACT, out }; RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check('J6 healthy: the REAL call-log-barrier reserves (200 {state:"reserved"}); an ordinary note save then succeeds (1 ghl-write) and the readback lists it', async () => {
+      const r = out.J6; assert.deepEqual([r.beginStatus, r.begin.kind, r.begin.state], [200, 'ok', 'reserved'], JSON.stringify(r.begin));
+      assert.deepEqual([r.after.kind, r.afterWrites], ['ok', 1], JSON.stringify(r.after)); assert.ok(Array.isArray(r.readback) && r.readback.includes('J6 ordinary save'), JSON.stringify(r.readback));
+    });
+    await laneCheck('J6 lane: a definitively completed reservation releases the transport hold (no record after begin); J6′: a MALFORMED reservation reply (200 {state:"reserved-ish"}) RETAINS "*", and the next save is refused uncertain_pending with 0 ghl-write', async () => {
+      assert.equal(recs(out.J6.st0).length, 0, JSON.stringify(out.J6.st0));
+      const p = out.J6prime; assert.equal(held(p.st0, '*'), 1, JSON.stringify(p.st0)); assert.ok(pending(p.after) && p.afterWrites === 0, JSON.stringify(p.after));
+    });
+  }
+  // ── D: the RENDERED Dashboard note box (real UI, real readers, one sign-in, real ghl-write, fixture readback) ──
+  const noteRow = (T, id) => T.page.locator(`tr:has(a[href$="/contacts/${id}"])`).first();   // the Lead Queue row: its name link
+  const noteInput = (T, id) => noteRow(T, id).locator('input[placeholder^="Note"], input[placeholder="Saving…"]').first();
+  const typeNote = async (T, id, text) => { const i = noteInput(T, id); try { await i.click({ timeout: 6000 }); await i.fill(text); await i.press('Tab'); return true; } catch (e) { T.typeFailed = String(e).slice(0, 80); return false; } };
+  const queueDebug = (T) => T.page.evaluate(() => ({ links: [...document.querySelectorAll('[data-testid="dashboard-contact-link"]')].map((a) => a.getAttribute('data-contact-id')), acct: (document.querySelector('[data-testid="dashboard-lead-queue-accounting"]') || {}).textContent || null, inputs: [...document.querySelectorAll('input')].map((i) => i.placeholder).slice(0, 8) })).catch((e) => String(e).slice(0, 60));
+  const rowText = (T, id) => noteRow(T, id).innerText({ timeout: 2000 }).catch(() => '');
+  const enableSavingShown = (T) => T.page.getByRole('button', { name: 'Enable saving' }).count().catch(() => -1);
+  const waitWrites = async (T, from, n, ms = 15000) => { const t0 = Date.now(); while (writesTo(T, from) < n && Date.now() - t0 < ms) await sleep(25); };
+  const writeOps = (T, from) => T.log.slice(from).filter((e) => e.fn === 'ghl-write').map((e) => `${e.op}:${e.status}`);
+  if (want('D')) {
+    // D1 healthy rendered save, started while the Dashboard is still loading (save during load)
+    {
+      fresh(10); GHL.resetAll(); GHL.seedList([C, D]); const S = await bindSession(40);
+      const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`);
+      await noteInput(T, C).waitFor({ timeout: 15000 }).catch(() => {});
+      const loadingWhenTyped = PENDING > 0;
+      const b0 = T.log.length;
+      await typeNote(T, C, 'D1 rendered note');
+      await waitWrites(T, b0, 2); await settleServer(10000); await sleep(300);
+      const row = { scenario: 'D1', typeFailed: T.typeFailed || null, debug: await queueDebug(T), loadingWhenTyped, ops: writeOps(T, b0), mints: T.log.slice(b0).filter((e) => e.fn === 'app-write-token').map((e) => e.status), draft: await noteInput(T, C).inputValue().catch(() => null), text: (await rowText(T, C)).slice(0, 200), enableSaving: await enableSavingShown(T), ghlNotes: GHL.notes.map((n) => n.body), cFields: ((GHL.contacts.get(C) || {}).customFields || []).length, errs: T.errs };
+      RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+      await check('D1 rendered Dashboard note save (one sign-in, typed while readers may still be loading): exactly note.create:200 then contact.lastCallAttempt:200; the fixture holds the note and the attempt fields; the draft clears; no error in the row; no "Enable saving" button; no page error', async () => {
+        assert.deepEqual(row.ops, ['note.create:200', 'contact.lastCallAttempt:200'], JSON.stringify(row.ops));
+        assert.ok(row.ghlNotes.includes('D1 rendered note')); assert.ok(row.cFields >= 1); assert.equal(row.draft, '');
+        assert.ok(!/couldn't|refused|unconfirmed|Not sent/i.test(row.text), row.text); assert.equal(row.enableSaving, 0); assert.deepEqual(row.errs, []);
+      });
+      await laneCheck(`D1 lane: no ${LANE_KEY} record remains after the confirmed rendered save`, async () => { assert.equal(recs(await laneStore(T)).length, 0); });
+      await T.ctx.close();
+    }
+    // D2 refused-not-applied (the session is revoked under the open page): the server refuses BEFORE any GHL write; draft kept, error shown, nothing written
+    {
+      const { S, T } = await openDash(41);
+      await revokeSession(S); const g0 = ghlWritesToGhl; const b0 = T.log.length;
+      await typeNote(T, C, 'D2 refused draft'); await waitWrites(T, b0, 1, 8000); await settleServer(); await sleep(500);
+      const row = { scenario: 'D2', ops: writeOps(T, b0), mints: T.log.slice(b0).filter((e) => e.fn === 'app-write-token').map((e) => e.status), ghlWrites: ghlWritesToGhl - g0, draft: await noteInput(T, C).inputValue().catch(() => null), text: (await rowText(T, C)).slice(0, 200), notice: await T.page.evaluate(() => (document.body.innerText.match(/[^\n]*(sign[ -]?in|signed out|session|refused|not saved)[^\n]*/gi) || []).slice(0, 4)).catch(() => null) };
+      RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+      await check('D2 rendered refusal (session revoked under the open page): the write is refused 401 before any GHL write (0 land); the typed draft is KEPT in the box; nothing is re-sent automatically (the visible refusal text is recorded)', async () => {
+        assert.equal(row.ghlWrites, 0); assert.equal(row.draft, 'D2 refused draft', JSON.stringify(row)); assert.deepEqual(row.ops, ['note.create:401'], JSON.stringify(row));
+        assert.ok(row.ops.filter((o) => o.startsWith('note.create')).length <= 1, 'no automatic resend');
+      });
+      await T.ctx.close();
+    }
+    // D3 dispatched-uncertain (delivery held past the write deadline): no blind resend, draft kept, the attempt marker is not written
+    {
+      const { T } = await openDash(42);
+      T.holdDelivery = { fn: 'ghl-write', ms: WRITE_HOLD_MS, count: 1 };
+      const b0 = T.log.length; await typeNote(T, C, 'D3 uncertain draft');
+      await sleep(WRITE_HOLD_MS + 4000); await settleServer(10000); await sleep(500);
+      const st = await laneStore(T);
+      const row = { scenario: 'D3', ops: writeOps(T, b0), draft: await noteInput(T, C).inputValue().catch(() => null), text: (await rowText(T, C)).slice(0, 200), store: st };
+      RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+      await check('D3 rendered uncertain save: the note is sent EXACTLY once and never re-sent automatically over hold + 4 s (recorded: what the current client shows)', async () => {
+        assert.equal(row.ops.filter((o) => o.startsWith('note.create')).length, 1, JSON.stringify(row.ops));
+      });
+      await laneCheck('D3 lane: the save ends uncertain within the 20 s write deadline -- the row shows an error, the typed draft is KEPT, NO attempt-marker write is sent, and contact:C is held', async () => {
+        assert.equal(row.draft, 'D3 uncertain draft'); assert.ok(row.text.length > 0); assert.ok(!row.ops.some((o) => o.startsWith('contact.lastCallAttempt')), JSON.stringify(row.ops));
+        assert.equal(held(row.store, `contact:${C}`), 1);
+      });
+      await T.ctx.close();
+    }
+    // D4 queued save cancelled by Sign out: a reader is held so the save must QUEUE behind it (lane), then Sign out
+    {
+      const { S, T } = await openDash(43);
+      T.holdServer = { fn: 'ghl-contacts', ms: 6000, count: 1 };
+      void T.page.evaluate(async () => { const r = await import('/src/lib/read-session.ts'); try { await r.readFetch('/.netlify/functions/ghl-contacts'); } catch { /* recorded by server log */ } });
+      await sleep(200); const b0 = T.log.length; const g0 = ghlWritesToGhl;
+      await typeNote(T, C, 'D4 queued draft'); await sleep(300);
+      const so = await signOutUi(T); await sleep(7000); await settleServer(10000);
+      const row = { scenario: 'D4', signOut: so, ops: writeOps(T, b0), ghlWrites: ghlWritesToGhl - g0, oldCookieAfter: await directReader(S.cookie) };
+      RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+      await check('D4 precondition: Sign out was actually clicked and confirmed (app-signout 200) and the old session is then refused 401 "revoked" (what was sent before the sign-out is recorded)', async () => {
+        assert.ok(row.signOut.clicked, JSON.stringify(row.signOut)); assert.deepEqual(row.signOut.signoutStatus, [200]);
+        assert.deepEqual([row.oldCookieAfter.status, row.oldCookieAfter.reason], [401, 'revoked']);
+      });
+      await laneCheck('D4 lane: the save QUEUED behind the held reader is cancelled by Sign out -- 0 ghl-write requests are ever sent for it and 0 GHL writes land', async () => {
+        assert.equal(row.ops.length, 0, JSON.stringify(row.ops)); assert.equal(row.ghlWrites, 0);
+      });
+      await T.ctx.close();
+    }
+    // D5 session replacement: a save whose server execution is held; Sign out; new session; the OLD completion must not
+    //    alter the new session's row (draft / error) and the new session needs no second sign-in
+    {
+      const { S, T } = await openDash(44);
+      T.holdServer = { fn: 'ghl-write', ms: 8000, count: 1 };
+      const b0 = T.log.length; await typeNote(T, C, 'D5 old-session note'); await sleep(500);
+      const so = await signOutUi(T);
+      const S2 = await bindSession(45); T.cookie = S2.cookie; await T.page.reload(); const ready = await rendered(T);
+      await noteInput(T, C).fill('D5 new-session draft').catch(() => {});
+      await sleep(9000); await settleServer(10000); await sleep(300);
+      const row = { scenario: 'D5', signOut: so, ready, ops: writeOps(T, b0), newDraft: await noteInput(T, C).inputValue().catch(() => null), text: (await rowText(T, C)).slice(0, 200), enableSaving: await enableSavingShown(T), oldCookieAfter: await directReader(S.cookie) };
+      RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+      await check('D5 session replacement: Sign out confirmed and the old session revoked; the replacement session renders with no "Enable saving"; the OLD session\'s late completion does not touch the new session\'s draft or row', async () => {
+        assert.ok(row.signOut.clicked); assert.deepEqual(row.signOut.signoutStatus, [200]); assert.deepEqual([row.oldCookieAfter.status, row.oldCookieAfter.reason], [401, 'revoked']);
+        assert.ok(row.ready); assert.equal(row.enableSaving, 0); assert.equal(row.newDraft, 'D5 new-session draft');
+        assert.ok(!/D5 old-session note/.test(row.text), row.text);
+      });
+      await T.ctx.close();
+    }
+  }
+  // ── SC: the RENDERED Seller Call "Save at Summary" (real App route, one sign-in, real ghl-write) ──
+  //    Readers are answered at FUNCTION level by scripts/harness/seller-call-offer-ready-fixture.cjs (as in the
+  //    accepted rendered Seller Call suite); ghl-write's own GHL reads and writes go to the SAME fixture state, so the
+  //    page's readback sees exactly what the real handler wrote. sellerConversationSave is switched ON IN THIS PROCESS
+  //    ONLY (server) and in the harness projection (browser); the committed configuration is unchanged.
+  if (want('SC')) {
+    const T0 = cfg.getConfig('test'); const prevScs = T0.sellerConversationSave; T0.sellerConversationSave = cfg.SELLER_CONVERSATION_SAVE_ENABLED;
+    try {
+      const SC_PAGE = '/scripts/harness/app-routes/index.html';
+      const scOpen = async (n, hold = null) => {
+        fresh(10); GHL.resetAll(); fx.reset(); GHL.fx = true; const S = await bindSession(n);
+        const T = await openTab(S.cookie, { fxReaders: true, initOverride: { sellerConversationSave: true, oneLogin: true } });
+        if (hold) T.holdDelivery = hold;
+        await T.page.goto(`${base}${SC_PAGE}?start=${encodeURIComponent(`/contacts/${fx.CONTACT}/seller-call`)}`);
+        const ok = await T.page.getByTestId('sc-card').waitFor({ timeout: 60000 }).then(() => true).catch(() => false);
+        await T.page.getByTestId('sc-readiness-status').waitFor({ timeout: 30000 }).catch(() => {});
+        await sleep(300); return { S, T, ok };
+      };
+      const tid = (T, id) => T.page.getByTestId(id);
+      const press = async (T, id) => { try { await tid(T, id).click({ timeout: 4000 }); return true; } catch { return false; } };
+      const fill = async (T, id, v) => { try { await tid(T, id).fill(v, { timeout: 4000 }); return true; } catch { return false; } };
+      const typeCall = async (T) => {
+        await press(T, 'sc-nav-opening'); await fill(T, 'sc-field-opening-response', 'Open to talking');
+        await press(T, 'sc-nav-occupancy'); await tid(T, 'sc-field-occupancy-occupancy').selectOption('Tenant Occupied').catch(() => {});
+        await press(T, 'sc-nav-timing'); await fill(T, 'sc-field-timing-timing', 'Close by March 1');
+        await press(T, 'sc-nav-price'); await fill(T, 'sc-field-price-amount', '410000');
+        await fill(T, 'sc-call-notes', 'SC one-login rendered call.');
+        await press(T, 'sc-nav-summary');
+      };
+      const items = async (T) => T.page.locator('[data-testid="sc-save-plan"] > li').evaluateAll((els) => els.map((e) => [e.getAttribute('data-testid').replace('sc-save-item-', ''), e.getAttribute('data-result')])).catch(() => null);
+      const waitIdle = async (T, ms = 40000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if ((await tid(T, 'sc-save').textContent().catch(() => '')) === 'Save') return; await sleep(100); } };
+      // SC1 healthy
+      {
+        const { T, ok } = await scOpen(50);
+        await typeCall(T); const plan = await items(T);
+        const n0 = fx.state.notes.length; const b0 = T.log.length;
+        await press(T, 'sc-save'); await waitIdle(T); await settleServer(10000); await sleep(300);
+        const res = await items(T);
+        const created = fx.state.notes.slice(n0).map((x) => x.body.split('\n')[0]);
+        const occ = fx.state.contactFields.filter((f) => f.id === cfg.getConfig('test').fields.occupancyStatus).map((f) => f.value);
+        const b1 = T.log.length; await press(T, 'sc-save'); await sleep(1500); await settleServer();
+        const row = { scenario: 'SC1', ok, plan, ops: writeOps(T, b0).slice(0, writesTo(T, b0) - writesTo(T, b1)), results: res, created, occupancy: occ, resaveOps: writeOps(T, b1), notes: await tid(T, 'sc-call-notes').inputValue().catch(() => null), enableSaving: await enableSavingShown(T), errs: T.errs };
+        RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+        await check('SC1 rendered Seller Call Save at Summary (one sign-in, REAL ghl-write): every planned item (note, timing, price, occupancy) confirmed by the real handler -- exactly note.create x3 + contact.occupancy, all 200; the fixture readback holds the new conversation / assumptions / price-position notes and occupancy "Tenant Occupied"; the call notes draft stays on screen; a second Save sends nothing; no "Enable saving"; no page error', async () => {
+          assert.ok(row.ok, 'Seller Call rendered'); assert.ok(Array.isArray(row.results) && row.results.length > 0 && row.results.every(([, r]) => r === 'confirmed'), JSON.stringify(row.results));
+          assert.ok(row.ops.length > 0 && row.ops.every((o) => o.endsWith(':200')), JSON.stringify(row.ops));
+          assert.deepEqual(row.created, ['IAOS SELLER CONVERSATION — iaos-seller-conversation-v1', 'IAOS TRANSACTION ASSUMPTIONS — iaos-transaction-assumptions-v2', 'IAOS SELLER PRICE POSITION — iaos-seller-price-position-v1'], JSON.stringify(row.created));
+          assert.deepEqual(row.ops, ['note.create:200', 'note.create:200', 'note.create:200', 'contact.occupancy:200'], 'exactly the expected writes');
+          assert.equal(JSON.stringify(row.occupancy).includes('Tenant Occupied'), true, 'occupancy readback ' + JSON.stringify(row.occupancy));
+          assert.equal(row.resaveOps.length, 0, JSON.stringify(row.resaveOps)); assert.equal(row.notes, 'SC one-login rendered call.'); assert.equal(row.enableSaving, 0); assert.deepEqual(row.errs, []);
+        });
+        await laneCheck(`SC1 lane: no ${LANE_KEY} record remains after the confirmed Save at Summary`, async () => { assert.equal(recs(await laneStore(T)).length, 0); });
+        await T.ctx.close();
+      }
+      // SC2 dispatched-uncertain first item: delivery held past the write deadline
+      {
+        const { T, ok } = await scOpen(51, { fn: 'ghl-write', ms: WRITE_HOLD_MS, count: 1 });
+        await typeCall(T); const b0 = T.log.length;
+        await press(T, 'sc-save'); await sleep(WRITE_HOLD_MS + 5000); await waitIdle(T, 30000); await settleServer(10000);
+        const res = await items(T); const st = await laneStore(T);
+        const texts = []; for (const [id] of (res || [])) texts.push(await tid(T, `sc-save-text-${id}`).textContent({ timeout: 500 }).catch(() => null));
+        const row = { scenario: 'SC2', ok, ops: writeOps(T, b0), results: res, texts, notes: await tid(T, 'sc-call-notes').inputValue().catch(() => null), store: st };
+        RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+        await check('SC2 rendered uncertain first item: the conversation note is sent EXACTLY once and never re-sent automatically; the call notes draft stays on screen (recorded: the item states the current client shows)', async () => {
+          assert.ok(row.ok); assert.ok(row.ops.length >= 1 && row.ops.length <= 4, JSON.stringify(row.ops)); assert.equal(new Set(row.ops.map((o, i) => i)).size, row.ops.length); assert.equal(row.notes, 'SC one-login rendered call.');
+          assert.ok(row.ops.length <= 4, 'no item re-sent: at most one write per planned item');
+        });
+        await laneCheck('SC2 lane: the first item ends data-result "uncertain" at the 20 s write deadline, contact:<fixture contact> is held, and NO later item is sent -- each later item shows data-result "refused" with a message including uncertain_pending (Scotty flags A/B: LaneNotSent maps to refused); drafts kept', async () => {
+          assert.equal(row.ops.length, 1, JSON.stringify(row.ops)); assert.equal(held(row.store, `contact:${fx.CONTACT}`), 1);
+          assert.ok(row.results && row.results[0] && row.results[0][1] === 'uncertain', JSON.stringify(row.results));
+          assert.ok(row.results.slice(1).every(([, x]) => x === 'refused') && row.texts.slice(1).every((t) => String(t).includes('uncertain_pending')), JSON.stringify([row.results, row.texts]));
+        });
+        await T.ctx.close();
+      }
+    } finally { T0.sellerConversationSave = prevScs; GHL.fx = false; }
   }
   // ── EXPIRY vs REVOCATION (direct, real handlers): two different refusals ──
   await check('EXPIRY vs REVOCATION: a TIME-EXPIRED session (cookie issued 31 days ago) is refused 401 at the cookie, before any session-store access, with no "revoked" reason; a REVOKED session is refused 401 with reason "revoked" after the store check; both with zero GHL', async () => {
@@ -617,7 +953,7 @@ async function main() {
   await browser.close(); await server.close();
   const byL = LATENCIES.map((L) => { const rs = RESULTS.filter((r) => r.scenario === `T-L${L}`); return { latencyMs: L, runs: rs.length, runsWith503: rs.filter((r) => r.n503 > 0).length, total503: rs.reduce((a, r) => a + r.n503, 0) }; });
   console.log('SUMMARY ' + JSON.stringify({ singleTab: byL }));
-  console.log(`B15-29 one-operator single-tab Dashboard: ${checks - failures}/${checks} checks passed`);
+  console.log(`B15-29 one-operator single-tab Dashboard: ${checks - failures}/${checks} checks passed; ${notRun} lane checks NOT-RUN${LANE ? '' : ' (no --contract)'}${MUTATION ? `; MUTATION=${MUTATION}` : ''}${ONLY ? `; ONLY=${ONLY}` : ''}`);
   process.exit(failures ? 1 : 0);
 }
 main().catch((e) => { console.error('CRASH', e && e.stack); process.exit(2); });
