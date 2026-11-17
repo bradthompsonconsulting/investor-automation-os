@@ -538,13 +538,13 @@ jobs:
         run: node app/scripts/test-b15-29-login-experience-page.cjs
       - name: One IAOS sign-in, draft retention and isolation on the REAL Deal Calculator and Seller Call -- reload, same-account re-authentication, A->B without leak, legacy drafts never shown or deleted (INV-137, B15-29 R2) - 21 checks
         run: node app/scripts/test-b15-29-one-login-drafts.cjs
-      - name: One IAOS sign-in, single-flight session status on the REAL Dashboard -- one status request per tab, coalesced revalidation, refusal invalidation, bounded backoff and exhaustion, sign-out / sign-in / unmount cancellation, harness instrumentation absent from the build, r5 structural enforcement, refused reader data never displayed, D2 lane caller wiring and live-page isolation (INV-137, B15-29) - 44 rows
+      - name: One IAOS sign-in, single-flight session status on the REAL Dashboard -- one status request per tab, coalesced revalidation, refusal invalidation, bounded backoff and exhaustion, sign-out / sign-in / unmount cancellation, harness instrumentation absent from the build, r5 structural enforcement, refused reader data never displayed, D2 lane caller wiring and live-page isolation, stale-save isolation across a same-operator replacement (INV-137, B15-29) - 47 rows
         run: node app/scripts/test-b15-29-status-single-flight.cjs
-      - name: One IAOS sign-in, single-flight session status mutation controls -- each of 31 mutations must fail exactly its target rows (INV-137, B15-29)
+      - name: One IAOS sign-in, single-flight session status mutation controls -- each of 33 mutations must fail exactly its target rows (INV-137, B15-29)
         run: node app/scripts/test-b15-29-status-single-flight.cjs --controls
-      - name: One IAOS sign-in, D2 protected-request lane -- one request in flight, bounded queue and deadlines (strict 10 s cutoff; 22 / 30 / 52 s), persist-before-dispatch unresolved holds, symmetric contact / wildcard conflicts, endpoint-specific release, Seller Call mapping, virtual clock (INV-137, B15-29 D2 r6) - 21 rows
+      - name: One IAOS sign-in, D2 protected-request lane -- one request in flight, bounded queue and deadlines (strict 10 s cutoff; 22 / 30 / 52 s), persist-before-dispatch unresolved holds, symmetric contact / wildcard conflicts, endpoint-specific release, Seller Call mapping, validated stored records, session generation and stale Seller Call continuation, status applied before the next dispatch, virtual clock (INV-137, B15-29 D2 r6) - 25 rows
         run: node app/scripts/test-b15-29-protected-lane.cjs
-      - name: One IAOS sign-in, D2 protected-request lane mutation controls -- each of 13 mutations must fail its target rows (INV-137, B15-29 D2 r6)
+      - name: One IAOS sign-in, D2 protected-request lane mutation controls -- each of 17 mutations must fail its target rows (INV-137, B15-29 D2 r6)
         run: node app/scripts/test-b15-29-protected-lane.cjs --controls
 
       # Not a counted runner — a typecheck. No floor, and it must not be given
