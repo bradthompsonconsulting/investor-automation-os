@@ -211,6 +211,7 @@ async function main() {
       catch (e) { res = { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: '{"error":"handler threw"}' }; entry.threw = true; }
       finally { PENDING -= 1; if (checked) tab.inflight -= 1; }
       entry.status = res.statusCode; entry.t1 = Date.now(); entry.ms = entry.t1 - entry.t0;
+      if (fn === 'app-read-session') { try { const b = JSON.parse(res.body || '{}'); entry.statusSays = { signedIn: b.signedIn === true, state: typeof b.state === 'string' ? b.state : null }; } catch { entry.statusSays = { unparseable: true }; } }
       const hdrs = {}; for (const [k, v] of Object.entries(res.headers || {})) if (k.toLowerCase() !== 'set-cookie') hdrs[k] = String(v);
       if (tab.holdDelivery && tab.holdDelivery.fn === fn && !(tab.holdDelivery.count !== undefined && tab.holdDelivery.count-- <= 0)) { entry.heldMs = tab.holdDelivery.ms; await sleep(tab.holdDelivery.ms); }   // origin already processed; only DELIVERY waits
       // J6′: a malformed reply for one function (the server processed the request; only the delivered body differs).
@@ -358,28 +359,6 @@ async function main() {
     });
     await T.ctx.close();
   }
-  // ── EXPIRED / GENERATION: the session is revoked while a queued burst is in progress; nothing sent after the revoke is authorized ──
-  {
-    fresh(100); const S = await bindSession(9);
-    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
-    const base0 = T.log.length;
-    const burstP = T.page.evaluate(async () => { const r = await import('/src/lib/read-session.ts');
-      return Promise.all(Array.from({ length: 8 }, () => r.readFetch('/.netlify/functions/ghl-contacts').then((x) => x.status, (e) => 'threw:' + (e && e.name)))); });
-    for (let i = 0; i < 200 && !T.log.slice(base0).some((e) => e.status !== undefined); i++) await sleep(10);
-    const v = await rev.revokeSession(S.sid, S.epoch, 'test', { event: NF }); const tRevoked = Date.now();
-    const burst = await burstP; await settleServer();
-    const afterRevoke = T.log.slice(base0).filter((e) => e.t0 > tRevoked);
-    const row = { scenario: 'EXPIRED', revoke: v.kind, burst, startedAfterRevoke: afterRevoke.map((e) => `${e.fn}:${e.status}`), n503: T.log.slice(base0).filter((e) => e.status === 503).length };
-    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-    await check('EXPIRED (100 ms): a revoke lands while a queued burst is in progress -> every request STARTED after the verified revoke is refused (never 200); the burst settles; nothing stuck', async () => {
-      assert.equal(v.kind, 'verified');
-      // Non-vacuous under a lane: queued requests start AFTER the revoke (on an unbounded client they may all have started before).
-      if (LANE_MAX > 0) assert.ok(afterRevoke.length > 0, 'non-vacuous: some queued request started after the revoke ' + JSON.stringify(row));
-      assert.deepEqual(afterRevoke.filter((e) => e.status === 200).map((e) => e.fn), [], JSON.stringify(row));
-      assert.equal(unfinished(T), 0); assert.equal(PENDING, 0);
-    });
-    await T.ctx.close();
-  }
   // ── LOGOUT (UI): the operator clicks Sign out; the tab is signed out; nothing protected is answered with data afterwards ──
   {
     fresh(40); const S = await bindSession(10);
@@ -475,6 +454,52 @@ async function main() {
         assert.deepEqual([second.write && second.write.name, second.write && second.write.reason, row.secondWritesSent], ['LaneNotSent', 'uncertain_pending', 0], JSON.stringify(second));
         assert.equal(second.read, 200, 'reads proceed while the write hold exists ' + JSON.stringify(second));
       }
+    });
+    await T.ctx.close();
+  }
+  }
+  if (!ONLY || want('EXPIRED')) {
+  // ── EXPIRED / GENERATION: the session is revoked while a queued burst is in progress. Bones (2026-11-17) asked to
+  //    SEPARATE (1) the revoke PRECONDITION (did the server-side revoke return verified?) from (2) the AUTHORIZATION
+  //    assertion (after the revocation is VERIFIED, nothing is authorized), and to record the exact outcome, timing,
+  //    retry/verification path and every request after verification. Neither assertion is weakened: (1) still FAILS on
+  //    an unconfirmed revoke; (2) FAILS if verification is never established. The verification path is the test's own:
+  //    an unconfirmed revoke is retried (same bytes, idempotent; at most 3 more attempts) and a revocation counts as
+  //    VERIFIED only on a "verified" result. A status reply (app-read-session) is classified by what it SAYS, never by
+  //    its HTTP 200 alone. ──
+  {
+    fresh(100); const S = await bindSession(9);
+    const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`); await rendered(T); await settleServer();
+    const base0 = T.log.length;
+    const burstP = T.page.evaluate(async () => { const r = await import('/src/lib/read-session.ts');
+      return Promise.all(Array.from({ length: 8 }, () => r.readFetch('/.netlify/functions/ghl-contacts').then((x) => x.status, (e) => 'threw:' + (e && e.name)))); });
+    for (let i = 0; i < 200 && !T.log.slice(base0).some((e) => e.status !== undefined); i++) await sleep(10);
+    const attempts = [];
+    const once = async () => { const t0 = Date.now(); const { out, lines } = await withCheckLog(() => rev.revokeSession(S.sid, S.epoch, 'test', { event: NF }));
+      attempts.push({ kind: out.kind, reason: out.reason || null, t0, t1: Date.now(), ms: Date.now() - t0, checkLog: lines.map((l) => ({ op: l.op, kind: l.kind, reason: l.reason, ms: l.ms })) }); return out; };
+    const v = await once(); const tRevoked = attempts[0].t1;
+    let tVerified = v.kind === 'verified' ? tRevoked : null;
+    for (let k = 0; k < 3 && tVerified === null; k++) { const r = await once(); if (r.kind === 'verified') tVerified = attempts[attempts.length - 1].t1; }
+    const burst = await burstP; await settleServer();
+    const serverView = await (async () => { const r = await handlerFor('ghl-contacts')(ev({ cookie: S.cookie })); let reason = null; try { reason = JSON.parse(r.body).reason || null; } catch { /* none */ } return { status: r.statusCode, reason }; })();   // independent: the old session at a real protected reader afterwards
+    const describe = (e) => ({ fn: e.fn, status: e.status, t0: e.t0, ...(e.statusSays ? { says: e.statusSays } : {}) });
+    const afterFirst = T.log.slice(base0).filter((e) => e.t0 > tRevoked);
+    const afterVerified = tVerified === null ? null : T.log.slice(base0).filter((e) => e.t0 > tVerified);
+    const authorizedAfter = (list) => list.filter((e) => (e.fn === 'app-read-session' ? !!(e.statusSays && e.statusSays.signedIn) : e.status === 200));
+    const row = { scenario: 'EXPIRED', firstRevoke: v.kind, firstReason: v.reason || null, attempts, tRevoked, tVerified, burst,
+      startedAfterFirstRevoke: afterFirst.map(describe), startedAfterVerified: afterVerified && afterVerified.map(describe),
+      authorizedAfterFirst: authorizedAfter(afterFirst).map(describe), authorizedAfterVerified: afterVerified && authorizedAfter(afterVerified).map(describe),
+      serverViewAfter: serverView, n503: T.log.slice(base0).filter((e) => e.status === 503).length };
+    RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
+    await check('EXPIRED (100 ms) PRECONDITION: the server-side revoke issued while a queued burst is in progress returns VERIFIED on its first attempt (an "unconfirmed" result FAILS here and is reported with its reason and check log)', async () => {
+      assert.equal(v.kind, 'verified', JSON.stringify({ first: attempts[0] }));
+    });
+    await check('EXPIRED (100 ms) AUTHORIZATION: once the revocation is VERIFIED (first attempt, or the recorded retry), every request STARTED afterwards is refused -- no protected reader answers 200 and no status reply says signedIn:true; the old session is then 401 "revoked" at a real reader; the burst settles; nothing stuck (FAILS if verification is never established)', async () => {
+      assert.ok(tVerified !== null, 'revocation never VERIFIED ' + JSON.stringify(attempts.map((x) => [x.kind, x.reason])));
+      if (LANE_MAX > 0) assert.ok(afterFirst.length > 0, 'non-vacuous: some queued request started after the revoke ' + JSON.stringify(row.startedAfterFirstRevoke));
+      assert.deepEqual(row.authorizedAfterVerified, [], JSON.stringify(row.startedAfterVerified));
+      assert.deepEqual([serverView.status, serverView.reason], [401, 'revoked'], JSON.stringify(serverView));
+      assert.equal(unfinished(T), 0); assert.equal(PENDING, 0);
     });
     await T.ctx.close();
   }
