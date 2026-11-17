@@ -189,7 +189,7 @@ async function main() {
       if (!url.includes('/.netlify/functions/')) { tab.foreign.push(url); return route.abort(); }
       const U = new URL(url); const fn = U.pathname.replace(/^.*\/\.netlify\/functions\//, '');
       const entry = { fn, method: req.method(), t0: Date.now() }; tab.log.push(entry);
-      if (fn === 'ghl-write') { try { entry.op = JSON.parse(req.postData() || '{}').operation; } catch { /* unparseable: recorded without op */ } }
+      if (fn === 'ghl-write') { try { const p = JSON.parse(req.postData() || '{}'); entry.op = p.operation; entry.requestId = p.requestId; entry.payload = require('crypto').createHash('sha256').update(JSON.stringify([p.operation, p.targetId, p.args])).digest('hex').slice(0, 16); } catch { /* unparseable: recorded without op */ } }
       // SC: content readers answered at function level from the Seller Call fixture (session/token/sign-out/write stay REAL).
       if (tab.fxReaders && req.method() === 'GET' && !['app-read-session', 'iaos-runtime-config'].includes(fn)) {
         const a = fx.answer(fx.classify(url, 'GET', null)); entry.status = a.status; entry.t1 = Date.now(); entry.fx = true;
@@ -216,6 +216,9 @@ async function main() {
       // J6′: a malformed reply for one function (the server processed the request; only the delivered body differs).
       if (tab.rewrite && tab.rewrite.fn === fn && tab.rewrite.count-- > 0) { entry.rewritten = true; res = { ...res, body: tab.rewrite.body }; }
       entry.deliveredAt = Date.now();
+      // --mutation=dup-send (NEGATIVE CONTROL for SC2): the FIRST ghl-write of a tab is replayed once to the server, as a
+      // client that blindly re-sent would; SC2's one-send-per-item precondition must then FAIL.
+      if (MUTATION === 'dup-send' && fn === 'ghl-write' && tab.dupArmed) { tab.dupArmed = false; const dup = { ...entry, dup: true, t0: Date.now() }; tab.log.push(dup); const r2 = await h({ httpMethod: req.method(), headers, body: req.postData() || '', blobs: blobs.lambdaBlobs, rawUrl: url, path: U.pathname }); dup.status = r2.statusCode; dup.t1 = Date.now(); }
       return route.fulfill({ status: res.statusCode, headers: hdrs, body: res.body || '' }).catch(() => { tab.fulfillFailed += 1; entry.undelivered = true; });
     });
     /* J4: an in-page fetch STALL for one function, set per page by window.__iaosStall = { fn, mode } -- 'body': headers
@@ -707,18 +710,22 @@ async function main() {
         try { const r = await m.beginOperation(c, op, 'No Answer', 'Call (reported by Brad in IAOS): No Answer'); return { kind: 'ok', state: r && r.state }; }
         catch (e) { return { kind: 'error', name: String(e && e.name), reason: e && e.reason ? String(e.reason) : null, msg: String(e && e.message).slice(0, 120) }; }
       }, { c: C, op }).catch((e) => ({ kind: 'evaluate_failed', msg: String(e).slice(0, 80) }));
-      const beginStatus = (T.log.filter((e) => e.fn === 'call-log-barrier').slice(-1)[0] || {}).status;
+      const beginEntry = T.log.filter((e) => e.fn === 'call-log-barrier').slice(-1)[0] || {}; const beginStatus = beginEntry.status; const rewritten = !!beginEntry.rewritten; const rewriteLeft = T.rewrite ? T.rewrite.count : null;
       const st0 = await laneStore(T);
       const w0 = writesTo(T); const after = await save(T, 'note', { c: C, t: `${variant} ordinary save` }); const afterWrites = writesTo(T) - w0;
       const readback = await T.page.evaluate(async (c) => { const g = (await import('/src/lib/ghl.ts')).ghl; try { const r = await g.notes.list(c); return (r.notes || []).map((n) => n.body); } catch (e) { return 'threw:' + (e && e.name); } }, C);
       await settleServer(10000);
-      out[variant] = { begin, beginStatus, st0, after, afterWrites, readback };
+      out[variant] = { begin, beginStatus, rewritten, rewriteLeft, st0, after, afterWrites, readback };
       await T.ctx.close();
     }
     const row = { scenario: 'J6', contract: CONTRACT, out }; RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
     await check('J6 healthy: the REAL call-log-barrier reserves (200 {state:"reserved"}); an ordinary note save then succeeds (1 ghl-write) and the readback lists it', async () => {
       const r = out.J6; assert.deepEqual([r.beginStatus, r.begin.kind, r.begin.state], [200, 'ok', 'reserved'], JSON.stringify(r.begin));
       assert.deepEqual([r.after.kind, r.afterWrites], ['ok', 1], JSON.stringify(r.after)); assert.ok(Array.isArray(r.readback) && r.readback.includes('J6 ordinary save'), JSON.stringify(r.readback));
+    });
+    await check('J6′ precondition (decisive): the REAL call-log-barrier handled the reservation (200), the malformed body rewrite actually happened and was consumed (count 0), and the client saw the malformed answer (not state "reserved")', async () => {
+      const p = out.J6prime; assert.equal(p.beginStatus, 200, JSON.stringify(p)); assert.equal(p.rewritten, true); assert.equal(p.rewriteLeft, 0);
+      assert.ok(!(p.begin.kind === 'ok' && p.begin.state === 'reserved'), 'the client consumed the malformed body ' + JSON.stringify(p.begin));
     });
     await laneCheck('J6 lane: a definitively completed reservation releases the transport hold (no record after begin); J6′: a MALFORMED reservation reply (200 {state:"reserved-ish"}) RETAINS "*", and the next save is refused uncertain_pending with 0 ghl-write', async () => {
       assert.equal(recs(out.J6.st0).length, 0, JSON.stringify(out.J6.st0));
@@ -739,14 +746,22 @@ async function main() {
     {
       fresh(10); GHL.resetAll(); GHL.seedList([C, D]); const S = await bindSession(40);
       const T = await openTab(S.cookie); await T.page.goto(`${base}${HARNESS}`);
-      await noteInput(T, C).waitFor({ timeout: 15000 }).catch(() => {});
-      const loadingWhenTyped = PENDING > 0;
+      await noteInput(T, C).waitFor({ timeout: 15000 }).catch(() => {}); await settleServer();
+      // Overlap made deterministic: a reader from the app's own read client whose SERVER execution is held 4 s.
+      T.holdServer = { fn: 'ghl-mailers', ms: 4000, count: 1 };
+      const r0 = T.log.length;
+      void T.page.evaluate(async () => { const r = await import('/src/lib/read-session.ts'); try { const x = await r.readFetch('/.netlify/functions/ghl-mailers'); await x.text(); } catch { /* recorded by the server log */ } });
+      for (let i = 0; i < 200 && !T.log.slice(r0).some((e) => e.fn === 'ghl-mailers' && e.serverHeldMs); i++) await sleep(10);
+      const heldReader = T.log.slice(r0).find((e) => e.fn === 'ghl-mailers' && e.serverHeldMs);
       const b0 = T.log.length;
-      await typeNote(T, C, 'D1 rendered note');
+      const typed = await typeNote(T, C, 'D1 rendered note');
+      const loadingWhenTyped = !!heldReader && heldReader.status === undefined;
       await waitWrites(T, b0, 2); await settleServer(10000); await sleep(300);
-      const row = { scenario: 'D1', typeFailed: T.typeFailed || null, debug: await queueDebug(T), loadingWhenTyped, ops: writeOps(T, b0), mints: T.log.slice(b0).filter((e) => e.fn === 'app-write-token').map((e) => e.status), draft: await noteInput(T, C).inputValue().catch(() => null), text: (await rowText(T, C)).slice(0, 200), enableSaving: await enableSavingShown(T), ghlNotes: GHL.notes.map((n) => n.body), cFields: ((GHL.contacts.get(C) || {}).customFields || []).length, errs: T.errs };
+      const row = { scenario: 'D1', typed, typeFailed: T.typeFailed || null, heldReaderStatus: heldReader ? heldReader.status : 'never', loadingWhenTyped, ops: writeOps(T, b0), mints: T.log.slice(b0).filter((e) => e.fn === 'app-write-token').map((e) => e.status), draft: await noteInput(T, C).inputValue().catch(() => null), text: (await rowText(T, C)).slice(0, 200), enableSaving: await enableSavingShown(T), ghlNotes: GHL.notes.map((n) => n.body), cFields: ((GHL.contacts.get(C) || {}).customFields || []).length, errs: T.errs };
       RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-      await check('D1 rendered Dashboard note save (one sign-in, typed while readers may still be loading): exactly note.create:200 then contact.lastCallAttempt:200; the fixture holds the note and the attempt fields; the draft clears; no error in the row; no "Enable saving" button; no page error', async () => {
+      await check('D1 rendered Dashboard note save submitted WHILE a reader is provably still pending on the server (decisive overlap): exactly note.create:200 then contact.lastCallAttempt:200; the held reader then answers 200; the fixture holds the note and the attempt fields; the draft clears; no error in the row; no "Enable saving" button; no page error', async () => {
+        assert.ok(row.typed && row.loadingWhenTyped, 'overlap precondition: the held reader was pending when the note was submitted ' + JSON.stringify(row));
+        assert.equal(row.heldReaderStatus, 200, 'the held reader settled 200');
         assert.deepEqual(row.ops, ['note.create:200', 'contact.lastCallAttempt:200'], JSON.stringify(row.ops));
         assert.ok(row.ghlNotes.includes('D1 rendered note')); assert.ok(row.cFields >= 1); assert.equal(row.draft, '');
         assert.ok(!/couldn't|refused|unconfirmed|Not sent/i.test(row.text), row.text); assert.equal(row.enableSaving, 0); assert.deepEqual(row.errs, []);
@@ -761,7 +776,8 @@ async function main() {
       await typeNote(T, C, 'D2 refused draft'); await waitWrites(T, b0, 1, 8000); await settleServer(); await sleep(500);
       const row = { scenario: 'D2', ops: writeOps(T, b0), mints: T.log.slice(b0).filter((e) => e.fn === 'app-write-token').map((e) => e.status), ghlWrites: ghlWritesToGhl - g0, draft: await noteInput(T, C).inputValue().catch(() => null), text: (await rowText(T, C)).slice(0, 200), notice: await T.page.evaluate(() => (document.body.innerText.match(/[^\n]*(sign[ -]?in|signed out|session|refused|not saved)[^\n]*/gi) || []).slice(0, 4)).catch(() => null) };
       RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-      await check('D2 rendered refusal (session revoked under the open page): the write is refused 401 before any GHL write (0 land); the typed draft is KEPT in the box; nothing is re-sent automatically (the visible refusal text is recorded)', async () => {
+      await check('D2 rendered refusal (session revoked under the open page): the write is refused 401 before any GHL write (0 land); the page shows the signed-out notice ("You\'ve signed out" + "Sign in again to continue where you left off."); the typed draft is KEPT in the box; nothing is re-sent automatically', async () => {
+        assert.ok(Array.isArray(row.notice) && row.notice.some((t) => t.includes("You've signed out")) && row.notice.some((t) => t.includes('Sign in again to continue where you left off.')), 'visible notice ' + JSON.stringify(row.notice));
         assert.equal(row.ghlWrites, 0); assert.equal(row.draft, 'D2 refused draft', JSON.stringify(row)); assert.deepEqual(row.ops, ['note.create:401'], JSON.stringify(row));
         assert.ok(row.ops.filter((o) => o.startsWith('note.create')).length <= 1, 'no automatic resend');
       });
@@ -774,13 +790,14 @@ async function main() {
       const b0 = T.log.length; await typeNote(T, C, 'D3 uncertain draft');
       await sleep(WRITE_HOLD_MS + 4000); await settleServer(10000); await sleep(500);
       const st = await laneStore(T);
-      const row = { scenario: 'D3', ops: writeOps(T, b0), draft: await noteInput(T, C).inputValue().catch(() => null), text: (await rowText(T, C)).slice(0, 200), store: st };
+      const ui = await noteRow(T, C).evaluate((tr) => { const errs = [...tr.querySelectorAll('div')].filter((d) => getComputedStyle(d).color === 'rgb(248, 113, 113)' && d.textContent.trim()).map((d) => d.textContent.trim()); const i = tr.querySelector('input[placeholder]'); return { errs, disabled: i ? i.disabled : null, placeholder: i ? i.placeholder : null }; }).catch((e) => ({ failed: String(e).slice(0, 60) }));
+      const row = { scenario: 'D3', ops: writeOps(T, b0), draft: await noteInput(T, C).inputValue().catch(() => null), ui, store: st };
       RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
       await check('D3 rendered uncertain save: the note is sent EXACTLY once and never re-sent automatically over hold + 4 s (recorded: what the current client shows)', async () => {
         assert.equal(row.ops.filter((o) => o.startsWith('note.create')).length, 1, JSON.stringify(row.ops));
       });
       await laneCheck('D3 lane: the save ends uncertain within the 20 s write deadline -- the row shows an error, the typed draft is KEPT, NO attempt-marker write is sent, and contact:C is held', async () => {
-        assert.equal(row.draft, 'D3 uncertain draft'); assert.ok(row.text.length > 0); assert.ok(!row.ops.some((o) => o.startsWith('contact.lastCallAttempt')), JSON.stringify(row.ops));
+        assert.equal(row.draft, 'D3 uncertain draft'); assert.ok(row.ui.errs && row.ui.errs.length === 1, 'an actual error message in the row ' + JSON.stringify(row.ui)); assert.equal(row.ui.disabled, false, 'settled: input re-enabled'); assert.ok(!row.ops.some((o) => o.startsWith('contact.lastCallAttempt')), JSON.stringify(row.ops));
         assert.equal(held(row.store, `contact:${C}`), 1);
       });
       await T.ctx.close();
@@ -789,17 +806,24 @@ async function main() {
     {
       const { S, T } = await openDash(43);
       T.holdServer = { fn: 'ghl-contacts', ms: 6000, count: 1 };
+      const r0 = T.log.length;
       void T.page.evaluate(async () => { const r = await import('/src/lib/read-session.ts'); try { await r.readFetch('/.netlify/functions/ghl-contacts'); } catch { /* recorded by server log */ } });
-      await sleep(200); const b0 = T.log.length; const g0 = ghlWritesToGhl;
-      await typeNote(T, C, 'D4 queued draft'); await sleep(300);
+      for (let i = 0; i < 200 && !T.log.slice(r0).some((e) => e.fn === 'ghl-contacts' && e.serverHeldMs); i++) await sleep(10);
+      const heldReader = T.log.slice(r0).find((e) => e.fn === 'ghl-contacts' && e.serverHeldMs);
+      const b0 = T.log.length; const g0 = ghlWritesToGhl;
+      const typed = await typeNote(T, C, 'D4 queued draft');
+      const submitted = await noteInput(T, C).evaluate((i) => i.disabled || i.placeholder === 'Saving…').catch(() => false);   // the row entered its saving state
+      const atSignOut = { readerPending: !!heldReader && heldReader.status === undefined, writesDispatched: writesTo(T, b0) };
       const so = await signOutUi(T); await sleep(7000); await settleServer(10000);
-      const row = { scenario: 'D4', signOut: so, ops: writeOps(T, b0), ghlWrites: ghlWritesToGhl - g0, oldCookieAfter: await directReader(S.cookie) };
+      const row = { scenario: 'D4', typed, submitted, atSignOut, signOut: so, ops: writeOps(T, b0), ghlWrites: ghlWritesToGhl - g0, oldCookieAfter: await directReader(S.cookie) };
       RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-      await check('D4 precondition: Sign out was actually clicked and confirmed (app-signout 200) and the old session is then refused 401 "revoked" (what was sent before the sign-out is recorded)', async () => {
+      await check('D4 preconditions (decisive): the held reader was REACHED and still pending on the server at the moment of Sign out; the note was typed and the row entered its saving state (a real UI submission); Sign out clicked and confirmed (app-signout 200); the old session then refused 401 "revoked"', async () => {
+        assert.ok(row.typed && row.submitted, 'UI submission ' + JSON.stringify(row)); assert.ok(row.atSignOut.readerPending, 'held reader pending at Sign out ' + JSON.stringify(row.atSignOut));
         assert.ok(row.signOut.clicked, JSON.stringify(row.signOut)); assert.deepEqual(row.signOut.signoutStatus, [200]);
         assert.deepEqual([row.oldCookieAfter.status, row.oldCookieAfter.reason], [401, 'revoked']);
       });
-      await laneCheck('D4 lane: the save QUEUED behind the held reader is cancelled by Sign out -- 0 ghl-write requests are ever sent for it and 0 GHL writes land', async () => {
+      await laneCheck('D4 lane: the save was QUEUED (0 ghl-write dispatched at the moment of Sign out) behind the held reader, and Sign out cancels it -- 0 ghl-write requests are ever sent and 0 GHL writes land', async () => {
+        assert.equal(row.atSignOut.writesDispatched, 0, 'queued, not dispatched, at Sign out');
         assert.equal(row.ops.length, 0, JSON.stringify(row.ops)); assert.equal(row.ghlWrites, 0);
       });
       await T.ctx.close();
@@ -880,21 +904,26 @@ async function main() {
       }
       // SC2 dispatched-uncertain first item: delivery held past the write deadline
       {
-        const { T, ok } = await scOpen(51, { fn: 'ghl-write', ms: WRITE_HOLD_MS, count: 1 });
+        const { T, ok } = await scOpen(51, { fn: 'ghl-write', ms: WRITE_HOLD_MS, count: 1 }); T.dupArmed = true;
         await typeCall(T); const b0 = T.log.length;
         await press(T, 'sc-save'); await sleep(WRITE_HOLD_MS + 5000); await waitIdle(T, 30000); await settleServer(10000);
         const res = await items(T); const st = await laneStore(T);
         const texts = []; for (const [id] of (res || [])) texts.push(await tid(T, `sc-save-text-${id}`).textContent({ timeout: 500 }).catch(() => null));
-        const row = { scenario: 'SC2', ok, ops: writeOps(T, b0), results: res, texts, notes: await tid(T, 'sc-call-notes').inputValue().catch(() => null), store: st };
+        const sent = T.log.slice(b0).filter((e) => e.fn === 'ghl-write');
+        const row = { scenario: 'SC2', ok, mutation: MUTATION, ops: writeOps(T, b0), requestIds: sent.map((e) => e.requestId), payloads: sent.map((e) => e.payload), results: res, texts, notes: await tid(T, 'sc-call-notes').inputValue().catch(() => null), store: st };
         RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
-        await check('SC2 rendered uncertain first item: the conversation note is sent EXACTLY once and never re-sent automatically; the call notes draft stays on screen (recorded: the item states the current client shows)', async () => {
-          assert.ok(row.ok); assert.ok(row.ops.length >= 1 && row.ops.length <= 4, JSON.stringify(row.ops)); assert.equal(new Set(row.ops.map((o, i) => i)).size, row.ops.length); assert.equal(row.notes, 'SC one-login rendered call.');
-          assert.ok(row.ops.length <= 4, 'no item re-sent: at most one write per planned item');
+        await check('SC2 rendered uncertain first item: the plan holds exactly the four items (note, timing, price, occupancy); every write carries a request id and NO request id or payload is sent twice (at most one send per item; --mutation=dup-send must FAIL this); the call notes draft stays on screen', async () => {
+          assert.ok(row.ok); assert.deepEqual((row.results || []).map(([id]) => id), ['note', 'timing', 'price', 'occupancy'], 'exactly the four planned items');
+          assert.ok(row.requestIds.length >= 1 && row.requestIds.every(Boolean), 'every write carries a request id ' + JSON.stringify(row.requestIds));
+          assert.equal(new Set(row.requestIds).size, row.requestIds.length, 'no request id sent twice ' + JSON.stringify(row.requestIds));
+          assert.equal(new Set(row.payloads).size, row.payloads.length, 'no payload sent twice ' + JSON.stringify(row.payloads));
+          assert.ok(row.requestIds.length <= 4, 'at most one send per planned item'); assert.equal(row.notes, 'SC one-login rendered call.');
         });
         await laneCheck('SC2 lane: the first item ends data-result "uncertain" at the 20 s write deadline, contact:<fixture contact> is held, and NO later item is sent -- each later item shows data-result "refused" with a message including uncertain_pending (Scotty flags A/B: LaneNotSent maps to refused); drafts kept', async () => {
           assert.equal(row.ops.length, 1, JSON.stringify(row.ops)); assert.equal(held(row.store, `contact:${fx.CONTACT}`), 1);
           assert.ok(row.results && row.results[0] && row.results[0][1] === 'uncertain', JSON.stringify(row.results));
-          assert.ok(row.results.slice(1).every(([, x]) => x === 'refused') && row.texts.slice(1).every((t) => String(t).includes('uncertain_pending')), JSON.stringify([row.results, row.texts]));
+          assert.equal(row.results.length, 4); assert.equal(row.texts.length, 4);
+          assert.ok(row.results.slice(1).every(([, x]) => x === 'refused') && row.texts.slice(1).every((t) => typeof t === 'string' && t.includes('uncertain_pending')), JSON.stringify([row.results, row.texts]));
         });
         await T.ctx.close();
       }
