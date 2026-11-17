@@ -68,11 +68,23 @@ function readRecords(): UnresolvedRecord[] | "corrupt" | "unreadable" {
   let raw: string | null;
   try { raw = s.getItem(UNRESOLVED_KEY); } catch { return "unreadable"; }
   if (raw === null) return [];
-  try {
-    const v = JSON.parse(raw) as Stored;
-    if (!v || v.v !== 1 || !Array.isArray(v.records)) return "corrupt";
-    return v.env === envId() ? v.records : [];
-  } catch { return "corrupt"; }
+  let v: unknown;
+  try { v = JSON.parse(raw); } catch { return "corrupt"; }
+  // Bones I2: the envelope and EVERY record's identity and state are validated before the records are trusted. Anything
+  // else is "corrupt": a wildcard hold, zero dispatch, and the questionable value is never overwritten. A VALID envelope
+  // of another environment is still isolated (no records here).
+  if (!isEnvelope(v)) return "corrupt";
+  if (v.env !== envId()) return [];
+  return v.records.every(isRecord) ? v.records : "corrupt";
+}
+function isEnvelope(v: unknown): v is Stored {
+  return isObj(v) && v.v === 1 && typeof v.env === "string" && Array.isArray(v.records);
+}
+function isRecord(x: unknown): x is UnresolvedRecord {
+  return isObj(x) && typeof x.holdId === "string" && x.holdId.length > 0 &&
+    typeof x.key === "string" && (x.key === "*" || /^contact:.+/.test(x.key)) &&
+    (x.requestId === null || typeof x.requestId === "string") && typeof x.operation === "string" &&
+    typeof x.createdAt === "number" && Number.isFinite(x.createdAt) && (x.state === "dispatching" || x.state === "uncertain");
 }
 function writeRecords(records: UnresolvedRecord[]): boolean {
   const s = store(); if (!s) return false;
@@ -161,7 +173,7 @@ export function classifyRelease(path: string, req: Record<string, unknown> | nul
 // ── the lane ──────────────────────────────────────────────────────────────────────────────────────────────────────
 type Entry = {
   kind: LaneKind; url: string; init: RequestInit; enqueuedAt: number; epoch: number;
-  meta: WriteMeta | null; beforeDispatch?: () => void;
+  meta: WriteMeta | null; beforeDispatch?: () => void; holdUntilApplied?: boolean;
   resolve: (r: Response) => void; reject: (e: unknown) => void; done: boolean; waitTimer: ReturnType<typeof setTimeout> | null;
 };
 const queue: Entry[] = [];
@@ -241,9 +253,19 @@ async function dispatch(e: Entry, holdId: string | null): Promise<void> {
     } else setRecordState(holdId, "uncertain");
   }
   if (!out && e.kind !== "write") abandoned += 1;
+  if (out && e.holdUntilApplied) {
+    // Bones I1: a status answer keeps the lane until the page has APPLIED it (laneApplied, from the caller's finally), so a
+    // session replacement it reveals is known before any queued write is dispatched under the old session.
+    settle(e, out);
+    return;
+  }
   live = null;
   if (out) settle(e, out); else settle(e, null, new LaneUncertain(failure ?? "network", e.kind, holdId));
   pump();
+}
+/** The caller of a holdUntilApplied request has applied its answer (idempotent; a no-op for anything else). */
+export function laneApplied(): void {
+  if (live && live.holdUntilApplied && live.done) { live = null; pump(); }
 }
 
 /** The whole body, read chunk by chunk under the same deadline (a body that never ends, or ignores cancel, cannot hold the caller). */
@@ -266,11 +288,11 @@ async function readBounded(res: Response, deadline: Promise<typeof TIMEOUT>): Pr
 }
 
 /** fetch(), through the lane when one IAOS sign-in is on; a plain fetch otherwise. */
-export function laneFetch(url: string, init: RequestInit, opts: { kind: LaneKind; beforeDispatch?: () => void }): Promise<Response> {
+export function laneFetch(url: string, init: RequestInit, opts: { kind: LaneKind; beforeDispatch?: () => void; holdUntilApplied?: boolean }): Promise<Response> {
   if (!oneLoginActive()) return fetch(url, init);
   return new Promise<Response>((resolve, reject) => {
     const meta = opts.kind === "write" ? writeMeta(url, init) : null;
-    const e: Entry = { kind: opts.kind, url, init, enqueuedAt: Date.now(), epoch, meta, beforeDispatch: opts.beforeDispatch, resolve, reject, done: false, waitTimer: null };
+    const e: Entry = { kind: opts.kind, url, init, enqueuedAt: Date.now(), epoch, meta, beforeDispatch: opts.beforeDispatch, holdUntilApplied: opts.holdUntilApplied, resolve, reject, done: false, waitTimer: null };
     if (init.signal?.aborted) { settle(e, null, new LaneNotSent("aborted")); return; }
     { const why = meta && blocked(meta.key); if (why) { settle(e, null, new LaneNotSent(why)); return; } }
     if (queue.length >= LANE_MAX_QUEUED) { settle(e, null, new LaneNotSent("full")); return; }
@@ -282,8 +304,19 @@ export function laneFetch(url: string, init: RequestInit, opts: { kind: LaneKind
 }
 
 /** Sign-out start, a deliberate sign-in (generation replacement) or unmount: every queued entry is not sent. Never the in-flight one; records stay. */
+/* B15-29 D2 r6, Bones I1: the protected-session GENERATION. It changes when the session this page saves under ends or is
+   replaced: Sign out, a deliberate sign-in (laneReset) and a server-confirmed different session (replaceAppWriteSession).
+   A caller captures it before a save and checks it after every await: a stale continuation (its save dispatched under
+   the old session) must not change the new session's drafts or UI, nor issue follow-on writes. The lane's own
+   transport accounting (holds, release, uncertainty) is unaffected. Never changes while One sign-in is off. */
+let sessionGen = 0;
+export function bumpSessionGeneration(): void { sessionGen += 1; }
+/** Returns a check that is true while the protected session is still the one current at capture. */
+export function captureSession(): () => boolean { const g = sessionGen; return () => g === sessionGen; }
+
 export function laneReset(reason: "signed_out" | "replaced" | "unmounted"): void {
   epoch += 1;
+  sessionGen += 1;
   if (reason === "signed_out") paused = true;
   if (reason === "replaced") paused = false;
   for (const e of queue.splice(0)) settle(e, null, new LaneNotSent(reason));

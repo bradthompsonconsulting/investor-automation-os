@@ -2,7 +2,7 @@ import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import OneLoginScreen, { ReminderDialog, type ScreenAction, type ScreenMessage } from "./OneLoginScreen";
 import { dismissReminder, dueReminder, nextReminderDelay, reminderDismissed, reminderMessage } from "../lib/session-reminder";
 import { READ_SESSION_ENDPOINT, READ_SESSION_LOST_EVENT } from "../lib/read-session";
-import { laneFetch, laneReset } from "../lib/protected-lane";   // B15-29 D2 r6
+import { laneApplied, laneFetch, laneReset } from "../lib/protected-lane";   // B15-29 D2 r6
 import { SESSION_UNAVAILABLE_EVENT, SESSION_UNAVAILABLE_MARKER, oneLoginSessionScale } from "../lib/one-login";
 import { clearAppWriteToken, confirmAppWriteSession, pauseAppWriteForSignOut, primeAppWriteSession, replaceAppWriteSession, resumeAppWriteAccess } from "../lib/app-write-session";
 import { clearOperatorScopedData, operatorChangedSinceLastPage, rememberOperator } from "../lib/operator-partition";
@@ -348,7 +348,7 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
     setSlot({ kind: "flight", f }, "start:slot-flight");
     let res: Response | null = null;
     let body: any = JSON_FAILED;
-    try { res = await laneFetch(READ_SESSION_ENDPOINT, { cache: "no-store", credentials: "same-origin" }, { kind: "status" }); ctxFlight.current = f.id; }
+    try { res = await laneFetch(READ_SESSION_ENDPOINT, { cache: "no-store", credentials: "same-origin" }, { kind: "status", holdUntilApplied: true }); ctxFlight.current = f.id; }
     catch { ctxFlight.current = f.id; res = null; }
     if (res) body = await res.json().catch(() => { ctxFlight.current = f.id; return JSON_FAILED; });
     ctxFlight.current = f.id;
@@ -356,7 +356,7 @@ export default function OneLoginAccess({ children }: { children: ReactNode }) {
       if (unmountedRef.current) return;
       const r: StatusResult = res ? classify(res, body, item.reason) : { kind: "unavailable" };
       try { apply(f, s, r); } finally { complete(f); }
-    } finally { ctxFlight.current = null; }
+    } finally { ctxFlight.current = null; laneApplied(); }   // Bones I1: the lane continues only after this answer is applied
   }
 
   useEffect(() => {

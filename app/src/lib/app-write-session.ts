@@ -2,7 +2,7 @@
 import { READ_SESSION_LOST_EVENT } from "./read-session";
 import { SESSION_UNAVAILABLE_EVENT, isSessionUnavailable, oneLoginActive } from "./one-login";
 import { AppWriteSignInRequired } from "./write-errors";
-import { laneFetch } from "./protected-lane";   // B15-29 D2 r6
+import { bumpSessionGeneration, captureSession, laneFetch } from "./protected-lane";   // B15-29 D2 r6
 export { AppWriteSignInRequired };
 let session: { token: string; expiresAt: string } | null = null;
 /**
@@ -164,14 +164,28 @@ async function oneLoginWriteFetch(url: string, init: RequestInit): Promise<Respo
 /** One IAOS sign-in: the read session is not (or no longer) signed in -- drop the token; the next save asks again. */
 export function clearAppWriteToken() { discardToken(); }
 /** One IAOS sign-in: Sign out was clicked on this page -- refuse every later save here until an explicit sign-in. */
-export function pauseAppWriteForSignOut() { pausedBySignOut = true; discardToken(); }
+export function pauseAppWriteForSignOut() { pausedBySignOut = true; discardToken(); bumpSessionGeneration(); }
 /**
  * One IAOS sign-in: an explicit sign-in completed on this page (a NEW session). r4: the previous session's cached and
  * pending saving tokens are discarded at once, and saving stays paused until confirmAppWriteSession().
  */
-export function resumeAppWriteAccess() { pausedBySignOut = false; awaitingSession = true; discardToken(); }
+export function resumeAppWriteAccess() { pausedBySignOut = false; awaitingSession = true; discardToken(); bumpSessionGeneration(); }
 /** One IAOS sign-in, r4: the read gate saw a DIFFERENT session than the one it had (replaced in this or another tab). */
-export function replaceAppWriteSession() { awaitingSession = true; discardToken(); }
+export function replaceAppWriteSession() { awaitingSession = true; discardToken(); bumpSessionGeneration(); }
+
+/**
+ * B15-29 D2 r6, Bones I1: capture the protected session before a save; the returned check is false once that session
+ * ended or was replaced. A caller stops its continuation (no draft / UI change, no follow-on write) when it is false.
+ */
+export const captureAppWriteSession: () => () => boolean = captureSession;
+/** Thrown (before anything is sent) by a follow-on write of a save whose session ended or was replaced. */
+export class AppWriteSessionChanged extends AppWriteSignInRequired {
+  constructor() { super("Not sent: the IAOS sign-in changed while this save was in progress."); this.name = "AppWriteSessionChanged"; }
+}
+/** A follow-on write that is refused, before anything is sent, once `live` is false. */
+export function whileSessionLive<A extends unknown[], R>(live: () => boolean, fn: (...a: A) => Promise<R>): (...a: A) => Promise<R> {
+  return (...a: A) => (live() ? fn(...a) : Promise.reject(new AppWriteSessionChanged()));
+}
 /** One IAOS sign-in, r4: the read gate has the current session confirmed by the server -- saving may continue (a fresh token is minted on demand or by primeAppWriteSession). */
 export function confirmAppWriteSession() { awaitingSession = false; }
 /** One IAOS sign-in: obtain a token now so the operator identity is known before the first save. Failures are silent. */

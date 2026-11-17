@@ -324,6 +324,11 @@ export interface SaveClient {
   readNotes(contactId: string): Promise<{ body: string }[]>;
   readOccupancy(contactId: string): Promise<string | null>;
   now(): string;
+  /**
+   * B15-29 D2 r6, Bones I1: capture the protected session before a Save; the check turns false once that session ended
+   * or was replaced. Absent (tests, One sign-in off): always live.
+   */
+  captureSession?(): () => boolean;
 }
 export type SaveHooks = { onConfirmed?: (item: { id: SaveItemId; signature: string }, sent: SentRecord) => void };
 
@@ -356,12 +361,23 @@ export class SellerConversationSaveCoordinator {
     this.deals.set(dealKey, { ...this.results(dealKey), [id]: r });
     this.onChange();
   }
+  /** B15-29 D2 r6, Bones I1: put an item back exactly as it was before a Save whose session then ended or was replaced. */
+  private restore(dealKey: string, id: SaveItemId, prev: ItemResult | undefined) {
+    const next = { ...this.results(dealKey) } as Record<string, ItemResult>;
+    if (prev === undefined) delete next[id]; else next[id] = prev;
+    this.deals.set(dealKey, next as DealResults);
+    this.itemHooks.delete(slot(dealKey, id));
+    this.onChange();
+  }
 
   /** Sends the plan's writes in order. Returns "busy" (nothing sent) while another save runs. */
   async save(dealKey: string, contactId: string, plan: SavePlan, client: SaveClient, hooks: SaveHooks = {}): Promise<"busy" | "done"> {
     if (this.inflight !== null) return "busy";
     this.inflight = dealKey;
     this.onChange();
+    // B15-29 D2 r6, Bones I1: a Save whose session ends or is replaced while a write is out stops there. That item is put
+    // back as it was, no hook runs, no later item is sent, and the old request's late answer is ignored.
+    const live = client.captureSession?.() ?? (() => true);
     try {
       for (const p of plan.writes) {
         const prev = this.results(dealKey)[p.id];
@@ -379,7 +395,7 @@ export class SellerConversationSaveCoordinator {
           continue;
         }
         this.itemHooks.set(slot(dealKey, id), hooks);
-        const onLate = (late: SendOutcome) => this.settle(dealKey, id, requestId, late);
+        const onLate = (late: SendOutcome) => { if (live()) this.settle(dealKey, id, requestId, late); };
         this.set(dealKey, id, { status: "saving", signature, requestId });
         try {
           if (p.write.kind === "note") {
@@ -391,10 +407,12 @@ export class SellerConversationSaveCoordinator {
             outcome = await client.send("contact.occupancy", contactId, { value: p.write.value }, requestId, onLate);
           }
         } catch (e) {
+          if (!live()) { this.restore(dealKey, id, prev); break; }
           // The body could not be built, or the client broke its contract: nothing is known to have been sent.
           this.set(dealKey, p.id, { status: "refused", signature, message: `Not sent: ${(e as Error)?.message ?? "the save could not start"}` });
           continue;
         }
+        if (!live()) { this.restore(dealKey, id, prev); break; }
         if (outcome.kind === "confirmed") {
           this.set(dealKey, p.id, { status: "confirmed", signature, sent, message: "Saved (confirmed)." });
           hooks.onConfirmed?.({ id: p.id, signature }, sent);

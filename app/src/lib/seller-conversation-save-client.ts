@@ -16,7 +16,7 @@
  * never write.
  */
 import { writeCommand } from "./write-command";
-import { AppWriteSignInRequired } from "./app-write-session";
+import { AppWriteSignInRequired, captureAppWriteSession } from "./app-write-session";
 import { ghl, OCCUPANCY_STATUS_ID } from "./ghl";
 import { classifyWriteResponse, withTimeout, SaveTimeout, type SaveClient, type SendOutcome } from "./seller-conversation-save";
 
@@ -25,6 +25,7 @@ export const SAVE_TIMEOUT_MS = 30_000;
 export function createSellerConversationSaveClient(timeoutMs: number = SAVE_TIMEOUT_MS): SaveClient {
   return {
     requestId: () => crypto.randomUUID(),
+    captureSession: () => captureAppWriteSession(),   // B15-29 D2 r6, Bones I1
     async send(operation, targetId, args, requestId, onLate): Promise<SendOutcome> {
       // The whole attempt, classified; it never rejects, so it can be awaited late.
       const attempt: Promise<SendOutcome> = (async () => {

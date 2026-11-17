@@ -13,6 +13,7 @@ import { explicitCallbackClient,
 } from "../lib/ghl";
 import { displayTier, type DisplayTier } from "../lib/display-tier";   // B15-16
 import { getRuntimeConfig } from "../../shared/ghl-config";
+import { captureAppWriteSession, whileSessionLive } from "../lib/app-write-session";   // B15-29 D2 r6, Bones I1
 import { CallbackPopover } from "../components/CallbackPopover";
 import { AnchoredPopover } from "../components/AnchoredPopover";
 import { readOverrides, effectiveDisposition, type StorageLike } from "../lib/dispositionOverride";
@@ -381,6 +382,10 @@ export default function Dashboard() {
   }
 
   async function handleSaveCallback(contactId: string, iso: string | null) {
+    // B15-29 D2 r6, Bones I1: a save dispatched under a session that then ends or is replaced (Sign out, a deliberate
+    // sign-in, a server-confirmed different session) only releases its own in-progress marker; it changes no draft or
+    // result on the page and issues no follow-on write (the guarded client refuses later stages before sending).
+    const live = captureAppWriteSession();
     setCallbackSaving(true);
     setCallbackError(null);
 
@@ -388,9 +393,11 @@ export default function Dashboard() {
     if (iso === null) {
       try {
         await ghl.contacts.setExplicitCallback(contactId, null);
+        if (!live()) return;
         setCallbackOverride((prev) => ({ ...prev, [contactId]: null }));
         setCallbackPopoverId(null);
       } catch (e) {
+        if (!live()) return;
         setCallbackError((e as Error).message);
       } finally {
         setCallbackSaving(false);
@@ -401,8 +408,16 @@ export default function Dashboard() {
     // Scheduling IS a disposition (§10): gated callback → note → attempt via the
     // shared helper, so the fresh last_call_attempt greys this row just like the
     // Workspace. Still exactly the three sanctioned writes.
-    const result = await scheduleCallbackGated(explicitCallbackClient, contactId, iso);
+    const guarded = {
+      contacts: {
+        setCallbackDatetime: whileSessionLive(live, explicitCallbackClient.contacts.setCallbackDatetime),
+        setLastCallAttempt: whileSessionLive(live, explicitCallbackClient.contacts.setLastCallAttempt),
+      },
+      notes: { create: whileSessionLive(live, explicitCallbackClient.notes.create) },
+    };
+    const result = await scheduleCallbackGated(guarded, contactId, iso);
     setCallbackSaving(false);
+    if (!live()) return;
 
     if (result.ok) {
       setCallbackOverride((prev) => ({ ...prev, [contactId]: iso }));
@@ -857,23 +872,30 @@ export default function Dashboard() {
     const text = (draftNotes[contactId] ?? "").trim();
     if (!text || savingIds.has(contactId)) return;
 
+    // B15-29 D2 r6, Bones I1: see handleSaveCallback. A stale completion keeps the draft, shows nothing and never
+    // marks the attempt; only this save's own "Saving…" marker is released (finally).
+    const live = captureAppWriteSession();
     setSavingIds((s) => new Set(s).add(contactId));
     setSaveError((prev) => { const next = { ...prev }; delete next[contactId]; return next; });
 
     try {
       await ghl.notes.create(contactId, text);
+      if (!live()) return;
       setDraftNotes((prev) => ({ ...prev, [contactId]: "" }));
 
       const nowIso = new Date().toISOString();
       try {
-        await ghl.contacts.setLastCallAttempt(contactId, nowIso);
+        await whileSessionLive(live, ghl.contacts.setLastCallAttempt)(contactId, nowIso);
+        if (!live()) return;
         setAttemptOverride((prev) => ({ ...prev, [contactId]: nowIso }));
       } catch (e) {
+        if (!live()) return;
         setSaveError((prev) => ({
           ...prev, [contactId]: `Note saved, but couldn't mark attempted: ${(e as Error).message}`,
         }));
       }
     } catch (e) {
+      if (!live()) return;
       setSaveError((prev) => ({ ...prev, [contactId]: (e as Error).message }));
     } finally {
       setSavingIds((s) => { const next = new Set(s); next.delete(contactId); return next; });
