@@ -885,7 +885,7 @@ export default function Dashboard() {
 
       const nowIso = new Date().toISOString();
       try {
-        await whileSessionLive(live, ghl.contacts.setLastCallAttempt)(contactId, nowIso);
+        await whileSessionLive(live, (id: string, at: string) => ghl.contacts.setLastCallAttempt(id, at))(contactId, nowIso);
         if (!live()) return;
         setAttemptOverride((prev) => ({ ...prev, [contactId]: nowIso }));
       } catch (e) {
