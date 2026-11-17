@@ -10,7 +10,9 @@
  * A "device" is a browser cookie jar that honours Set-Cookie Max-Age: closing the browser drops everything in memory
  * (saving tokens) and keeps only cookies that were persistent and are not expired. Time is a simulated clock
  * (Date.now) shared by browser and server code, so 30 days run in seconds. There is no BroadcastChannel,
- * localStorage or sessionStorage in this process.
+ * localStorage or indexedDB in this process. B15-29 D2 r6 (Bones ruling 248531402977628160): after C0 a browser-faithful
+ * sessionStorage fixture is installed for the protected lane's unresolved-write record ONLY (per tab, dropped when the
+ * browser closes); the saving module and the gate still use no storage (C0). CS rows: sessionStorage unusable.
  *
  *   C0  no browser storage / channel
  *   C1  flag off: exactly the previous behaviour
@@ -130,7 +132,13 @@ function storeCookie(dev, setCookie) {
 }
 const cookieOf = (dev) => (dev.cookie && (dev.cookieExp === null || T < dev.cookieExp) ? dev.cookie : null);
 /** Closing the browser: memory (the saving token) is gone; only a persistent, unexpired cookie survives. */
-function closeBrowser(dev, S) { if (!dev.persistent) dev.cookie = null; S.clearAppWriteToken(); }
+/** A browser-faithful Storage (string values, null for a missing key, key()/length/clear) -- the lane's sessionStorage. */
+function makeSessionStorage() {
+  const m = new Map();
+  return { get length() { return m.size; }, key: (i) => [...m.keys()][i] ?? null, getItem: (k) => (m.has(String(k)) ? m.get(String(k)) : null),
+    setItem: (k, v) => { m.set(String(k), String(v)); }, removeItem: (k) => { m.delete(String(k)); }, clear: () => { m.clear(); } };
+}
+function closeBrowser(dev, S) { if (!dev.persistent) dev.cookie = null; S.clearAppWriteToken(); if (globalThis.sessionStorage) globalThis.sessionStorage.clear(); }
 const sidOf = (dev) => JSON.parse(Buffer.from(dev.cookie.split('.')[1], 'base64url')).sid;
 const sessionEnd = (dev) => JSON.parse(Buffer.from(dev.cookie.split('.')[1], 'base64url')).exp * 1000;
 
@@ -169,7 +177,7 @@ global.fetch = async (url, init = {}) => {
     try { writeAuth.requireAppWriter(event); } catch { entry.status = 401; return new Response(JSON.stringify({ error: 'Application write sign-in required' }), { status: 401 }); }
     res = await rev.sessionWriteRefusal(event);
     if (res) entry.reason = JSON.parse(res.body).reason;
-    else { writeStore.push(body.id); res = { statusCode: 200, headers: {}, body: JSON.stringify({ ok: true }) }; }
+    else { writeStore.push(body.id); res = { statusCode: 200, headers: {}, body: JSON.stringify(body.operation === 'note.create' ? { note: { id: `fx-${body.id}` } } : { confirmed: true }) }; }   // the real definitive answers (note.create: the note envelope); B15-29 D2 r6 releases a hold only on these
   } else if (fn === 'ghl-contact') {
     res = readAuth.readAuthRefusal(event) || await rev.sessionReadRefusal(event) || { statusCode: 200, headers: {}, body: JSON.stringify({ contact: { id: 'fixture' } }) };
     if (res.statusCode !== 200) entry.reason = JSON.parse(res.body).reason || JSON.parse(res.body).by;
@@ -187,11 +195,11 @@ const S = loadSavingModule();
 const R = require(path.join(APP, 'src/lib/read-session.ts'));
 let saveN = 0;
 /** One operator save: one click = one call. Returns 'sent:<status>' or 'refused:<message>'. Never retries. */
-async function save(mod = S, device = D) {
+async function save(mod = S, device = D, extra = {}) {
   const id = `save-${++saveN}`;
   // The module's own token request carries no device: the device in use is the one this save runs on.
   const previous = D; D = device;
-  try { const r = await mod.appWriteFetch('/.netlify/functions/ghl-write', { method: 'POST', device, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }); return { id, out: `sent:${r.status}` }; }
+  try { const r = await mod.appWriteFetch('/.netlify/functions/ghl-write', { method: 'POST', device, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, ...extra }) }); return { id, out: `sent:${r.status}` }; }
   catch (e) { return { id, out: e instanceof mod.AppWriteSignInRequired ? `refused:${e.message}` : `error:${e.message}` }; }
   finally { D = previous; }
 }
@@ -231,6 +239,8 @@ const resetAll = async ({ signIn = true } = {}) => {
     const src = fs.readFileSync(path.join(APP, 'src/lib/app-write-session.ts'), 'utf8') + fs.readFileSync(path.join(APP, 'src/components/OneLoginAccess.tsx'), 'utf8');
     assert.ok(!/BroadcastChannel|localStorage|sessionStorage|indexedDB/.test(src));
   });
+  // B15-29 D2 r6: from here on the lane (only) has a browser-faithful sessionStorage.
+  globalThis.sessionStorage = makeSessionStorage();
 
   // ---------------------------------------------------------------- C1 off
   setFlag(false); await resetAll({ signIn: false });
@@ -256,10 +266,33 @@ const resetAll = async ({ signIn = true } = {}) => {
   });
   await check('C2b three concurrent saves with no usable token share ONE token request; each is sent once', async () => {
     S.clearAppWriteToken(); log = [];
-    const rs = await Promise.all([save(), save(), save()]);
+    // B15-29 D2 r6: concurrent writes to the SAME record are refused by the lane's conflict check (not this row's subject);
+    // the three saves are notes on three different contacts, so the shared token mint is what is tested.
+    const rs = await Promise.all(['c-a', 'c-b', 'c-c'].map((t) => save(S, D, { operation: 'note.create', targetId: t, args: { body: t } })));
     assert.deepEqual(rs.map((r) => r.out), ['sent:200', 'sent:200', 'sent:200']);
     assert.equal(tokens().length, 1); assert.equal(writes().length, 3); noDuplicateWrites();
+    assert.equal(JSON.parse(sessionStorage.getItem('iaosLane.unresolved.v1')).records.length, 0, 'every definitive answer released its lane hold');
   });
+
+  // ---------------------------------------------------------------- CS sessionStorage unusable (B15-29 D2 r6)
+  // A LOCAL stop: never counted as revocation evidence. Sign-in, the session read and the token mint behave as specified.
+  for (const [mode, make] of [
+    ['absent', () => undefined],
+    ['throwing', () => ({ ...makeSessionStorage(), getItem() { throw new Error('SecurityError'); }, setItem() { throw new Error('QuotaExceededError'); } })],
+    ['read-back mismatch', () => { const s = makeSessionStorage(); const g = s.getItem; return { ...s, getItem: (k) => { const v = g(k); return v === null ? v : v + ' '; }, setItem: s.setItem, removeItem: s.removeItem }; }],
+  ]) {
+    await resetAll();
+    await check(`CS ${mode} sessionStorage: reads work, the save is NOT sent (persist_failed, zero write dispatched); restoring storage, the next save is sent once`, async () => {
+      const real = globalThis.sessionStorage; globalThis.sessionStorage = make();
+      try {
+        log = [];
+        assert.equal(await read(), 200);
+        const r = await save();
+        assert.match(r.out, /^refused:.*\[persist_failed\]$/); assert.equal(writes().length, 0);
+      } finally { globalThis.sessionStorage = real; }
+      const r2 = await save(); assert.equal(r2.out, 'sent:200'); assert.equal(writes().length, 1);
+    });
+  }
 
   // ---------------------------------------------------------------- C3 long call
   await resetAll();

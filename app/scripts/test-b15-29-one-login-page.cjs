@@ -15,6 +15,8 @@
  *   P4 tab B -- with NO BroadcastChannel and a localStorage that throws -- cannot save after A's Sign out: its
  *      earlier token is refused by the server (Variant S), nothing is applied, the recovery overlay appears and
  *      B's unsaved draft is still on the (hidden, mounted) page
+ *   PS (B15-29 D2 r6) sessionStorage absent / throwing / read-back mismatch: sign-in and reads work; a save is NOT sent
+ *      (persist_failed, zero write dispatched). A local stop -- not revocation evidence.
  *   P5 revocation store unavailable: "IAOS can't confirm your sign-in right now" + Try again, NO sign-in prompt,
  *      draft kept; recovery on Try again with the page not remounted
  *   P6 Sign out not confirmed (provider false success): "Sign-out not confirmed" + Try Sign out again with the
@@ -151,7 +153,7 @@ async function main() {
     else if (fn === 'ghl-write') {
       try { writeAuth.requireAppWriter(event); } catch { res = { statusCode: 401, body: JSON.stringify({ error: 'Application write sign-in required' }) }; }
       if (!res) res = await rev.sessionWriteRefusal(event);
-      if (!res) { applied.push({ tab, body: JSON.parse(event.body).args.body }); res = { statusCode: 200, body: JSON.stringify({ ok: true }) }; }
+      if (!res) { applied.push({ tab, body: JSON.parse(event.body).args.body }); res = { statusCode: 200, body: JSON.stringify({ note: { id: `fx-note-${applied.length}`, body: JSON.parse(event.body).args.body } }) }; }   // the real note.create envelope (boundary.note); B15-29 D2 r6 releases a contact hold only on a definitive answer
     } else res = { statusCode: 404, body: JSON.stringify({ error: 'fixture does not model ' + fn }) };
     entry.status = res.statusCode;
     return route.fulfill({ status: res.statusCode, contentType: 'application/json', body: res.body });
@@ -175,7 +177,10 @@ async function main() {
   try {
     // ── P1 ──
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-    await ctx.addInitScript(() => { delete window.BroadcastChannel; Storage.prototype.setItem = function () { throw new DOMException('fixture', 'QuotaExceededError'); }; Storage.prototype.getItem = function () { throw new DOMException('fixture', 'SecurityError'); }; });
+    // B15-29 D2 r6 (Bones ruling 248531402977628160): no cross-tab coordination -- no BroadcastChannel, a localStorage that
+    // throws -- but sessionStorage (per tab, never shared between tabs) is kept: the lane requires it for its unresolved-write
+    // record. Storage-unusable saving is proven separately (PS rows), and never counted as revocation evidence.
+    await ctx.addInitScript(() => { delete window.BroadcastChannel; Object.defineProperty(window, 'localStorage', { configurable: true, get() { throw new DOMException('fixture', 'SecurityError'); } }); });
     const popups = [];
     ctx.on('page', (p) => popups.push(p));
     const A = await newTab(ctx, 'A');
@@ -217,17 +222,47 @@ async function main() {
     check('P3 the revocation record for exactly that session exists in the store', (blobs.get('iaos-write-receipts', rev.sessionKey('test', sidA)) || {}).text === rev.sessionRecordText('test', EPOCH, sidA, 'revoked'));
     check('P3 no request from tab A cleared or set a cookie (DELETE is never sent)', log.every((e) => !(e.fn === 'app-read-session' && e.method === 'DELETE')));
 
-    // ── P4 ── (tab B has not been focused; no channel or storage exists)
+    // ── P4 ── (tab B has not been focused; no channel or localStorage exists)
     const writesBefore = log.filter((e) => e.tab === 'B' && e.fn === 'ghl-write').length;
     const appliedBefore = applied.length;
     await B.getByTestId('save').click();
     await until(() => shown(B, 'read-access-recovery'));
     const bWrites = log.filter((e) => e.tab === 'B' && e.fn === 'ghl-write');
-    check('P4 tab B (no BroadcastChannel, throwing storage): its earlier token is refused by the server (401) and NOTHING is applied', bWrites.length - writesBefore === 1 && applied.length === appliedBefore &&
+    check('P4 tab B (no BroadcastChannel, throwing localStorage): its earlier token is refused by the server (401) and NOTHING is applied', bWrites.length - writesBefore === 1 && applied.length === appliedBefore &&
       bWrites.slice(writesBefore).every((e) => e.status === 401), bWrites);
     check('P4 tab B shows the recovery overlay ("You have signed out of IAOS.")', await shown(B, 'read-access-recovery') && await has(B, "You've signed out of IAOS."));
     check('P4 tab B\'s unsaved draft is still on the mounted (hidden) page', (await B.getByTestId('draft').inputValue()) === 'unsaved seller notes in tab B');
     check('P4 tab B made no further write and no token was issued to it after the Sign out', log.filter((e) => e.tab === 'B' && e.fn === 'app-write-token' && e.status === 200).length === bTokenBefore);
+
+    // ── PS ── B15-29 D2 r6: sessionStorage unusable (absent / throwing / read-back mismatch). Sign-in and reads work as
+    // specified; every save stops LOCALLY as persist_failed with ZERO write dispatched. Local stops: NOT revocation evidence.
+    for (const [mode, init] of [
+      ['absent', () => { Object.defineProperty(window, 'sessionStorage', { configurable: true, get() { return undefined; } }); }],
+      ['throwing', () => { Storage.prototype.setItem = function () { throw new DOMException('fixture', 'QuotaExceededError'); }; Storage.prototype.getItem = function () { throw new DOMException('fixture', 'SecurityError'); }; }],
+      ['readback-mismatch', () => { const g = Storage.prototype.getItem; Storage.prototype.getItem = function (k) { const v = g.call(this, k); return k === 'iaosLane.unresolved.v1' && v !== null ? v + ' ' : v; }; }],
+    ]) {
+      const cx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      await cx.addInitScript(init);
+      const X = await newTab(cx, `S-${mode}`);
+      // The fixture's cookie jar is shared: a context after the first one may already hold the session cookie.
+      await until(async () => (await has(X, 'Sign in to IAOS')) || (await shown(X, 'read-access-signed-in')));
+      if (!(await shown(X, 'read-access-signed-in'))) await X.getByRole('button', { name: 'Sign in' }).click();
+      await until(() => shown(X, 'read-access-signed-in'));
+      const signedInOk = await shown(X, 'read-access-signed-in');
+      const reads = log.filter((e) => e.tab === `S-${mode}` && e.fn === 'app-read-session' && e.status === 200).length;
+      const w0 = log.filter((e) => e.tab === `S-${mode}` && e.fn === 'ghl-write').length; const a0 = applied.length;
+      await X.getByTestId('draft').fill(`kept with ${mode} sessionStorage`);
+      await X.getByTestId('save').click();
+      await until(async () => (await text(X, 'save-result')).length > 0);
+      const out = await text(X, 'save-result');
+      check(`PS ${mode} sessionStorage: sign-in and the session read work; the save is NOT sent (persist_failed, zero write dispatched, nothing applied); the draft is kept`,
+        signedInOk && reads >= 1 && /\[persist_failed\]$/.test(out) && log.filter((e) => e.tab === `S-${mode}` && e.fn === 'ghl-write').length === w0 && applied.length === a0 &&
+        (await X.getByTestId('draft').inputValue()) === `kept with ${mode} sessionStorage`, { out, reads });
+      // Leave the shared cookie jar as P3 left it (signed out), so P5 starts from the sign-in landing.
+      await X.getByRole('button', { name: 'Sign out' }).click();
+      await until(() => has(X, 'Signed out of IAOS.'));
+      await cx.close();
+    }
 
     // ── P5 ── unavailable store, in a new context
     const ctx2 = await browser.newContext({ viewport: { width: 1280, height: 900 } });

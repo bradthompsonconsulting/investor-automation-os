@@ -169,7 +169,7 @@ async function main() {
       entry.auth = event.headers.authorization || null;
       try { writeAuth.requireAppWriter(event); } catch { res = { statusCode: 401, headers: {}, body: JSON.stringify({ error: 'Application write sign-in required' }) }; }
       if (!res) res = await rev.sessionWriteRefusal(event);
-      if (!res) { applied.push({ tab, body: JSON.parse(event.body).args.body }); res = { statusCode: 200, headers: {}, body: JSON.stringify({ ok: true }) }; }
+      if (!res) { applied.push({ tab, body: JSON.parse(event.body).args.body }); res = { statusCode: 200, headers: {}, body: JSON.stringify({ note: { id: `fx-note-${applied.length}`, body: JSON.parse(event.body).args.body } }) }; }   // the real note.create envelope (boundary.note); B15-29 D2 r6 releases a contact hold only on a definitive answer
     } else res = { statusCode: 404, headers: {}, body: JSON.stringify({ error: 'fixture does not model ' + fn }) };
     entry.status = res.statusCode;
     const sc = res.headers && res.headers['Set-Cookie'];
@@ -604,35 +604,39 @@ async function main() {
       const ctx9 = await newCtx();
       const Q = await toT1WithDraft(ctx9, 'Q', 'A-to-A unsaved seller notes');
       const oldSid = jarSid();
-      // A pending mint under the OLD session (held), and a delayed OLD status answer (held, "signed in" + the old handle).
+      // B15-29 D2 r6 (lane: ONE protected request in flight per tab). The OLD-session mint is held IN FLIGHT across the
+      // replacement. An OLD status re-check started meanwhile is QUEUED behind it in the lane, and the replacement's
+      // laneReset("replaced") cancels it: it is never sent. The old mint's answer is then delivered LATE, after the
+      // replacement began, and must never be used. (Old in-flight STATUS answers across an in-page replacement:
+      // test-b15-29-status-single-flight.cjs ISO1.)
       const mintHold = hold('app-write-token');
       await Q.evaluate(async () => { const m = await import('/src/lib/app-write-session.ts'); m.clearAppWriteToken(); m.primeAppWriteSession(); });
       await until(() => mintHold.entered);
-      const statusHold = hold('app-read-session', 'GET');
+      const statusGets = () => log.filter((e) => e.tab === 'Q' && e.fn === 'app-read-session' && e.method === 'GET').length;
+      const statusBefore = statusGets();
       await Q.evaluate(() => window.dispatchEvent(new Event('focus')));
-      await until(() => statusHold.entered);
+      await settled(Q); await settled(Q);
       const heldMint = log.filter((e) => e.held && e.fn === 'app-write-token').slice(-1)[0];
       await Q.getByTestId('session-reminder-log-in').click({ timeout: 8000 }).catch(() => {});
       await until(() => shown(Q, 'one-login-relogin'));
       await signInViaPopup(ctx9, Q);
-      await until(async () => !(await shown(Q, 'one-login-relogin')) && await shown(Q, 'read-access-signed-in'));
       const newSid = jarSid();
-      const ansMint = await answers(Q, 'app-write-token'); const ansStatus = await answers(Q, 'app-read-session');
-      mintHold.release(); statusHold.release();
-      // The delayed OLD answers have actually reached the page (route fulfilled AND counted by the page), then settle.
-      // Bones P2-1 (280a974): the delivery wait's result is CONSUMED -- a missing or late-past-deadline answer fails here
-      // (and the stale-answer check below), never passes on an unchanged screen.
-      const delivered19 = await until(async () => mintHold.fulfilled && statusHold.fulfilled &&
-        (await answers(Q, 'app-write-token')) > ansMint && (await answers(Q, 'app-read-session')) > ansStatus, 20000);
+      const statusWhileMintHeld = statusGets() - statusBefore;      // the old re-check: queued, then cancelled -- never sent
+      const ansMint = await answers(Q, 'app-write-token');
+      mintHold.release();
+      // Bones P2-1 (280a974): the delivery wait's result is CONSUMED -- a missing or late answer fails here.
+      const delivered19 = await until(async () => mintHold.fulfilled && (await answers(Q, 'app-write-token')) > ansMint, 20000);
+      await until(async () => !(await shown(Q, 'one-login-relogin')) && await shown(Q, 'read-access-signed-in'));
       const settled19 = (await settled(Q)) && (await settled(Q));
-      check('L19 prerequisite: the delayed OLD mint and status answers were delivered to the page and processed',
-        delivered19 && settled19 && !!mintHold.fulfilled && !!statusHold.fulfilled,
-        { delivered19, settled19, mintFulfilled: !!mintHold.fulfilled, statusFulfilled: !!statusHold.fulfilled, answers: { mint: await answers(Q, 'app-write-token'), status: await answers(Q, 'app-read-session'), ansMint, ansStatus } });
+      check('L19 prerequisite: the delayed OLD mint answer was delivered to the page and processed AFTER the replacement began',
+        delivered19 && settled19 && !!mintHold.fulfilled && newSid !== oldSid,
+        { delivered19, settled19, mintFulfilled: !!mintHold.fulfilled, answers: { mint: await answers(Q, 'app-write-token'), ansMint } });
       check('L19 A->A Log In Again: a NEW session; the same page (not remounted) keeps the unsaved draft; no account-changed notice',
         newSid !== oldSid && (await draftValue(Q)) === 'A-to-A unsaved seller notes' && (await mounts(Q)) === 1 && !(await shown(Q, 'one-login-account-changed')) &&
         await shown(Q, 'read-access-signed-in'), { oldSid, newSid, mounts: await mounts(Q) });
-      check('L19 the delayed OLD status answer delivered after the replacement is discarded (still signed in, no overlay)',
-        delivered19 && settled19 && await shown(Q, 'read-access-signed-in') && !(await shown(Q, 'read-access-recovery')), { delivered19, settled19 });
+      check('L19 the OLD status re-check queued behind the held mint was cancelled by the replacement (never sent); signed in, no overlay',
+        statusWhileMintHeld === 0 && statusGets() > statusBefore && delivered19 && settled19 && await shown(Q, 'read-access-signed-in') && !(await shown(Q, 'read-access-recovery')),
+        { statusWhileMintHeld, statusAfter: statusGets() - statusBefore });
       const n = log.filter((e) => e.tab === 'Q' && e.fn === 'ghl-write').length;
       await Q.getByTestId('save').click({ timeout: 8000 }).catch(() => {});
       // The write's log entry exists before its status is recorded: wait for the STATUS, not just the entry.

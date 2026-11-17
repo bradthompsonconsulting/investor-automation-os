@@ -27,11 +27,11 @@ const MUTATE = arg('mutate');
 
 const R = (find, repl) => ({ find, repl });
 const MUTATIONS = {
-  'persist-after-fetch':     { targets: ['P1'], edits: [R('    live = e;\n    void dispatch(e, holdId);', '    live = e;\n    void dispatch(e, holdId);'), R('      if (r === "corrupt" || !writeRecords([...r, rec])) { settle(e, null, new LaneNotSent("persist_failed")); continue; }', '      queueMicrotask(() => { if (r !== "corrupt") writeRecords([...r, rec]); });')] },
-  'dispatch-on-persist-fail':{ targets: ['P2'], edits: [R('      if (r === "corrupt" || !writeRecords([...r, rec])) { settle(e, null, new LaneNotSent("persist_failed")); continue; }', '      if (r !== "corrupt") writeRecords([...r, rec]);')] },
+  'persist-after-fetch':     { targets: ['P1'], edits: [R('    live = e;\n    void dispatch(e, holdId);', '    live = e;\n    void dispatch(e, holdId);'), R('      if (r === "corrupt" || r === "unreadable" || !writeRecords([...r, rec])) { settle(e, null, new LaneNotSent("persist_failed")); continue; }', '      queueMicrotask(() => { if (r !== "corrupt" && r !== "unreadable") writeRecords([...r, rec]); });')] },
+  'dispatch-on-persist-fail':{ targets: ['P2'], edits: [R('      if (r === "corrupt" || r === "unreadable" || !writeRecords([...r, rec])) { settle(e, null, new LaneNotSent("persist_failed")); continue; }', '      if (r !== "corrupt" && r !== "unreadable") writeRecords([...r, rec]);')] },
   'key-under-iaos-prefix':   { targets: ['P3'], edits: [R('export const UNRESOLVED_KEY = "iaosLane.unresolved.v1";', 'export const UNRESOLVED_KEY = "iaos.lane.unresolved.v1";')] },
   'one-directional-wildcard':{ targets: ['P5'], edits: [R('const conflicts = (a: string, b: string) => a === "*" || b === "*" || a === b;', 'const conflicts = (a: string, b: string) => a === "*" || a === b;')] },
-  'no-dispatch-recheck':     { targets: ['P5'], edits: [R('      if (conflicting(e.meta.key)) { settle(e, null, new LaneNotSent("uncertain_pending")); continue; }\n', '')] },
+  'no-dispatch-recheck':     { targets: ['P5'], edits: [R('      { const why = blocked(e.meta.key); if (why) { settle(e, null, new LaneNotSent(why)); continue; } }\n', '')] },
   'tie-dispatches':          { targets: ['P6a'], edits: [R('    if (Date.now() - e.enqueuedAt >= LANE_MAX_WAIT_MS) {', '    if (Date.now() - e.enqueuedAt > LANE_MAX_WAIT_MS) {'), R('    e.waitTimer = setTimeout(() => { if (!e.done && queue.includes(e)) dropQueued(e, "waited"); }, LANE_MAX_WAIT_MS);', '    e.waitTimer = setTimeout(() => { if (!e.done && queue.includes(e)) dropQueued(e, "waited"); }, LANE_MAX_WAIT_MS + 1);')] },
   'deadline-awaits-fetch':   { targets: ['P6b', 'P6c'], edits: [R('    const res = await Promise.race([sent, deadline]);', '    const res = await sent;'), R('    const step = await Promise.race([reader.read(), deadline]);', '    const step = await reader.read();')] },
   'late-response-releases':  { targets: ['P8'], edits: [R('    sent.catch(() => { /* a late rejection after the deadline is ignored */ });', '    sent.then(async (late) => { if (holdId) { try { const t = await late.clone().text(); if (classifyRelease(e.meta!.path, e.meta!.body, late.status, t) === "release") setRecordState(holdId, "remove"); } catch {} } }, () => {});')] },
@@ -81,9 +81,9 @@ async function advance(ms) {
 }
 
 // ── fake sessionStorage ──
-const mem = new Map(); const storage = { failSet: false, tamper: false, setCalls: [] };
+const mem = new Map(); const storage = { failSet: false, failGet: false, tamper: false, setCalls: [] };
 global.sessionStorage = {
-  getItem: (k) => { const v = mem.has(k) ? mem.get(k) : null; return storage.tamper && v ? v + ' ' : v; },
+  getItem: (k) => { if (storage.failGet) throw new Error('SecurityError'); const v = mem.has(k) ? mem.get(k) : null; return storage.tamper && v ? v + ' ' : v; },
   setItem: (k, v) => { storage.setCalls.push({ k, at: now }); if (storage.failSet) throw new Error('QuotaExceededError'); mem.set(k, String(v)); },
   removeItem: (k) => { mem.delete(k); }, key: (i) => [...mem.keys()][i] ?? null, get length() { return mem.size; }, clear: () => mem.clear(),
 };
@@ -119,7 +119,7 @@ function freshLane() {
   require.cache[LANE] = m; m.loaded = true;
   return m.exports;
 }
-function reset() { mem.clear(); calls.length = 0; script = []; stallHits = 0; snapshotAtFetch = null; storage.failSet = false; storage.tamper = false; storage.setCalls.length = 0; timers.clear(); }
+function reset() { mem.clear(); calls.length = 0; script = []; stallHits = 0; snapshotAtFetch = null; storage.failSet = false; storage.failGet = false; storage.tamper = false; storage.setCalls.length = 0; timers.clear(); }
 const records = () => { const v = mem.get('iaosLane.unresolved.v1'); return v ? JSON.parse(v).records : []; };
 const WRITE = (contact, op = 'note.create', requestId = `req-${contact}`) => ['/.netlify/functions/ghl-write', { method: 'POST', headers: {}, body: JSON.stringify({ operation: op, targetId: contact, requestId, args: { body: 'x' } }) }];
 const WILD = () => ['/.netlify/functions/ghl-write', { method: 'POST', headers: {}, body: JSON.stringify({ operation: 'opportunity.askingPrice', targetId: 'opp1', requestId: 'req-opp', args: { value: 1 } }) }];
@@ -175,7 +175,9 @@ const ROWS = {
   async P2() { reset(); const L = freshLane();
     storage.failSet = true; const a = await outcome(L.laneFetch(...WRITE('c1'), { kind: 'write' })); const callsA = calls.length;
     storage.failSet = false; storage.tamper = true; const b = await outcome(L.laneFetch(...WRITE('c2'), { kind: 'write' })); storage.tamper = false;
-    row('P2', !a.ok && a.e.reason === 'persist_failed' && !b.ok && b.e.reason === 'persist_failed' && callsA === 0 && calls.length === 0, { a: a.e && a.e.reason, b: b.e && b.e.reason, calls: calls.length }); },
+    storage.failGet = true; const c = await outcome(L.laneFetch(...WRITE('c3'), { kind: 'write' })); storage.failGet = false;   // unreadable: earlier holds unknown
+    const g = global.sessionStorage; global.sessionStorage = undefined; const d = await outcome(L.laneFetch(...WRITE('c4'), { kind: 'write' })); global.sessionStorage = g;   // absent
+    row('P2', [a, b, c, d].every((x) => !x.ok && x.e.reason === 'persist_failed') && callsA === 0 && calls.length === 0, { reasons: [a, b, c, d].map((x) => x.e && x.e.reason), calls: calls.length }); },
   async P3() { reset(); let L = freshLane();
     script = [{ kind: 'hang' }]; const w = outcome(L.laneFetch(...WRITE('c1'), { kind: 'write' })); await flush();
     for (const reason of ['signed_out', 'replaced', 'unmounted']) L.laneReset(reason);
