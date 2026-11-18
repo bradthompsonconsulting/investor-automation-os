@@ -70,6 +70,7 @@ import {
   formatUnderContractNote, parseUnderContractNote, allUnderContractRecordsForOpportunity,
 } from "../lib/contract-execution-carriers";
 import { allContractLifecycleRecordsForOpportunity } from "../lib/contract-lifecycle-carriers";
+import { deriveContractCurrentStatus } from "../lib/contract-current-status";
 import { matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
 import { DISPOSITION_ARV_LABEL, DISPOSITION_REPAIRS_LABEL } from "../lib/authoritative-figures";
 import {
@@ -2120,6 +2121,16 @@ export default function ContractWorkspace() {
     }).ok) ?? null;
   }, [screen, documentVersion, currentUnderContractRecord, existingDispositionHandoffs]);
 
+  /** B15-21 (INV-130): the top status and next instruction follow the latest SUBSTANTIATED state (display only). */
+  const contractCurrentStatus = useMemo(() => {
+    if (screen.state !== "ready") return null;
+    return deriveContractCurrentStatus({
+      opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion,
+      readinessReady: screen.readiness.ready, underContract: currentUnderContractRecord,
+      dispositionHandoff: currentDispositionHandoff, lifecycleHistory: dispositionLifecycleHistory,
+    });
+  }, [screen, documentVersion, currentUnderContractRecord, currentDispositionHandoff, dispositionLifecycleHistory]);
+
   const dispositionEligibility = useMemo(() => {
     if (screen.state !== "ready" || !documentVersion) return null;
     return evaluateDispositionHandoffEligibility({
@@ -2880,6 +2891,16 @@ export default function ContractWorkspace() {
             />
           ) : null}
 
+          {contractCurrentStatus && contractCurrentStatus.headline ? (
+            <div data-testid="contract-current-status" data-kind={contractCurrentStatus.kind} style={{ marginBottom: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "15px", fontWeight: 700, color: contractCurrentStatus.kind === "rescinded" ? "#F59E0B" : "#22C55E" }}>
+                {contractCurrentStatus.kind === "rescinded" ? <ShieldAlert size={16} /> : <ShieldCheck size={16} />}
+                {contractCurrentStatus.headline}
+              </div>
+              <div data-testid="contract-current-status-detail" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "4px" }}>{contractCurrentStatus.detail}</div>
+            </div>
+          ) : null}
+
           <div
             data-testid="contract-ready-status"
             style={{
@@ -2929,10 +2950,8 @@ export default function ContractWorkspace() {
             </div>
           </div>
 
-          <div data-testid="contract-next-action" style={{ fontSize: "12px", color: "#94A3B8" }}>
-            {screen.readiness.ready
-              ? "Contract Ready. Review the populated PDF, then upload and send it manually in GHL."
-              : "Complete the checklist above to reach Contract Ready."}
+          <div data-testid="contract-next-action" data-kind={contractCurrentStatus?.kind ?? ""} style={{ fontSize: "12px", color: "#94A3B8" }}>
+            {contractCurrentStatus?.next}
           </div>
 
           {sellerContractFactsReport && sellerContractFactsReadiness ? (
