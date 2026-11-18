@@ -381,7 +381,13 @@ async function main() {
   // ── INVALID credentials in the tab: a tampered cookie ──
   {
     fresh(40); const S = await bindSession(11);
-    const T = await openTab(S.cookie.slice(0, -2) + (S.cookie.endsWith('A') ? 'BB' : 'AA')); await T.page.goto(`${base}${HARNESS}`); await sleep(2500); await settleServer();
+    // Tamper a character in the MIDDLE of the signature. (Rewriting the last two characters can leave the decoded
+    // signature unchanged: the final base64url character of a 32-byte value carries 2 ignored bits -- e.g. "BA" ->
+    // "BB" decodes to the same bytes, ~0.1% of runs. Observed once on d03a29e; item 29 triage.)
+    const sigAt = S.cookie.lastIndexOf('.') + 10;
+    const tampered = S.cookie.slice(0, sigAt) + (S.cookie[sigAt] === 'A' ? 'B' : 'A') + S.cookie.slice(sigAt + 1);
+    assert.ok(!Buffer.from(tampered.split('.')[2], 'base64url').equals(Buffer.from(S.cookie.split('.')[2], 'base64url')), 'the tamper really changes the signature bytes');
+    const T = await openTab(tampered); await T.page.goto(`${base}${HARNESS}`); await sleep(2500); await settleServer();
     const text = await T.page.evaluate(() => document.body.innerText).catch(() => '');
     const row = { scenario: 'INVALID', byFnStatus: account(T.log), signedInShown: /Sign out/.test(text), n503: T.log.filter((e) => e.status === 503).length };
     RESULTS.push(row); console.log('RESULT ' + JSON.stringify(row));
