@@ -143,7 +143,9 @@ check('Set Callback stays a separate, explicit page action', /\{callback \? "Cha
   const dashboardSrc = stripBlockComments(read('src/pages/Dashboard.tsx'));
   check('explicit Set/Clear Callback (Contact page and Dashboard row) use the distinct explicit-callback operation',
     /scheduleCallbackGated\(explicitCallbackClient, id, iso\)/.test(contactPageCode) && /await ghl\.contacts\.setExplicitCallback\(id, null\)/.test(contactPageCode)
-    && /scheduleCallbackGated\(explicitCallbackClient, contactId, iso\)/.test(dashboardSrc) && /await ghl\.contacts\.setExplicitCallback\(contactId, null\)/.test(dashboardSrc)
+    && (/scheduleCallbackGated\(guarded, contactId, iso\)/.test(dashboardSrc)
+      && /const live = captureAppWriteSession\(\);/.test(dashboardSrc)
+      && /const guarded = \{\s*contacts: \{\s*setCallbackDatetime: whileSessionLive\(live, explicitCallbackClient\.contacts\.setCallbackDatetime\),\s*setLastCallAttempt: whileSessionLive\(live, explicitCallbackClient\.contacts\.setLastCallAttempt\),\s*\},\s*notes: \{ create: whileSessionLive\(live, explicitCallbackClient\.notes\.create\) \},\s*\};/.test(dashboardSrc)) && /await ghl\.contacts\.setExplicitCallback\(contactId, null\)/.test(dashboardSrc)
     && !/setCallbackDatetime\(/.test(contactPageCode) && !/setCallbackDatetime\(/.test(dashboardSrc), true);
   check('Seller Call Follow-Up keeps the generic callback operation (denied in Production) and never the explicit one',
     // PR #126 stacked server PR: the same generic operation, now carrying its reserved request id.

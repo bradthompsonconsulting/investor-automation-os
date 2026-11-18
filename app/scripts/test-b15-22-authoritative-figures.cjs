@@ -38,7 +38,7 @@ const TMP = path.join(APP, '.tmp-b15-22-authoritative-test');
 const esbuild = require(path.join(APP, 'node_modules', '.pnpm', 'esbuild@0.25.12', 'node_modules', 'esbuild'));
 
 /** Literal check() call-site count in this file. */
-const FLOOR = 108;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta); B15-29 P-1 timing: + S8f (S8e was within 101); probe gate site id: + S8g; B15-29 probe verification (A1a): + S8-PV; B15-29 G1 race-409 probe: + S8-RC; B15-29 activation: + S8h; B15-29 session-check concurrency: + S8-CC; B15-29 D19 reader errors: + S8-RD
+const FLOOR = 109;  // Board #15 integration r2: + S8a (the reviewed combined-integration delta); Release 15-B: + S8b (Release 15-A delta); Integration 15-C: + S8c (F5 R2 delta); B15-29 integration: + S8d (One Login delta); B15-29 P-1 timing: + S8f (S8e was within 101); probe gate site id: + S8g; B15-29 probe verification (A1a): + S8-PV; B15-29 G1 race-409 probe: + S8-RC; B15-29 activation: + S8h; B15-29 session-check concurrency: + S8-CC; B15-29 D19 reader errors: + S8-RD
 /** S8h: the committed activation config steps, in order. H5 alone; the H7-only C3 commit pins ['H5', 'C3']. */
 const B29A_EXPECTED_STEPS = ['H5'];
 let checks = 0; let failures = 0;
@@ -536,6 +536,17 @@ check('S7 the label is backed by the resolver: Opportunity ARV first, Contact on
   check('S8-RD the B15-29 D19 reader-error delta is exactly its one chained change (src/lib/ghl.ts) and no addition',
     [Object.keys(B29D.changes || {}).sort(), b29dProblems],
     [['src/lib/ghl.ts'], []]);
+  // S8-LO: accepted item29 logout fix; keep all historical pins unchanged.
+  const B29L = JSON.parse(fs.readFileSync(path.join(APP, 'scripts', 'fixtures', 'b15-22-b15-29-logout-confirmation-delta.json'), 'utf8'));
+  const b29lProblems = [];
+  for (const [rel, c] of Object.entries(B29L.changes || {})) {
+    if (!(rel in expected) || !c || c.from !== expected[rel] || typeof c.to !== 'string' || !/^[0-9a-f]{64}$/.test(c.to) || c.to === c.from) b29lProblems.push('not a reviewed chained change: ' + rel);
+    else expected[rel] = c.to;
+  }
+  if (Object.keys(B29L.additions || {}).length) b29lProblems.push('no additions allowed');
+  check('S8-LO reviewed logout confirmation: exactly one chained change, no addition',
+    [Object.keys(B29L.changes || {}).sort(), b29lProblems],
+    [['netlify/functions/lib/session-revocation.ts'], []]);
   const drift = [];
   for (const rel of seen) { if (!(rel in expected)) drift.push(`added ${rel}`); else if (hashOf(rel) !== expected[rel]) drift.push(`changed ${rel}`); }
   for (const rel of Object.keys(expected)) if (!seen.includes(rel)) drift.push(`removed ${rel}`);

@@ -1,0 +1,12 @@
+{
+  "_comment": "S8-LO: reviewed item29 logout confirmation, 5baa4ec in accepted c7b09bca77a32274971bf17fd5ed59ca84e1dd1a. LF-normalized SHA256. Prior S8-CC unchanged.",
+  "candidate": "c7b09bca77a32274971bf17fd5ed59ca84e1dd1a",
+  "changes": {
+    "netlify/functions/lib/session-revocation.ts": {
+      "from": "0ac47a88a8b94df459e0ad3686406ae5ebcd0e79be07e64227a5776d0378496e",
+      "to": "7d03dad5affa49efb3f3d07c118e9b0df0f8f547cbadc000369a847ccc3e6f3b",
+      "reason": "At most three fresh signout rounds after raw409 exhaustion, same absolute deadline and same-round verification; bounded Test-only round diagnostic."
+    }
+  },
+  "additions": {}
+}
