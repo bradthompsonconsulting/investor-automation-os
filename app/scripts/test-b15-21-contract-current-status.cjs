@@ -356,7 +356,7 @@ const fromNotes = (notes, over) => derive(Object.assign({ sendAttempts: S.resolv
   check('H: a Rescission still supersedes the send history', fromNotes(acceptedA_failedB, { lifecycleHistory: [preExecRescission(V1, null)] }).kind === 'rescinded');
 }
 
-/* L. the whole page's send instructions rendered together (Bones B1) */
+/* L. the whole page's send instructions rendered together (Bones B1; not-ready follow-up on 4ca8c9a) */
 {
   const ts = require(path.join(APP, 'node_modules', 'typescript'));
   const React = require(path.join(APP, 'node_modules', 'react'));
@@ -365,50 +365,75 @@ const fromNotes = (notes, over) => derive(Object.assign({ sendAttempts: S.resolv
   const top = slice('{contractCurrentStatus && contractCurrentStatus.headline ? (', '\n\n          <div');
   const next = slice('<div data-testid="contract-next-action"', '</div>', 6);
   const lower = slice('{allowsNewSend(contractCurrentStatus) ? (\n                <p data-testid="contract-manual-send-instruction"', '\n              )}', '\n              )}'.length);
-  const record = slice('<div data-testid="contract-manual-send-explanation"', '</div>', 6);
+  const record = slice('<div data-testid="contract-manual-send-explanation"', '\n              </div>', '\n              </div>'.length);
   let Whole = null;
   if (top && next && lower && record) {
-    const tsx = 'module.exports = function Whole({ contractCurrentStatus }: any) { return <><section data-part="top">' + top + next
+    const tsx = 'module.exports = function Whole({ contractCurrentStatus, readinessRemaining }: any) { return <><section data-part="top">' + top + next
       + '</section><section data-part="lower-notice">' + lower + '</section><section data-part="record-send">' + record + '</section></>; };';
     const js = ts.transpileModule(tsx, { fileName: 'whole.tsx', compilerOptions: { jsx: ts.JsxEmit.React, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
     const cm = { exports: {} };
-    new Function('module', 'exports', 'React', 'ShieldAlert', 'ShieldCheck', 'allowsNewSend', 'LOWER_NO_RESEND', 'RECORD_SEND_NO_RESEND', js)(
-      cm, cm.exports, React, () => null, () => null, S.allowsNewSend, S.LOWER_NO_RESEND, S.RECORD_SEND_NO_RESEND);
+    const deps = { React, ShieldAlert: () => null, ShieldCheck: () => null, allowsNewSend: S.allowsNewSend, needsReadinessFirst: S.needsReadinessFirst,
+      notReadyLowerText: S.notReadyLowerText, notReadyRecordText: S.notReadyRecordText, LOWER_NO_RESEND: S.LOWER_NO_RESEND, RECORD_SEND_NO_RESEND: S.RECORD_SEND_NO_RESEND };
+    new Function('module', 'exports', ...Object.keys(deps), js)(cm, cm.exports, ...Object.values(deps));
     Whole = cm.exports;
   }
   check('L: the top, lower-notice and Record GHL Send instruction JSX are all extracted from the page and compile', typeof Whole === 'function', { top: !!top, next: !!next, lower: !!lower, record: !!record });
-  // Every imperative to upload/send on the page, as rendered.
-  const SEND_AGAIN = [/upload and send it manually in GHL/, /upload it to GHL\s+Documents &amp; Contracts and send it manually/, /After you manually upload the authorized PDF to GHL Documents &amp; Contracts and send it/];
+  /* Any instruction to upload or send, as rendered: tags stripped, entities decoded, and the explicit negations
+     ("Do not upload or send ...", "Nothing to upload or send ...") removed first -- what is left must not tell Brad
+     to upload or send anything. */
+  const textOf = (html) => html.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ');
+  const SEND_PROMPT = /\bupload (it|the|and)\b|\bsend it\b|\band send\b|\bthen upload\b|\bupload\b[^.]*\bto GHL\b/i;
+  const prompts = (html) => { const t = textOf(html).replace(/\b(do not|nothing to) upload or send[^.]*\./gi, ' '); return (t.match(new RegExp(SEND_PROMPT.source, 'gi')) || []); };
+  const REMAINING = [{ code: 'CHECKLIST_INCOMPLETE', message: 'Confirm "Known liens and title complications" on the checklist.' }, { code: 'SELLER_FACTS', message: 'Seller contract facts are not complete.' }];
   const sent = sendRecord('accepted');
   const A = T0, B = T2;
+  // [status, expectation, readiness reasons]: 'send' = genuine Contract Ready, unsent; 'not_ready'; 'no' = recorded step.
   const states = {
-    unsent_ready: [derive({}), true],
-    unsent_not_ready: [derive({ readinessReady: false }), true],
-    sent_accepted: [derive({ sendAttempts: [sent] }), false],
-    sent_accepted_then_failed: [fromNotes([attempt(A, 'accepted', T1), attempt(B, 'failed', T3)]), false],
-    send_unresolved: [fromNotes([attempt(A, 'ambiguous', T1)]), false],
-    send_unresolved_then_failed: [fromNotes([attempt(A, 'in_progress', T0), attempt(B, 'failed', T3)]), false],
-    rescinded_before_execution: [derive({ lifecycleHistory: [preExecRescission(V1, null)] }), false],
-    executed_under_contract: [derive({ underContract: uc, sendAttempts: [sent] }), false],
-    executed_disposition_started: [derive({ underContract: uc, dispositionHandoff: handoff, sendAttempts: [sent] }), false],
-    failed_only: [fromNotes([attempt(A, 'failed', T1)]), true],
-    other_deal_sent: [fromNotes([attempt(A, 'accepted', T1, { opportunityId: OTHER_OPP })]), true],
-    other_revision_sent: [fromNotes([attempt(A, 'accepted', T1, { version: V2 })]), true],
+    unsent_ready: [derive({}), 'send', []],
+    not_ready_two_remaining: [derive({ readinessReady: false }), 'not_ready', REMAINING],
+    not_ready_one_remaining: [derive({ readinessReady: false }), 'not_ready', REMAINING.slice(0, 1)],
+    not_ready_no_reason_listed: [derive({ readinessReady: false }), 'not_ready', []],
+    not_ready_failed_attempt_only: [fromNotes([attempt(A, 'failed', T1)], { readinessReady: false }), 'not_ready', REMAINING],
+    not_ready_other_deal_sent: [fromNotes([attempt(A, 'accepted', T1, { opportunityId: OTHER_OPP })], { readinessReady: false }), 'not_ready', REMAINING],
+    not_ready_but_sent: [derive({ readinessReady: false, sendAttempts: [sent] }), 'no', REMAINING],
+    sent_accepted: [derive({ sendAttempts: [sent] }), 'no', []],
+    sent_accepted_then_failed: [fromNotes([attempt(A, 'accepted', T1), attempt(B, 'failed', T3)]), 'no', []],
+    send_unresolved: [fromNotes([attempt(A, 'ambiguous', T1)]), 'no', []],
+    send_unresolved_then_failed: [fromNotes([attempt(A, 'in_progress', T0), attempt(B, 'failed', T3)]), 'no', []],
+    rescinded_before_execution: [derive({ lifecycleHistory: [preExecRescission(V1, null)] }), 'no', []],
+    executed_under_contract: [derive({ underContract: uc, sendAttempts: [sent] }), 'no', []],
+    executed_disposition_started: [derive({ underContract: uc, dispositionHandoff: handoff, sendAttempts: [sent] }), 'no', []],
+    failed_only: [fromNotes([attempt(A, 'failed', T1)]), 'send', []],
+    other_deal_sent: [fromNotes([attempt(A, 'accepted', T1, { opportunityId: OTHER_OPP })]), 'send', []],
+    other_revision_sent: [fromNotes([attempt(A, 'accepted', T1, { version: V2 })]), 'send', []],
   };
   const wholeRendered = {};
-  for (const [name, [st, sendAllowed]] of Object.entries(states)) {
-    const html = Whole ? SSR.renderToStaticMarkup(React.createElement(Whole, { contractCurrentStatus: st })) : '';
+  for (const [name, [st, want, remaining]] of Object.entries(states)) {
+    const html = Whole ? SSR.renderToStaticMarkup(React.createElement(Whole, { contractCurrentStatus: st, readinessRemaining: remaining })) : '';
     wholeRendered[name] = { kind: st.kind, markup: html };
-    const prompts = SEND_AGAIN.filter((re) => re.test(html)).length;
+    const found = prompts(html);
     const lowerAllows = (/data-testid="contract-manual-send-instruction" data-allows-send="(true|false)"/.exec(html) || [])[1];
     const recordAllows = (/data-testid="contract-manual-send-explanation" data-allows-send="(true|false)"/.exec(html) || [])[1];
-    if (sendAllowed) {
-      check(`L ${name} (${st.kind}): the lower notice and Record GHL Send keep their send instructions`, lowerAllows === 'true' && recordAllows === 'true' && prompts >= 2, { prompts, lowerAllows, recordAllows });
+    if (want === 'send') {
+      check(`L ${name} (${st.kind}): genuinely ready and unsent -- the lower notice and Record GHL Send keep their send instructions`,
+        lowerAllows === 'true' && recordAllows === 'true' && found.length >= 2, { found, lowerAllows, recordAllows });
+    } else if (want === 'not_ready') {
+      const t = textOf(html);
+      const listed = (html.match(/<ul data-testid="contract-manual-send-remaining">([\s\S]*?)<\/ul>/) || [])[1] || '';
+      check(`L ${name}: top says "Complete the checklist"; NO upload/send prompt anywhere on the page`,
+        st.kind === 'not_ready' && found.length === 0 && lowerAllows === 'false' && recordAllows === 'false', { found, lowerAllows, recordAllows, text: t.slice(0, 500) });
+      check(`L ${name}: the lower notice and Record GHL Send say what remains before sending (${remaining.length} item(s))`,
+        t.includes('Complete the checklist above to reach Contract Ready.') && /data-kind="not_ready"/.test(html)
+          && typeof S.notReadyLowerText === 'function' && t.includes(S.notReadyLowerText(remaining.length)) && t.includes(S.notReadyRecordText(remaining.length))
+          && remaining.every((r) => textOf(listed).includes(r.message))
+          && (remaining.length > 0 || listed === ''), { text: t.slice(0, 600), listed });
     } else {
       check(`L ${name} (${st.kind}): NO instruction to upload or send anywhere -- top, lower notice and Record GHL Send agree`,
-        prompts === 0 && lowerAllows === 'false' && recordAllows === 'false' && html.includes('Do not upload or send'), { prompts, lowerAllows, recordAllows, html: html.slice(0, 400) });
+        found.length === 0 && lowerAllows === 'false' && recordAllows === 'false' && html.includes('Do not upload or send'), { found, lowerAllows, recordAllows, html: html.slice(0, 400) });
     }
   }
+  check('L: the send-prompt detector does catch the page\'s ready-unsent instructions (so its silence elsewhere means something)',
+    prompts(wholeRendered.unsent_ready ? wholeRendered.unsent_ready.markup : '').length >= 3, prompts(wholeRendered.unsent_ready ? wholeRendered.unsent_ready.markup : ''));
   check('L: a rescission with no send never claims a send is recorded, anywhere on the page',
     !!wholeRendered.rescinded_before_execution && !/send of this contract version (was|is already) recorded/i.test(wholeRendered.rescinded_before_execution.markup), wholeRendered.rescinded_before_execution && wholeRendered.rescinded_before_execution.markup.slice(0, 600));
   const outDir = process.env.B1521_RENDER_OUT;
@@ -434,8 +459,10 @@ const fromNotes = (notes, over) => derive(Object.assign({ sendAttempts: S.resolv
     page.includes('return resolvedSendAttemptsForOpportunity(notes, screen.opportunity.id);'));
   check('G: the Record GHL Send and Verify Execution controls are still chosen by existingSend, unchanged',
     page.includes('{showVerifyExecutionControl(existingSend) ? (') && page.includes(') : showRecordGhlSendControl(screen, bradAuthorizationRecord, existingSend) ? ('));
-  check('G: the lower notice and Record GHL Send explanation follow the same no-resend state as the top',
-    (page.match(/allowsNewSend\(contractCurrentStatus\)/g) || []).length === 3);
+  check('G: the lower notice and Record GHL Send explanation follow the same state as the top (send / not ready / no resend)',
+    (page.match(/allowsNewSend\(contractCurrentStatus\)/g) || []).length === 3 && (page.match(/needsReadinessFirst\(contractCurrentStatus\)/g) || []).length === 2);
+  check('G: "what remains" is the readiness status\'s own reasons (screen.readiness.reasons), not a second list',
+    page.includes('const readinessRemaining = screen.state === "ready" ? screen.readiness.reasons : [];'));
   check('G: the next instruction renders the helper\'s text (no hard-coded ready-only send line)',
     /data-testid="contract-next-action"[^>]*>\n\s+\{contractCurrentStatus\?\.next\}/.test(page) && !page.includes('"Contract Ready. Review the populated PDF, then upload and send it manually in GHL."'));
   check('G: the latest-state headline renders only when there is one', /\{contractCurrentStatus && contractCurrentStatus\.headline \? \(\n\s+<div data-testid="contract-current-status"/.test(page));

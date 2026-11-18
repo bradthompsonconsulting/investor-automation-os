@@ -54,9 +54,27 @@ export type ContractCurrentStatus =
 
 const UNCONFIRMED_SEND_STATUSES = new Set(["in_progress", "provider_accepted_pending_readback", "ambiguous", "accepted"]);
 
-/** Display only: may the page invite a NEW manual upload/send for this version? Only when nothing is recorded beyond readiness. */
+/**
+ * Display only: may the page invite a NEW manual upload/send for this version? Only when it is Contract Ready and
+ * nothing is recorded beyond readiness. Not ready (Bones, 4ca8c9a): the lower instructions say what remains instead.
+ */
 export function allowsNewSend(status: ContractCurrentStatus | null): boolean {
-  return !!status && (status.kind === "ready_unsent" || status.kind === "not_ready");
+  return !!status && status.kind === "ready_unsent";
+}
+/** True when the top says "Complete the checklist": the lower instructions then name what remains, never upload/send. */
+export function needsReadinessFirst(status: ContractCurrentStatus | null): boolean {
+  return !!status && status.kind === "not_ready";
+}
+const items = (n: number) => `${n} Contract Ready item${n === 1 ? "" : "s"}`;
+/** The lower notice's lead line when not Contract Ready; the page lists the remaining items under it. */
+export function notReadyLowerText(remaining: number): string {
+  return remaining > 0
+    ? `Not ready to send yet. Complete the Contract Ready checklist above first -- ${items(remaining)} remaining:`
+    : "Not ready to send yet. Complete the Contract Ready checklist above first.";
+}
+/** The Record GHL Send explanation when not Contract Ready. */
+export function notReadyRecordText(remaining: number): string {
+  return `Not ready to send yet. Complete the Contract Ready checklist above first${remaining > 0 ? ` (${items(remaining)} remaining)` : ""}. Nothing is sent to GHL from here.`;
 }
 /** The lower "Manual GHL upload and send" notice's instruction when a send, execution or rescission is recorded (B1). */
 export const LOWER_NO_RESEND = "Do not upload or send this contract version again: a send, execution or rescission is already recorded for it. See the status at the top of this page.";
