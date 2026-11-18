@@ -2127,9 +2127,9 @@ export default function ContractWorkspace() {
     return deriveContractCurrentStatus({
       opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion,
       readinessReady: screen.readiness.ready, underContract: currentUnderContractRecord,
-      dispositionHandoff: currentDispositionHandoff, lifecycleHistory: dispositionLifecycleHistory,
+      dispositionHandoff: currentDispositionHandoff, lifecycleHistory: dispositionLifecycleHistory, latestSend: existingSend,
     });
-  }, [screen, documentVersion, currentUnderContractRecord, currentDispositionHandoff, dispositionLifecycleHistory]);
+  }, [screen, documentVersion, currentUnderContractRecord, currentDispositionHandoff, dispositionLifecycleHistory, existingSend]);
 
   const dispositionEligibility = useMemo(() => {
     if (screen.state !== "ready" || !documentVersion) return null;
@@ -2893,8 +2893,8 @@ export default function ContractWorkspace() {
 
           {contractCurrentStatus && contractCurrentStatus.headline ? (
             <div data-testid="contract-current-status" data-kind={contractCurrentStatus.kind} style={{ marginBottom: "12px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "15px", fontWeight: 700, color: contractCurrentStatus.kind === "rescinded" ? "#F59E0B" : "#22C55E" }}>
-                {contractCurrentStatus.kind === "rescinded" ? <ShieldAlert size={16} /> : <ShieldCheck size={16} />}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "15px", fontWeight: 700, color: contractCurrentStatus.kind === "under_contract" || contractCurrentStatus.kind === "disposition_started" ? "#22C55E" : "#F59E0B" }}>
+                {contractCurrentStatus.kind === "under_contract" || contractCurrentStatus.kind === "disposition_started" ? <ShieldCheck size={16} /> : <ShieldAlert size={16} />}
                 {contractCurrentStatus.headline}
               </div>
               <div data-testid="contract-current-status-detail" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "4px" }}>{contractCurrentStatus.detail}</div>
