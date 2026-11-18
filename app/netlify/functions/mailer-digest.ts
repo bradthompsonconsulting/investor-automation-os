@@ -8,7 +8,7 @@
  * directly by URL for manual testing (returns a JSON summary either way).
  */
 
-import { buildMailerDigest, type MailerDigest, type MailerGroup } from "./lib/mailer-shared";
+import { buildMailerDigest, type MailerDigest, type MailerGroup, type MailerTaskRow } from "./lib/mailer-shared";
 import { getConfig } from "../../shared/ghl-config";
 import { ghlReadFetch, supplementalReadBudgetActive, supplementalReadRefusal } from "./lib/supplemental-read-budget";
 
@@ -64,6 +64,24 @@ function renderGroups(groups: MailerGroup[], emptyLabel: string): string {
   `).join("");
 }
 
+/** B15-12: undated mailer tasks (with an address) -- listed so a due date gets set; never counted as Overdue. */
+function renderNeedsDueDate(rows: MailerTaskRow[]): string {
+  if (rows.length === 0) {
+    return `<p style="color:#64748B;font-size:13px;margin:4px 0 16px;">No undated mailer tasks.</p>`;
+  }
+  return `
+    <table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;margin:0 0 14px;border:1px solid #1B2433;border-radius:6px;overflow:hidden;">
+      ${rows.map((r) => `
+        <tr style="border-top:1px solid #1B2433;">
+          <td style="padding:7px 12px;font-size:13px;color:#F1F5F9;">${esc(r.contactName || "Unknown")}</td>
+          <td style="padding:7px 12px;font-size:12px;color:#94A3B8;">${esc(r.address)}</td>
+          <td style="padding:7px 12px;font-size:12px;color:#64748B;white-space:nowrap;">${esc(`${r.tier[0].toUpperCase()}${r.tier.slice(1)} ${r.mailerType}`)} · Touch ${r.touchNumber}</td>
+        </tr>
+      `).join("")}
+    </table>
+  `;
+}
+
 function renderEmailHtml(digest: MailerDigest): string {
   const typeCounts = Object.entries(digest.totals.byMailerType)
     .map(([label, n]) => `${esc(label)}: <strong>${n}</strong>`)
@@ -76,7 +94,8 @@ function renderEmailHtml(digest: MailerDigest): string {
       <p style="font-size:13px;color:#94A3B8;margin:0 0 4px;">
         Ready: <strong>${digest.totals.ready}</strong> &nbsp;·&nbsp;
         Business-flagged: <strong>${digest.totals.business}</strong> &nbsp;·&nbsp;
-        Overdue: <strong>${digest.totals.overdue}</strong>
+        Overdue: <strong>${digest.totals.overdue}</strong> &nbsp;·&nbsp;
+        Needs due date: <strong>${digest.totals.needsDueDate}</strong>
       </p>
       <p style="font-size:12px;color:#64748B;margin:0 0 20px;">${typeCounts}</p>
 
@@ -88,6 +107,10 @@ function renderEmailHtml(digest: MailerDigest): string {
 
       <h2 style="font-size:15px;color:#F87171;margin:20px 0 8px;">Overdue</h2>
       ${renderGroups(digest.overdue, "Nothing overdue.")}
+
+      <h2 style="font-size:15px;color:#F1F5F9;margin:20px 0 8px;">Needs due date</h2>
+      <p style="font-size:12px;color:#64748B;margin:0 0 8px;">Mailer tasks with an address but no due date in GHL. Set a due date in GHL to schedule them.</p>
+      ${renderNeedsDueDate(digest.needsDueDate)}
 
       <p style="font-size:12px;color:#334155;margin:24px 0 0;">
         This is a heads-up only — check items off in the app.

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
-import { AlertCircle, Mail, CheckSquare, Square, MapPinOff, Loader2 } from "lucide-react";
+import { AlertCircle, Mail, CheckSquare, Square, MapPinOff, Loader2, CalendarX } from "lucide-react";
 import { ghl, type MailerDigest, type MailerGroup, type MailerTaskRow } from "../lib/ghl";
 import { WEEK_RECHECK_MS, weekEnded } from "../lib/mailer-week";
 
@@ -370,6 +370,49 @@ export default function Mailers() {
             tone="overdue"
             emptyLabel="Nothing overdue."
           />
+
+          {/* B15-12: Needs due date -- addressed mailer tasks with no due date in GHL. Informational only, no
+              checkboxes (like No Address). They used to sort into Overdue. Read through a local type so the shared
+              client type in lib/ghl.ts is unchanged; a server without the list reads as empty. */}
+          {(() => {
+            const undated = (digest as MailerDigest & { needsDueDate?: MailerTaskRow[] }).needsDueDate ?? [];
+            return (
+              <div data-testid="mailers-needs-due-date" style={{ marginBottom: "28px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+                  <CalendarX size={15} style={{ color: "#F59E0B" }} />
+                  <h2 style={{ fontSize: "15px", fontWeight: 600, color: "#F1F5F9", margin: 0, fontFamily: "Space Grotesk, sans-serif" }}>
+                    Needs due date
+                  </h2>
+                  <span style={{ fontSize: "11px", fontWeight: 500, padding: "1px 7px", borderRadius: "999px", background: "#1B2433", color: "#64748B" }}>
+                    {undated.length}
+                  </span>
+                </div>
+                <p style={{ fontSize: "11px", color: "#334155", margin: "0 0 10px" }}>
+                  Has an address but no due date in GHL, so it is in no week and not overdue. Set a due date in GHL to schedule it.
+                </p>
+                {undated.length === 0 ? (
+                  <div data-testid="mailers-needs-due-date-empty" style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", padding: "20px 16px", color: "#334155", fontSize: "13px", textAlign: "center" }}>
+                    No undated mailer tasks.
+                  </div>
+                ) : (
+                  <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <tbody>
+                        {undated.map((r) => (
+                          <tr key={r.taskId} data-testid="mailers-needs-due-date-row" style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                            <td style={{ padding: "9px 16px", fontWeight: 500, color: "#F1F5F9" }}><ContactLink id={r.contactId}>{r.contactName}</ContactLink></td>
+                            <td style={{ padding: "9px 16px", color: "#94A3B8", fontSize: "12px" }}>{r.address}</td>
+                            <td style={{ padding: "9px 16px" }}><TierBadge tier={r.tier} mailerType={r.mailerType} /></td>
+                            <td style={{ padding: "9px 16px", color: "#64748B", fontSize: "12px" }}>Touch {r.touchNumber}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* No-address — informational only, no checkboxes */}
           <div>

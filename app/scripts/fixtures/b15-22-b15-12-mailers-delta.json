@@ -1,0 +1,17 @@
+{
+  "_comment": "B15-22 S8 amendment S8-B12 for Board 15 item 12 Mailers (Captain GO 2026-11-18, local; review Bones). TWO changes, chained from the bytes every earlier amendment leaves expected (no earlier link touches either file); no addition. lib/mailer-shared.ts: addressed incomplete mailer tasks with no (readable) due date get their own needsDueDate list instead of sorting into Overdue (No Address still first, every row in exactly one list); an unreadable due date no longer throws; the business-entity pattern uses (?<!\\w)...(?!\\w) edges so the dotted token L.L.C. matches (identical for every token that starts and ends with a letter). mailer-digest.ts: the Friday email lists the Needs due date rows and count. Read-only: no GHL write, request, authorization or send-path change. Hashes are LF-normalized.",
+  "candidate": "b15-12-needs-due-date on c7b09bc",
+  "changes": {
+    "netlify/functions/lib/mailer-shared.ts": {
+      "from": "7fd8a4bdb02991949b79f6bef17d34492ffa725261da80d6190262e56a7352b3",
+      "to": "6935b420f375eca11aeb1270992e335de238a3b04b6cdfce4076338e8f2a306c",
+      "reason": "needsDueDate list (addressed, undated -> never Overdue); unreadable due date treated as undated; L.L.C. business-name match. No request, write or auth change."
+    },
+    "netlify/functions/mailer-digest.ts": {
+      "from": "a44c47fb8fe957c121a6a43ce5405d794b1d9096a1d25b887f9a7bf4e247728c",
+      "to": "06726ab49137a9f68c897c23c6d1f3ae4d18fdbecff8929568ffedb4e0c4d640",
+      "reason": "Friday email: Needs due date section and count. Recipient lookup, Resend call, subject and suspension rule unchanged."
+    }
+  },
+  "additions": {}
+}
