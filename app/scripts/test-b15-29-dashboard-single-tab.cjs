@@ -481,12 +481,24 @@ async function main() {
     let tVerified = v.kind === 'verified' ? tRevoked : null;
     for (let k = 0; k < 3 && tVerified === null; k++) { const r = await once(); if (r.kind === 'verified') tVerified = attempts[attempts.length - 1].t1; }
     const burst = await burstP; await settleServer();
+    // Non-vacuous BY CONSTRUCTION (item 29): with the item 29 fix the revoke absorbs the contention itself and may return
+    // after the queued burst has already finished, so "some queued request started after the revoke" is no longer
+    // guaranteed by timing. The proof is SERVER-side (the client may itself stop sending after its 401s): the OLD
+    // session, presented directly to every protected reader handler after verification, one after another, x2 ->
+    // each exactly 401. (Concurrent same-session checks can answer a fail-closed 503 under same-key contention -- the
+    // known, pre-existing check behaviour, never a 200; the queued in-page burst above already covers concurrency.)
+    await settleServer();
+    const g0 = ghlCalls;
+    let postBurst = null;
+    if (tVerified !== null) { postBurst = []; for (const f of [...PROTECTED_READERS, ...PROTECTED_READERS]) postBurst.push(`${f}:${(await handlerFor(f)(ev({ cookie: S.cookie }))).statusCode}`); }
+    const postBurstGhl = ghlCalls - g0;
+    await settleServer();
     const serverView = await (async () => { const r = await handlerFor('ghl-contacts')(ev({ cookie: S.cookie })); let reason = null; try { reason = JSON.parse(r.body).reason || null; } catch { /* none */ } return { status: r.statusCode, reason }; })();   // independent: the old session at a real protected reader afterwards
     const describe = (e) => ({ fn: e.fn, status: e.status, t0: e.t0, ...(e.statusSays ? { says: e.statusSays } : {}) });
     const afterFirst = T.log.slice(base0).filter((e) => e.t0 > tRevoked);
     const afterVerified = tVerified === null ? null : T.log.slice(base0).filter((e) => e.t0 > tVerified);
     const authorizedAfter = (list) => list.filter((e) => (e.fn === 'app-read-session' ? !!(e.statusSays && e.statusSays.signedIn) : e.status === 200));
-    const row = { scenario: 'EXPIRED', firstRevoke: v.kind, firstReason: v.reason || null, attempts, tRevoked, tVerified, burst,
+    const row = { scenario: 'EXPIRED', firstRevoke: v.kind, firstReason: v.reason || null, attempts, tRevoked, tVerified, burst, postBurst, postBurstGhl,
       startedAfterFirstRevoke: afterFirst.map(describe), startedAfterVerified: afterVerified && afterVerified.map(describe),
       authorizedAfterFirst: authorizedAfter(afterFirst).map(describe), authorizedAfterVerified: afterVerified && authorizedAfter(afterVerified).map(describe),
       serverViewAfter: serverView, n503: T.log.slice(base0).filter((e) => e.status === 503).length };
@@ -494,9 +506,10 @@ async function main() {
     await check('EXPIRED (100 ms) PRECONDITION: the server-side revoke issued while a queued burst is in progress returns VERIFIED on its first attempt (an "unconfirmed" result FAILS here and is reported with its reason and check log)', async () => {
       assert.equal(v.kind, 'verified', JSON.stringify({ first: attempts[0] }));
     });
-    await check('EXPIRED (100 ms) AUTHORIZATION: once the revocation is VERIFIED (first attempt, or the recorded retry), every request STARTED afterwards is refused -- no protected reader answers 200 and no status reply says signedIn:true; the old session is then 401 "revoked" at a real reader; the burst settles; nothing stuck (FAILS if verification is never established)', async () => {
+    await check('EXPIRED (100 ms) AUTHORIZATION: once the revocation is VERIFIED (first attempt, or the recorded retry), every request STARTED afterwards is refused -- no protected reader answers 200 and no status reply says signedIn:true; the OLD session presented directly to every protected reader afterwards (x2, one after another) is refused 401 with zero GHL calls (non-vacuous by construction); the old session is then 401 "revoked" at a real reader; the burst settles; nothing stuck (FAILS if verification is never established)', async () => {
       assert.ok(tVerified !== null, 'revocation never VERIFIED ' + JSON.stringify(attempts.map((x) => [x.kind, x.reason])));
-      if (LANE_MAX > 0) assert.ok(afterFirst.length > 0, 'non-vacuous: some queued request started after the revoke ' + JSON.stringify(row.startedAfterFirstRevoke));
+      assert.ok(Array.isArray(postBurst) && postBurst.length === 2 * PROTECTED_READERS.length && postBurst.every((x) => x.endsWith(':401')), 'non-vacuous: every post-verification protected read refused 401 ' + JSON.stringify(postBurst));
+      assert.equal(postBurstGhl, 0, 'zero GHL calls for the post-verification reads');
       assert.deepEqual(row.authorizedAfterVerified, [], JSON.stringify(row.startedAfterVerified));
       assert.deepEqual([serverView.status, serverView.reason], [401, 'revoked'], JSON.stringify(serverView));
       assert.equal(unfinished(T), 0); assert.equal(PENDING, 0);
