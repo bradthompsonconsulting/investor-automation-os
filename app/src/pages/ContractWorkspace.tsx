@@ -70,6 +70,7 @@ import {
   formatUnderContractNote, parseUnderContractNote, allUnderContractRecordsForOpportunity,
 } from "../lib/contract-execution-carriers";
 import { allContractLifecycleRecordsForOpportunity } from "../lib/contract-lifecycle-carriers";
+import { allowsNewSend, deriveContractCurrentStatus, LOWER_NO_RESEND, needsReadinessFirst, notReadyLowerText, notReadyRecordText, RECORD_SEND_NO_RESEND, resolvedSendAttemptsForOpportunity } from "../lib/contract-current-status";
 import { matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
 import { DISPOSITION_ARV_LABEL, DISPOSITION_REPAIRS_LABEL } from "../lib/authoritative-figures";
 import {
@@ -2120,6 +2121,24 @@ export default function ContractWorkspace() {
     }).ok) ?? null;
   }, [screen, documentVersion, currentUnderContractRecord, existingDispositionHandoffs]);
 
+  /** B15-21 (Bones B2): every send attempt, each resolved within itself -- display only; existingSend and its gates are unchanged. */
+  const sendAttemptsForDisplay = useMemo(() => {
+    if (screen.state !== "ready" || !notes) return [];
+    return resolvedSendAttemptsForOpportunity(notes, screen.opportunity.id);
+  }, [screen, notes]);
+
+  /** B15-21 (INV-130): the top status and next instruction follow the latest SUBSTANTIATED state (display only). */
+  const contractCurrentStatus = useMemo(() => {
+    if (screen.state !== "ready") return null;
+    return deriveContractCurrentStatus({
+      opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion,
+      readinessReady: screen.readiness.ready, underContract: currentUnderContractRecord,
+      dispositionHandoff: currentDispositionHandoff, lifecycleHistory: dispositionLifecycleHistory, sendAttempts: sendAttemptsForDisplay,
+    });
+  }, [screen, documentVersion, currentUnderContractRecord, currentDispositionHandoff, dispositionLifecycleHistory, sendAttemptsForDisplay]);
+  /** B15-21: what remains before Contract Ready -- the same reasons the readiness status lists at the top. */
+  const readinessRemaining = screen.state === "ready" ? screen.readiness.reasons : [];
+
   const dispositionEligibility = useMemo(() => {
     if (screen.state !== "ready" || !documentVersion) return null;
     return evaluateDispositionHandoffEligibility({
@@ -2880,6 +2899,16 @@ export default function ContractWorkspace() {
             />
           ) : null}
 
+          {contractCurrentStatus && contractCurrentStatus.headline ? (
+            <div data-testid="contract-current-status" data-kind={contractCurrentStatus.kind} style={{ marginBottom: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "15px", fontWeight: 700, color: contractCurrentStatus.kind === "under_contract" || contractCurrentStatus.kind === "disposition_started" ? "#22C55E" : "#F59E0B" }}>
+                {contractCurrentStatus.kind === "under_contract" || contractCurrentStatus.kind === "disposition_started" ? <ShieldCheck size={16} /> : <ShieldAlert size={16} />}
+                {contractCurrentStatus.headline}
+              </div>
+              <div data-testid="contract-current-status-detail" style={{ fontSize: "12px", color: "#94A3B8", marginTop: "4px" }}>{contractCurrentStatus.detail}</div>
+            </div>
+          ) : null}
+
           <div
             data-testid="contract-ready-status"
             style={{
@@ -2929,10 +2958,8 @@ export default function ContractWorkspace() {
             </div>
           </div>
 
-          <div data-testid="contract-next-action" style={{ fontSize: "12px", color: "#94A3B8" }}>
-            {screen.readiness.ready
-              ? "Contract Ready. Review the populated PDF, then upload and send it manually in GHL."
-              : "Complete the checklist above to reach Contract Ready."}
+          <div data-testid="contract-next-action" data-kind={contractCurrentStatus?.kind ?? ""} style={{ fontSize: "12px", color: "#94A3B8" }}>
+            {contractCurrentStatus?.next}
           </div>
 
           {sellerContractFactsReport && sellerContractFactsReadiness ? (
@@ -3653,8 +3680,21 @@ export default function ContractWorkspace() {
             <div data-testid="contract-manual-send-notice"
               style={{ marginTop: "24px" }}>
               <h3>Manual GHL upload and send</h3>
-              <p>Review the populated PDF, then upload it to GHL
-                Documents &amp; Contracts and send it manually.</p>
+              {allowsNewSend(contractCurrentStatus) ? (
+                <p data-testid="contract-manual-send-instruction" data-allows-send="true">Review the populated PDF, then upload it to GHL
+                  Documents &amp; Contracts and send it manually.</p>
+              ) : needsReadinessFirst(contractCurrentStatus) ? (
+                <div data-testid="contract-manual-send-instruction" data-allows-send="false" data-kind="not_ready">
+                  <p>{notReadyLowerText(readinessRemaining.length)}</p>
+                  {readinessRemaining.length > 0 ? (
+                    <ul data-testid="contract-manual-send-remaining">
+                      {readinessRemaining.map((r) => <li key={r.code}>{r.message}</li>)}
+                    </ul>
+                  ) : null}
+                </div>
+              ) : (
+                <p data-testid="contract-manual-send-instruction" data-allows-send="false">{LOWER_NO_RESEND}</p>
+              )}
               <p>IAOS V1 does not sync contract merge fields, request
                 a GHL template draft, or send contracts automatically.
                 This notice does not record a contract as sent.</p>
@@ -4200,8 +4240,12 @@ export default function ContractWorkspace() {
               <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
                 Record GHL Send
               </div>
-              <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
-                After you manually upload the authorized PDF to GHL Documents &amp; Contracts and send it, enter exactly what GHL shows you below. IAOS validates this against the currently-authorized PDF's revision and hash before recording it -- nothing is sent to GHL from here.
+              <div data-testid="contract-manual-send-explanation" data-allows-send={allowsNewSend(contractCurrentStatus) ? "true" : "false"} style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
+                {allowsNewSend(contractCurrentStatus)
+                  ? "After you manually upload the authorized PDF to GHL Documents & Contracts and send it, enter exactly what GHL shows you below. IAOS validates this against the currently-authorized PDF's revision and hash before recording it -- nothing is sent to GHL from here."
+                  : needsReadinessFirst(contractCurrentStatus)
+                    ? notReadyRecordText(readinessRemaining.length)
+                    : RECORD_SEND_NO_RESEND}
               </div>
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
                 <label style={{ display: "block", fontSize: "11px", color: "#94A3B8", marginBottom: "10px" }}>
