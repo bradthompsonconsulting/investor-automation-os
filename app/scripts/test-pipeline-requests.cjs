@@ -225,10 +225,10 @@ async function main() {
       const [older, newer] = held;
       await answer(newer, 500, { error: 'fixture: current read failed' });
       await until(() => visibleText('Failed to load pipeline'), 'current failure shown');
-      check('R4 the current read\'s failure is shown with its detail', await visibleText('fixture: current read failed'));
+      check('R4 the current failure shows its safe endpoint/status detail, never the raw body', await visibleText('ghl-opportunities → 500: the server could not complete the read') && !(await visibleText('fixture: current read failed')));
       await answer(older, 200, pipelineBody('Stale', 'contact-stale'));
       await settle();
-      check('R4 a later stale success does not hide the current failure', await visibleText('Failed to load pipeline'));
+      check('R4 a later stale success preserves the current safe failure detail', await visibleText('Failed to load pipeline') && await visibleText('ghl-opportunities → 500: the server could not complete the read') && !(await visibleText('fixture: current read failed')));
       check('R4 ...nor slip in its rows', !(await visibleText('Stale Seller')));
     }
 
