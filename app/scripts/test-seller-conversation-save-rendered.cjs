@@ -13,7 +13,8 @@
  * Checks:
  *   OFF. Save sits at Summary only; the plan lists every item (note, timing, price, occupancy, address/reason
  *        "not saved: not enabled") with what it WOULD write; the note text carries every answer and General notes;
- *        pressing Save says saving is not enabled and makes ZERO write requests; slice A navigation writes nothing.
+ *        Save is a disabled "Saving not enabled" control tied to the note that nothing is sent (F2); trying to press it
+ *        makes ZERO write requests; slice A navigation writes nothing.
  *   OFF-A. The Board 14-13 sections autosave exactly as before (blur writes one Transaction assumptions note;
  *        "Save changes" exists).
  *   LEAVE. With unsaved work an in-app link asks first (Cancel stays, drafts intact; OK leaves) and reload gets the
@@ -52,7 +53,7 @@ const SP = require(path.join(APP, 'src/lib/seller-call-seller-position-note.ts')
 const json = (status, body) => ({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const watchdog = setTimeout(() => { console.error('FAIL  did not finish within 12 minutes'); process.exit(1); }, 12 * 60_000);
 
-const FLOOR = 82;
+const FLOOR = 83;
 const COMP = '/src/components/SellerConversation.tsx';
 const SAVE = '/src/lib/seller-conversation-save.ts';
 const NOTE = '/src/lib/seller-conversation-note.ts';
@@ -62,7 +63,7 @@ const PAGE = '/src/pages/SellerCallWorkspace.tsx';
 /* [file, from, to]: each `from` must occur exactly once in its file. */
 const MUTATIONS = {
   // Save writes even though the flag is off.
-  saveoff: [[COMP, 'if (!save.enabled) { onNotEnabled(); return; }', 'if (!save.enabled) { onNotEnabled(); }']],
+  saveoff: [[COMP, 'if (!save.enabled) { onNotEnabled(); return; }', 'if (!save.enabled) { onNotEnabled(); }'], [COMP, 'disabled={busy || !save.enabled}', 'disabled={busy}']],
   // An uncertain item is sent again by the next Save without a check.
   resenduncertain: [[SAVE, 'if (r.status === "uncertain" || r.status === "checking" || r.status === "saving") {\n    return { ...p, action: "blocked"', 'if (r.status === "checking" || r.status === "saving") {\n    return { ...p, action: "blocked"'],
     [SAVE, '        if (prev && (prev.status === "uncertain" || prev.status === "checking" || prev.status === "saving")) continue;\n', '        if (prev && (prev.status === "checking" || prev.status === "saving")) continue;\n']],
@@ -99,7 +100,7 @@ const MUTATIONS = {
   uncertainasconfirmed: [[SAVE, '  let body: any;\n  try { body = JSON.parse(text); } catch { return { kind: "uncertain"', '  let body: any;\n  try { body = JSON.parse(text); } catch { return { kind: "confirmed" } as SendOutcome; return { kind: "uncertain"']],
   // A second Save may start while one is in flight: the coordinator's busy check is removed AND the button stays
   // enabled. (The coordinator check alone is covered by test-seller-conversation-save.cjs "D: one save in flight".)
-  noinflight: [[SAVE, '    if (this.inflight !== null) return "busy";\n', ''], [COMP, 'data-testid="sc-save" disabled={busy}', 'data-testid="sc-save" disabled={false}']],
+  noinflight: [[SAVE, '    if (this.inflight !== null) return "busy";\n', ''], [COMP, 'data-testid="sc-save" disabled={busy || !save.enabled}', 'data-testid="sc-save" disabled={!save.enabled}']],
 };
 const MUTATION = process.env.SC_SAVE_MUTATION || '';
 if (MUTATION && !MUTATIONS[MUTATION]) { console.error(`FAIL  unknown SC_SAVE_MUTATION ${MUTATION}`); process.exit(2); }
@@ -255,9 +256,15 @@ async function main() {
     check('OFF: the note text is a valid v1 conversation note for this deal', !!pv && pv.opportunityId === fx.OPP && pv.opening === 'cold', preview.slice(0, 200));
     check('OFF: the note text carries every answer typed and the General notes', !!pv && pv.general === 'Seller prefers mornings. Dog on site.' && pv.questions.find((q) => q.id === 'timing').answers.timing === 'Close by March 1'
       && pv.questions.find((q) => q.id === 'address').answers.street === '1 Main St' && pv.questions.find((q) => q.id === 'asis').dontKnow === true && pv.questions.find((q) => q.id === 'occupancy').answers.occupancy === 'Tenant Occupied');
-    await press(page, 'sc-save');
+    /* F2 (Spock 15-B walkthrough): switched off, Save must read as unavailable, not as a working blue button. */
+    const off = await tid(page, 'sc-save').evaluate((b) => { const d = b.getAttribute('aria-describedby'); const cs = getComputedStyle(b);
+      return { text: b.textContent, disabled: b.disabled, cursor: cs.cursor, opacity: Number(cs.opacity), note: d ? (document.getElementById(d) || {}).textContent || '' : '' }; }).catch(() => null);
+    check('OFF: Save is a disabled "Saving not enabled" control, greyed, tied to the note that nothing is sent',
+      !!off && off.disabled === true && off.text === 'Saving not enabled' && off.cursor === 'not-allowed' && off.opacity <= 0.6 && off.note.includes('Saving is not enabled yet. Nothing is sent.'), off);
+    const pressedOff = await press(page, 'sc-save');
+    await tid(page, 'sc-save').focus().catch(() => {}); await page.keyboard.press('Enter'); await page.keyboard.press(' ');
     await page.waitForTimeout(600);
-    check('OFF: pressing Save says saving is not enabled and nothing was sent', (await tid(page, 'sc-save-not-enabled').textContent().catch(() => '')).includes('Saving is not enabled yet. Nothing was sent.'));
+    check('OFF: the disabled Save cannot be pressed (mouse refused)', pressedOff === false);
     check('OFF: ZERO write requests after Save', writes.length === 0, writes);
     check('OFF: the drafts are untouched by Save', (await tid(page, 'sc-call-notes').inputValue()) === 'Seller prefers mornings. Dog on site.' && (await tid(page, 'sc-field-summary-next').count()) === 1);
 

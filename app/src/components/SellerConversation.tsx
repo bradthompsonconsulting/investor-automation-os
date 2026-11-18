@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   OPENINGS, OPENING_THEN, QUESTIONS, SOURCE_LABEL, STATUS_LABEL, EMPTY_CONVERSATION,
   fillLine, withField, withMark, moveTo, questionStatus, nextOpenQuestion, noteFor,
@@ -327,6 +327,7 @@ function SavePanel({ dealKey, save, plan, results, notEnabledShown, onNotEnabled
   dealKey: string; save: ConversationSave; plan: SavePlan; results: DealResults; notEnabledShown: boolean; onNotEnabled: () => void;
 }) {
   const busy = save.coordinator.busy();
+  const offNoteId = useId();
   const hooks = { onConfirmed: (item: { id: SaveItemId; signature: string }, sent: SentRecord) => save.onConfirmed(dealKey, item, sent) };
   const onSave = () => {
     if (!save.enabled) { onNotEnabled(); return; }
@@ -366,13 +367,16 @@ function SavePanel({ dealKey, save, plan, results, notEnabledShown, onNotEnabled
         </ol>
       )}
       <div className="sc-save-actions">
-        <button type="button" className="sc-save-button" data-testid="sc-save" disabled={busy} onClick={onSave}>{busy ? "Saving…" : "Save"}</button>
+        {/* F2 (Spock 15-B walkthrough): switched off, Save is a disabled control that says so -- not a blue, working-looking
+            button whose only effect was a "not enabled" notice. onSave keeps its own flag check as a second barrier. */}
+        <button type="button" className="sc-save-button" data-testid="sc-save" disabled={busy || !save.enabled}
+          aria-describedby={save.enabled ? undefined : offNoteId} onClick={onSave}>{busy ? "Saving…" : save.enabled ? "Save" : "Saving not enabled"}</button>
         {save.enabled && !busy && plan.writes.length === 0 ? <span className="sc-muted" data-testid="sc-save-nothing">Nothing new to send.</span> : null}
       </div>
       {!save.enabled ? (
         notEnabledShown
-          ? <div className="sc-save-notice" role="status" data-testid="sc-save-not-enabled">Saving is not enabled yet. Nothing was sent. The list above is what Save would write.</div>
-          : <div className="sc-muted" data-testid="sc-save-disabled-note">Saving is not enabled yet: Save shows what it would write and sends nothing.</div>
+          ? <div id={offNoteId} className="sc-save-notice" role="status" data-testid="sc-save-not-enabled">Saving is not enabled yet. Nothing was sent. The list above is what Save would write.</div>
+          : <div id={offNoteId} className="sc-muted" data-testid="sc-save-disabled-note">Saving is not enabled yet. Nothing is sent. The list above is what Save would write.</div>
       ) : null}
       <div className="sc-muted" data-testid="sc-save-separate">Current Offer, readiness approve/override, Accept / Follow-Up / Pass, contract steps and the call log keep their own buttons; Save never records them.</div>
     </div>
