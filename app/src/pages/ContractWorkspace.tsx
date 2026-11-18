@@ -70,7 +70,7 @@ import {
   formatUnderContractNote, parseUnderContractNote, allUnderContractRecordsForOpportunity,
 } from "../lib/contract-execution-carriers";
 import { allContractLifecycleRecordsForOpportunity } from "../lib/contract-lifecycle-carriers";
-import { deriveContractCurrentStatus } from "../lib/contract-current-status";
+import { allowsNewSend, deriveContractCurrentStatus, LOWER_NO_RESEND, RECORD_SEND_NO_RESEND, resolvedSendAttemptsForOpportunity } from "../lib/contract-current-status";
 import { matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
 import { DISPOSITION_ARV_LABEL, DISPOSITION_REPAIRS_LABEL } from "../lib/authoritative-figures";
 import {
@@ -2121,15 +2121,21 @@ export default function ContractWorkspace() {
     }).ok) ?? null;
   }, [screen, documentVersion, currentUnderContractRecord, existingDispositionHandoffs]);
 
+  /** B15-21 (Bones B2): every send attempt, each resolved within itself -- display only; existingSend and its gates are unchanged. */
+  const sendAttemptsForDisplay = useMemo(() => {
+    if (screen.state !== "ready" || !notes) return [];
+    return resolvedSendAttemptsForOpportunity(notes, screen.opportunity.id);
+  }, [screen, notes]);
+
   /** B15-21 (INV-130): the top status and next instruction follow the latest SUBSTANTIATED state (display only). */
   const contractCurrentStatus = useMemo(() => {
     if (screen.state !== "ready") return null;
     return deriveContractCurrentStatus({
       opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion,
       readinessReady: screen.readiness.ready, underContract: currentUnderContractRecord,
-      dispositionHandoff: currentDispositionHandoff, lifecycleHistory: dispositionLifecycleHistory, latestSend: existingSend,
+      dispositionHandoff: currentDispositionHandoff, lifecycleHistory: dispositionLifecycleHistory, sendAttempts: sendAttemptsForDisplay,
     });
-  }, [screen, documentVersion, currentUnderContractRecord, currentDispositionHandoff, dispositionLifecycleHistory, existingSend]);
+  }, [screen, documentVersion, currentUnderContractRecord, currentDispositionHandoff, dispositionLifecycleHistory, sendAttemptsForDisplay]);
 
   const dispositionEligibility = useMemo(() => {
     if (screen.state !== "ready" || !documentVersion) return null;
@@ -3672,8 +3678,12 @@ export default function ContractWorkspace() {
             <div data-testid="contract-manual-send-notice"
               style={{ marginTop: "24px" }}>
               <h3>Manual GHL upload and send</h3>
-              <p>Review the populated PDF, then upload it to GHL
-                Documents &amp; Contracts and send it manually.</p>
+              {allowsNewSend(contractCurrentStatus) ? (
+                <p data-testid="contract-manual-send-instruction" data-allows-send="true">Review the populated PDF, then upload it to GHL
+                  Documents &amp; Contracts and send it manually.</p>
+              ) : (
+                <p data-testid="contract-manual-send-instruction" data-allows-send="false">{LOWER_NO_RESEND}</p>
+              )}
               <p>IAOS V1 does not sync contract merge fields, request
                 a GHL template draft, or send contracts automatically.
                 This notice does not record a contract as sent.</p>
@@ -4219,8 +4229,10 @@ export default function ContractWorkspace() {
               <div style={{ fontSize: "14px", fontWeight: 700, color: "#E2E8F0", marginBottom: "4px" }}>
                 Record GHL Send
               </div>
-              <div style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
-                After you manually upload the authorized PDF to GHL Documents &amp; Contracts and send it, enter exactly what GHL shows you below. IAOS validates this against the currently-authorized PDF's revision and hash before recording it -- nothing is sent to GHL from here.
+              <div data-testid="contract-manual-send-explanation" data-allows-send={allowsNewSend(contractCurrentStatus) ? "true" : "false"} style={{ fontSize: "11px", color: "#64748B", marginBottom: "12px" }}>
+                {allowsNewSend(contractCurrentStatus)
+                  ? "After you manually upload the authorized PDF to GHL Documents & Contracts and send it, enter exactly what GHL shows you below. IAOS validates this against the currently-authorized PDF's revision and hash before recording it -- nothing is sent to GHL from here."
+                  : RECORD_SEND_NO_RESEND}
               </div>
               <div style={{ ...groupCardStyle, marginBottom: "12px" }}>
                 <label style={{ display: "block", fontSize: "11px", color: "#94A3B8", marginBottom: "10px" }}>

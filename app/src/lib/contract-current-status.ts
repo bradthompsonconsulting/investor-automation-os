@@ -14,13 +14,18 @@
  *      started";
  *   3. an Under Contract record for this opportunity, agreement and version
  *      -> "Under Contract";
- *   4. a send recorded for this version but no execution (Bones R1):
- *      - accepted and bound (verifyAcceptedSendBinding) -> "Contract sent";
- *        it says the send is recorded, never that anyone signed or what the
- *        provider shows now;
- *      - still in progress, awaiting readback, or ambiguous -> "Send outcome
+ *   4. a send recorded for this version but no execution (Bones R1, B2).
+ *      Every send ATTEMPT for the opportunity is considered, each resolved
+ *      to its own latest note by the carrier's own precedence
+ *      (resolvedSendAttemptsForOpportunity) -- a later failed attempt never
+ *      erases an earlier accepted or unresolved one:
+ *      - any attempt accepted and bound (verifyAcceptedSendBinding) ->
+ *        "Contract sent"; it says the send is recorded, never that anyone
+ *        signed or what the provider shows now;
+ *      - else any attempt in progress, awaiting readback, ambiguous, or
+ *        "accepted" without a bindable provider document -> "Send outcome
  *        not confirmed"; it must not invite a second send either;
- *      - failed -> no claim; the readiness guidance stands;
+ *      - only failed attempts (or none) -> the readiness guidance stands;
  *   5. otherwise the readiness guidance, unchanged: Contract Ready -> review,
  *      upload and send; not ready -> complete the checklist.
  *
@@ -33,7 +38,7 @@ import { isSameContractVersion, type ContractVersionIdentity } from "./board9-co
 import { type UnderContractRecordEntry } from "./contract-execution-model";
 import { verifyHandoffMatchesUnderContract, type DispositionHandoffRecord } from "./contract-disposition-handoff-model";
 import { filterRecordsForVersion, verifyAcceptedSendBinding, type LifecycleRecord } from "./contract-lifecycle-model";
-import { type ParsedContractSend } from "./contract-send-carriers";
+import { latestContractSendForOpportunity, parseContractSendNote, type ParsedContractSend } from "./contract-send-carriers";
 
 export const READY_UNSENT_NEXT = "Contract Ready. Review the populated PDF, then upload and send it manually in GHL.";
 export const NOT_READY_NEXT = "Complete the checklist above to reach Contract Ready.";
@@ -47,7 +52,38 @@ export type ContractCurrentStatus =
   | { kind: "disposition_started"; headline: string; detail: string; next: string }
   | { kind: "rescinded"; headline: string; detail: string; next: string };
 
-const UNCONFIRMED_SEND_STATUSES = new Set(["in_progress", "provider_accepted_pending_readback", "ambiguous"]);
+const UNCONFIRMED_SEND_STATUSES = new Set(["in_progress", "provider_accepted_pending_readback", "ambiguous", "accepted"]);
+
+/** Display only: may the page invite a NEW manual upload/send for this version? Only when nothing is recorded beyond readiness. */
+export function allowsNewSend(status: ContractCurrentStatus | null): boolean {
+  return !!status && (status.kind === "ready_unsent" || status.kind === "not_ready");
+}
+/** The lower "Manual GHL upload and send" notice's instruction when a send, execution or rescission is recorded (B1). */
+export const LOWER_NO_RESEND = "Do not upload or send this contract version again: a send, execution or rescission is already recorded for it. See the status at the top of this page.";
+/** The Record GHL Send explanation in the same states (B1): recording stays available, sending again is not invited. */
+export const RECORD_SEND_NO_RESEND = "A send of this contract version is already recorded (see the status at the top of this page). Do not upload or send it again. Record here only a send GHL already shows and IAOS has not recorded -- nothing is sent to GHL from here.";
+
+/**
+ * Display only (Bones B2): every send attempt for this opportunity, each resolved to its own latest note
+ * by the carrier's own precedence (latestContractSendForOpportunity applied to that attempt's notes alone).
+ * The page's existingSend (the single latest attempt) and every gate that uses it are unchanged.
+ */
+export function resolvedSendAttemptsForOpportunity(notes: readonly { body: string }[], opportunityId: string): ParsedContractSend[] {
+  const byAttempt = new Map<string, { body: string }[]>();
+  for (const n of notes) {
+    const p = parseContractSendNote(n.body);
+    if (!p || p.opportunityId !== opportunityId) continue;
+    const list = byAttempt.get(p.attemptId) ?? [];
+    list.push(n);
+    byAttempt.set(p.attemptId, list);
+  }
+  const out: ParsedContractSend[] = [];
+  for (const list of byAttempt.values()) {
+    const resolved = latestContractSendForOpportunity(list as { body: string }[], opportunityId);
+    if (resolved) out.push(resolved);
+  }
+  return out;
+}
 
 export function deriveContractCurrentStatus(args: {
   opportunityId: string;
@@ -58,8 +94,8 @@ export function deriveContractCurrentStatus(args: {
   underContract: UnderContractRecordEntry | null;
   dispositionHandoff: DispositionHandoffRecord | null;
   lifecycleHistory: readonly LifecycleRecord[];
-  /** The latest governed contract-send record for this opportunity (the page's `existingSend`), or null. */
-  latestSend: ParsedContractSend | null;
+  /** Every governed send attempt for this opportunity, each resolved within itself (resolvedSendAttemptsForOpportunity). */
+  sendAttempts: readonly ParsedContractSend[];
   formatTime?: (iso: string) => string;
 }): ContractCurrentStatus {
   const fmt = args.formatTime ?? ((iso: string) => new Date(iso).toLocaleString());
@@ -102,26 +138,30 @@ export function deriveContractCurrentStatus(args: {
     };
   }
 
-  const send = args.latestSend;
-  if (send && send.opportunityId === args.opportunityId && isSameContractVersion(send.version, v)) {
-    const binding = verifyAcceptedSendBinding({ acceptedSend: send, opportunityId: args.opportunityId, version: v });
-    if (binding.ok) {
-      const at = send.iaosObservedAcceptanceAt ?? send.at;
-      return {
-        kind: "sent_not_executed",
-        headline: "Contract sent — execution not yet recorded",
-        detail: `A send of this contract version was recorded ${fmt(at)} (GHL document ${binding.value.providerDocumentId}). IAOS has no verified execution for it yet; this is not a signature status.`,
-        next: "Do not upload or send it again. Check signatures and execution under Verify Execution & Under Contract below.",
-      };
-    }
-    if (UNCONFIRMED_SEND_STATUSES.has(send.status)) {
-      return {
-        kind: "send_unconfirmed",
-        headline: "Send outcome not confirmed",
-        detail: `A send of this contract version was started ${fmt(send.at)} and its outcome is not confirmed.`,
-        next: "Do not upload or send it again until that send's outcome is resolved. Check the document in GHL Documents & Contracts first.",
-      };
-    }
+  const scoped = args.sendAttempts.filter((a) => a.opportunityId === args.opportunityId && isSameContractVersion(a.version, v));
+  const when = (a: ParsedContractSend) => a.iaosObservedAcceptanceAt ?? a.at;
+  const bound = scoped
+    .map((a) => ({ a, b: verifyAcceptedSendBinding({ acceptedSend: a, opportunityId: args.opportunityId, version: v }) }))
+    .filter((x) => x.b.ok)
+    .sort((x, y) => (when(x.a) < when(y.a) ? 1 : when(x.a) > when(y.a) ? -1 : 0));
+  if (bound.length > 0) {
+    const { a, b } = bound[0];
+    const docId = b.ok ? b.value.providerDocumentId : "";
+    return {
+      kind: "sent_not_executed",
+      headline: "Contract sent — execution not yet recorded",
+      detail: `A send of this contract version was recorded ${fmt(when(a))} (GHL document ${docId}). IAOS has no verified execution for it yet; this is not a signature status.`,
+      next: "Do not upload or send it again. Check that send's signatures and execution in GHL and in the execution records on this page.",
+    };
+  }
+  const unresolved = scoped.filter((a) => UNCONFIRMED_SEND_STATUSES.has(a.status)).sort((x, y) => (x.at < y.at ? 1 : x.at > y.at ? -1 : 0));
+  if (unresolved.length > 0) {
+    return {
+      kind: "send_unconfirmed",
+      headline: "Send outcome not confirmed",
+      detail: `A send attempt for this contract version (${fmt(unresolved[0].at)}) has no confirmed outcome.`,
+      next: "Do not upload or send it again until that send's outcome is resolved. Check the document in GHL Documents & Contracts first.",
+    };
   }
 
   return fallback;
