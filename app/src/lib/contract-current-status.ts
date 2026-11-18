@@ -61,7 +61,7 @@ export function allowsNewSend(status: ContractCurrentStatus | null): boolean {
 /** The lower "Manual GHL upload and send" notice's instruction when a send, execution or rescission is recorded (B1). */
 export const LOWER_NO_RESEND = "Do not upload or send this contract version again: a send, execution or rescission is already recorded for it. See the status at the top of this page.";
 /** The Record GHL Send explanation in the same states (B1): recording stays available, sending again is not invited. */
-export const RECORD_SEND_NO_RESEND = "A send of this contract version is already recorded (see the status at the top of this page). Do not upload or send it again. Record here only a send GHL already shows and IAOS has not recorded -- nothing is sent to GHL from here.";
+export const RECORD_SEND_NO_RESEND = "A send, execution or rescission is already recorded for this contract version (see the status at the top of this page). Do not upload or send it again. Record here only a send GHL already shows and IAOS has not recorded -- nothing is sent to GHL from here.";
 
 /**
  * Display only (Bones B2): every send attempt for this opportunity, each resolved to its own latest note

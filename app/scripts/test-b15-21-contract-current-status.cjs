@@ -409,6 +409,8 @@ const fromNotes = (notes, over) => derive(Object.assign({ sendAttempts: S.resolv
         prompts === 0 && lowerAllows === 'false' && recordAllows === 'false' && html.includes('Do not upload or send'), { prompts, lowerAllows, recordAllows, html: html.slice(0, 400) });
     }
   }
+  check('L: a rescission with no send never claims a send is recorded, anywhere on the page',
+    !!wholeRendered.rescinded_before_execution && !/send of this contract version (was|is already) recorded/i.test(wholeRendered.rescinded_before_execution.markup), wholeRendered.rescinded_before_execution && wholeRendered.rescinded_before_execution.markup.slice(0, 600));
   const outDir = process.env.B1521_RENDER_OUT;
   if (outDir) {
     fs.mkdirSync(outDir, { recursive: true });
