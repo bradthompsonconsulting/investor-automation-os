@@ -2995,7 +2995,12 @@ export default function SellerCallWorkspace() {
           </div>
 
           {/* B15-30 / INV-140 -- the one guided step panel for the selected deal (lib/deal-next-step.ts). */}
-          {selected ? <DealNextStepPanel next={nextStep} contactId={contactId} dealId={selected.id} /> : null}
+          {/* While another seller's deal is still the "selected" one (this route's seller still loading), the panel names
+              no deal: the step is "checking" and it must not point at the previous seller's deal. */}
+          {selected ? (
+            <DealNextStepPanel next={nextStep} contactId={contactId}
+              dealId={writeTarget !== null && !sellerLoading && writeTarget.opportunityId === selected.id ? selected.id : null} />
+          ) : null}
 
           {/* B15-03 / INV-103 (Rev 6 slices 1-2) -- the guided seller conversation.
               Its controls never write; the one write path is Save at Summary

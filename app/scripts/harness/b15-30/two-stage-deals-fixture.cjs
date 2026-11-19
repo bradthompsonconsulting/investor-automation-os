@@ -11,6 +11,10 @@
  *   Deal B (OPP_B "Deal B"): repair total 40000 saved on the deal's own Opportunity, NO Assignment Mode. Expected next
  *          step: Assignment Mode (Underwriting).
  *
+ *   Seller "Other Fixture" (fixtureOtherContact), ONE deal (OPP_O "Other deal"): ARV, property, seller price, repairs on
+ *          the deal and Assignment Mode all recorded, NO transaction assumptions. Expected next step: the transaction
+ *          assumptions (on Seller Call itself). Used for a seller switch (stale-deal guard) and an in-page focus.
+ *
  * Note writes (the override the test records) are applied to the in-memory notes and visible on the next read. Every
  * other write is refused (409 not_sent). Deterministic seed timestamps (2026-09-30Z). Synthetic and fictional.
  */
@@ -26,6 +30,8 @@ const IDS = { oppArv: CONFIG.opportunityFacts.arv, oppRepairs: CONFIG.opportunit
 const G = 'fixtureGuideContact';
 const OPP_A = `${G}-deal-a`;
 const OPP_B = `${G}-deal-b`;
+const O = 'fixtureOtherContact';
+const OPP_O = `${O}-deal`;
 const ARV = 650000;
 const DEAL_B_REPAIRS = 40000;
 const SELLER_PRICE = 425000;
@@ -37,7 +43,7 @@ const POLICY_HUMAN = {
 };
 const POLICY_VALUES = Object.entries(POLICY_HUMAN).map(([k, value]) => ({ id: CONFIG.customValues[k], value }));
 
-function dealNotes(opp, tag) {
+function dealNotes(opp, tag, { transaction = true } = {}) {
   const n = (id, body) => ({ id: `${tag}-${id}`, body, dateAdded: '2026-09-30T15:00:00.000Z' });
   return [
     n('arv', formatArvApprovalNote({ kind: 'approved', amount: ARV, recommendedArv: ARV, revision: 1 }, {
@@ -46,8 +52,8 @@ function dealNotes(opp, tag) {
       source: { kind: 'PROPSTREAM_COMPARABLE_CSV', version: 'propstream-comparable-csv-v1', fileName: 'fixture-comps.csv', importedAt: '2026-09-30T14:55:00.000Z' },
     })),
     n('identity', formatPropertyIdentityConfirmationNote({ opportunityId: opp, at: '2026-09-30T15:01:00.000Z', operator: null, status: 'confirmed', address: DISPLAY_ADDRESS })),
-    n('transaction', formatTransactionAssumptionsNote({ opportunityId: opp, at: '2026-09-30T15:02:00.000Z', operator: null,
-      transactionStructure: { kind: 'value', value: 'Assignment of contract' }, closingPossession: { kind: 'value', value: 'Close in 30 days; vacant at closing' }, titleComplications: { kind: 'none' } })),
+    ...(transaction ? [n('transaction', formatTransactionAssumptionsNote({ opportunityId: opp, at: '2026-09-30T15:02:00.000Z', operator: null,
+      transactionStructure: { kind: 'value', value: 'Assignment of contract' }, closingPossession: { kind: 'value', value: 'Close in 30 days; vacant at closing' }, titleComplications: { kind: 'none' } }))] : []),
     n('seller-price', formatSellerPricePositionNote({ opportunityId: opp, at: '2026-09-30T15:03:00.000Z', operator: null, kind: 'price', price: SELLER_PRICE })),
   ];
 }
@@ -56,16 +62,17 @@ function twoStageDeals() {
   let state;
   const oppFields = (opp, singular) => {
     const v = (id, value, key) => (singular ? { id, fieldValue: value } : { id, [key]: value });
+    if (opp === OPP_O) return [v(IDS.oppArv, ARV, 'fieldValueNumber'), v(IDS.oppRepairs, DEAL_B_REPAIRS, 'fieldValueNumber'), v(IDS.assignmentMode, 'Standard Minimum', 'fieldValueString')];
     return opp === OPP_A
       ? [v(IDS.oppArv, ARV, 'fieldValueNumber'), v(IDS.assignmentMode, 'Standard Minimum', 'fieldValueString')]
       : [v(IDS.oppArv, ARV, 'fieldValueNumber'), v(IDS.oppRepairs, DEAL_B_REPAIRS, 'fieldValueNumber')];
   };
-  const row = (id, name) => ({ id, contactId: G, contactName: 'Guide', opportunityName: name, phone: '', email: '', stageId: 'fixture-stage', customFields: oppFields(id, false) });
+  const row = (id, name, cid = G, cname = 'Guide') => ({ id, contactId: cid, contactName: cname, opportunityName: name, phone: '', email: '', stageId: 'fixture-stage', customFields: oppFields(id, false) });
   return {
-    G, OPP_A, OPP_B,
-    reset() { state = { notes: [{ id: 'g-seed', body: 'Seed note for Guide', dateAdded: '2026-09-30T12:00:00.000Z' }, ...dealNotes(OPP_A, 'da'), ...dealNotes(OPP_B, 'db')], created: 0 }; },
+    G, OPP_A, OPP_B, O, OPP_O,
+    reset() { state = { notes: [{ id: 'g-seed', body: 'Seed note for Guide', dateAdded: '2026-09-30T12:00:00.000Z' }, ...dealNotes(OPP_A, 'da'), ...dealNotes(OPP_B, 'db')], otherNotes: [{ id: 'o-seed', body: 'Seed note for Other', dateAdded: '2026-09-30T12:00:00.000Z' }, ...dealNotes(OPP_O, 'do', { transaction: false })], created: 0 }; },
     get state() { return state; },
-    contactOf: (o) => (o === OPP_A || o === OPP_B ? G : null),
+    contactOf: (o) => (o === OPP_A || o === OPP_B ? G : o === OPP_O ? O : null),
     write(op, target, args) {
       if (op === 'note.create' && target === G) {
         state.created += 1;
@@ -77,12 +84,15 @@ function twoStageDeals() {
     answer(req) {
       const ok = (body) => ({ status: 200, body });
       switch (req.kind) {
-        case 'notes': return ok({ notes: req.contact === G ? state.notes.map((x) => ({ ...x })) : [] });
-        case 'detail': return ok({ contact: { id: G, firstName: 'Guide', lastName: 'Fixture', phone: '+15555550177', ...ADDRESS, customFields: [] } });
-        case 'row': return ok({ id: G, firstName: 'Guide', lastName: 'Fixture', phone: '+15555550177', tags: [] });
+        case 'notes': return ok({ notes: req.contact === G ? state.notes.map((x) => ({ ...x })) : req.contact === O ? state.otherNotes.map((x) => ({ ...x })) : [] });
+        case 'detail': if (req.contact === O) return ok({ contact: { id: O, firstName: 'Other', lastName: 'Fixture', phone: '+15555550178', ...ADDRESS, customFields: [] } });
+          return ok({ contact: { id: G, firstName: 'Guide', lastName: 'Fixture', phone: '+15555550177', ...ADDRESS, customFields: [] } });
+        case 'row': if (req.contact === O) return ok({ id: O, firstName: 'Other', lastName: 'Fixture', phone: '+15555550178', tags: [] });
+          return ok({ id: G, firstName: 'Guide', lastName: 'Fixture', phone: '+15555550177', tags: [] });
         case 'opp-read':
+          if (req.target === OPP_O) return ok({ opportunity: { id: OPP_O, contactId: O, customFields: oppFields(OPP_O, true) } });
           return req.target === OPP_A || req.target === OPP_B ? ok({ opportunity: { id: req.target, contactId: G, customFields: oppFields(req.target, true) } }) : { status: 404, body: { error: 'fixture: unknown opportunity' } };
-        case 'ghl-opportunities': return ok({ pipelineId: 'fixture-pipeline', stages: [], opportunities: [row(OPP_A, 'Deal A'), row(OPP_B, 'Deal B')] });
+        case 'ghl-opportunities': return ok({ pipelineId: 'fixture-pipeline', stages: [], opportunities: [row(OPP_A, 'Deal A'), row(OPP_B, 'Deal B'), row(OPP_O, 'Other deal', O, 'Other')] });
         case 'ghl-underwriting-policy': return ok({ values: POLICY_VALUES });
         case 'ghl-contact-conversations': return ok({ messages: [], conversations: [] });
         case 'defs': return ok({ customFields: [] });
@@ -93,4 +103,4 @@ function twoStageDeals() {
   };
 }
 
-module.exports = { twoStageDeals, G, OPP_A, OPP_B, DEAL_B_REPAIRS };
+module.exports = { twoStageDeals, G, OPP_A, OPP_B, O, OPP_O, DEAL_B_REPAIRS };

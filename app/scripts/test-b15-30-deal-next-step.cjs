@@ -14,6 +14,8 @@
  *   R5  a reload: Deal A resumes at repairs (override still on record), Deal B at Assignment Mode
  *   R6  Deal A's Next opens Underwriting on Deal A (no deal picker) with the repair estimator focused
  *   R7  Deal B's Next opens Underwriting on Deal B with the Assignment Mode selector focused
+ *   R8  switching to ANOTHER seller never shows the previous seller's deal or step; the new seller's own step follows
+ *   R9  a Seller Call step focuses its panel in place (no navigation)
  *   W1  ZERO non-GET requests from the guidance itself (everything after the override was recorded)
  *   W2  nothing left the machine; every request modelled; no page errors
  *
@@ -23,7 +25,7 @@
 'use strict';
 const path = require('node:path');
 require('./harness/ts-loader.cjs');
-const { twoStageDeals, G, OPP_A, OPP_B } = require('./harness/b15-30/two-stage-deals-fixture.cjs');
+const { twoStageDeals, G, OPP_A, OPP_B, O, OPP_O } = require('./harness/b15-30/two-stage-deals-fixture.cjs');
 const { createBarrierFixture } = require('./harness/current-offer-barrier-fixture.cjs');
 const APP = path.resolve(__dirname, '..');
 const { latestReadinessHumanActionForOpportunity } = require(path.join(APP, 'src/lib/seller-call-readiness-carriers.ts'));
@@ -45,7 +47,7 @@ if (MUTATION && !MUTATIONS[MUTATION]) { console.error(`FAIL  unknown mutation ${
 let checks = 0, failures = 0;
 function check(name, ok, detail) { checks += 1; if (!ok) failures += 1; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : ` -- ${JSON.stringify(detail).slice(0, 500)}`}`); }
 const note = (s) => console.log(`NOTE  ${s}`);
-const FLOOR = 11;
+const FLOOR = 13;
 const watchdog = setTimeout(() => { console.error('FAIL  did not finish within 8 minutes'); process.exit(1); }, 8 * 60_000);
 
 function classify(url, method, post) {
@@ -186,6 +188,28 @@ async function main() {
     }
     check('R7 Deal B\'s Next opens Underwriting on Deal B with the Assignment Mode selector focused',
       r7 && r7.path === `/contacts/${G}/underwriting?deal=${encodeURIComponent(OPP_B)}&focus=assignment_mode` && !r7.picker && r7.applied === 'true' && r7.activeInside, r7);
+
+    // R8 -- switch to ANOTHER seller (the page keeps the previous contact's data until the new one loads)
+    await start();
+    await choose('Deal A', OPP_A);
+    await nav(`/contacts/${O}/seller-call`);
+    const seen8 = []; const t8 = Date.now();
+    while (Date.now() - t8 < 3000) { const p = await panel(); if (p) seen8.push(`${p.deal}:${p.step}`); await page.waitForTimeout(15); }
+    const o8 = await settled(OPP_O);
+    /* While the new seller loads, the only allowed panel states: "checking" naming NO deal, or the new seller's own deal (checking, then its step). */
+    const allowed8 = new Set([':checking', `${OPP_O}:checking`, `${OPP_O}:transaction`]);
+    const flash8 = [...new Set(seen8)].filter((s) => !allowed8.has(s));
+    check('R8 switching to another seller never shows the previous seller\'s deal or step (sampled every ~15 ms); the new seller\'s own step follows',
+      flash8.length === 0 && o8 && o8.step === 'transaction', { seen: [...new Set(seen8)], o8 });
+
+    // R9 -- a Seller Call step focuses the exact panel in place
+    const before9 = await page.evaluate(() => location.pathname + location.search);
+    await page.getByTestId('deal-next-step-go').click();
+    await page.waitForTimeout(600);
+    const r9 = await page.evaluate(() => { const el = document.querySelector('[data-testid="transaction-assumptions-panel"]');
+      return { path: location.pathname + location.search, applied: el?.getAttribute('data-focus-applied') ?? null, activeInside: !!el && el.contains(document.activeElement), label: document.querySelector('[data-testid="deal-next-step-go"]')?.textContent.trim() }; });
+    check('R9 a Seller Call step ("Next: record the transaction assumptions (Seller Call)") focuses that panel in place, without leaving the page',
+      r9.label === 'Next: record the transaction assumptions (Seller Call)' && r9.path === before9 && r9.applied === 'true' && r9.activeInside, r9);
 
     // W
     const guidanceWrites = log.slice(0).filter((x) => x.method !== 'GET').length - writesBeforeGuidance;
