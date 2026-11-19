@@ -13,6 +13,8 @@
  *   O2  back on the Dashboard, Bo's link opens Bo's thread: Bo's words, never Ada's
  *   O3  a direct visit / reload of Bo's link selects Bo's thread again
  *   M1  a conversation id not in the list: says so plainly and selects nothing (no guess)
+ *   M2  (Bones REVISE R1) Cy's thread open, then the SAME mounted page is routed to a missing id: the notice shows, no
+ *       thread is selected, and Cy's message is gone (no document load; the thread list is not re-read)
  *   N1  plain /conversations (the sidebar route) is unchanged: nothing selected
  *   S1  after arriving by link, choosing another thread by hand works (the link does not override it)
  *   P1  the row keeps its preview wording and the contact-name link to the workspace (R1)
@@ -35,8 +37,8 @@ const before = { name: 'b15-08-link-before', enforce: 'pre', load(id) {
   const rel = BEFORE && PAGES[path.resolve(id.split('?')[0])];
   return rel ? execFileSync('git', ['show', `${BEFORE}:${rel}`], { cwd: APP, encoding: 'utf8', maxBuffer: 64 << 20 }) : null;
 } };
-/** Literal check() call sites: L1, O1-O3, M1, N1, S1, P1, W = 9. */
-const FLOOR = 9;
+/** Literal check() call sites: L1, O1-O3, M1, M2, N1, S1, P1, W = 10. */
+const FLOOR = 10;
 let checks = 0, failures = 0;
 function check(name, ok, detail) { checks += 1; if (!ok) failures += 1; console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail).slice(0, 500)}`}`); }
 if (fs.existsSync(path.join(HARNESS_DIR, 'AppBefore.tsx'))) fs.rmSync(path.join(HARNESS_DIR, 'AppBefore.tsx'));
@@ -135,6 +137,23 @@ async function main() {
     await page.waitForTimeout(600);
     const m1 = { notice: await page.evaluate(() => document.querySelector('[data-testid="conv-link-missing"]')?.innerText?.trim() ?? null), strip: await strip(), anyWords: await page.evaluate((w) => Object.values(w).some((x) => document.querySelector('[data-testid="thread-latest-inbound"]')?.innerText.includes(x)), WORDS) };
     check('M1 an id not in the list: a plain notice, and no thread is selected (no guess)', !!m1.notice && /isn.t in the list/i.test(m1.notice) && m1.strip === null && !m1.anyWords, m1);
+    // M2 (Bones REVISE R1 on fc35053): Cy's thread OPEN, then the real router (same mounted page, no document load) goes to
+    // a missing id. Afterwards: the notice, no thread selected, and nothing of Cy's left.
+    await start('/conversations?conversation=cv-ada');
+    await until(async () => { const s = await strip(); return s && /Ada here/.test(s); });
+    await page.locator('button', { hasText: 'Cy Fixture' }).first().click();
+    const m2cy = await until(async () => { const s = await strip(); return s && /Cy here/.test(s) ? s : null; });
+    await page.evaluate(() => { window.__b1508SameDocument = 'cy-open'; });
+    const m2mark = reads.length;
+    await page.evaluate(() => { window.history.pushState(null, '', '/conversations?conversation=cv-gone'); window.dispatchEvent(new PopStateEvent('popstate')); });
+    await until(() => page.evaluate(() => !!document.querySelector('[data-testid="conv-link-missing"]')), 8000);
+    await page.waitForTimeout(1000);   // let every effect settle
+    const m2 = { cyBefore: m2cy, path: await pathNow(), sameDocument: await page.evaluate(() => window.__b1508SameDocument === 'cy-open'),
+      threadListReread: reads.slice(m2mark).includes('ghl-conversations?scope=all'),
+      notice: await page.evaluate(() => document.querySelector('[data-testid="conv-link-missing"]')?.innerText?.trim() ?? null), strip: await strip(),
+      cyAnywhereInPane: await page.evaluate((w) => { const el = document.querySelector('[data-testid="thread-latest-inbound"]'); return !!el || [...document.querySelectorAll('div')].some((d) => d.children.length === 0 && d.textContent.includes(w)); }, WORDS.cy) };
+    check('M2 Cy open, then the same mounted page navigates to a missing id: the notice shows, NO thread is selected, and Cy\'s message is gone',
+      shown(m2cy, 'cy') && /conversation=cv-gone$/.test(m2.path) && m2.sameDocument && !m2.threadListReread && !!m2.notice && /isn.t in the list/i.test(m2.notice) && m2.strip === null && !m2.cyAnywhereInPane, m2);
     // N1
     await start('/conversations');
     await until(() => page.evaluate(() => /\d+ threads?/.test(document.body.innerText)));

@@ -249,7 +249,8 @@ export default function Conversations() {
   /* B15-08 (Spock G5 finding 2): a link from the Dashboard's Unanswered Inbound row names its conversation
      (?conversation=<GHL conversation id>). Once the thread list has loaded, the matching thread is selected exactly as a
      click would select it -- no new read. Applied once per id, so a later hand-picked thread is never pulled back. An id
-     not in the list is said plainly and nothing is selected (no guess). */
+     not in the list is said plainly and nothing is selected (no guess) -- r2 (Bones REVISE R1): also when another thread
+     was open on this same mounted page, so the requested URL never shows a different conversation. */
   const [searchParams] = useSearchParams();
   const linkedConversation = searchParams.get("conversation");
   const linkApplied = useRef<string | null>(null);
@@ -258,7 +259,7 @@ export default function Conversations() {
     if (!threads || !linkedConversation || linkApplied.current === linkedConversation) return;
     linkApplied.current = linkedConversation;
     const match = threads.find((t) => t.conversationId === linkedConversation);
-    if (match) setSelected(match);
+    setSelected(match ?? null);
     setLinkMissing(!match);
   }, [threads, linkedConversation]);
 

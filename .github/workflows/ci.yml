@@ -414,7 +414,7 @@ jobs:
         run: node app/scripts/test-dashboard-callback-popover.cjs
       - name: Latest inbound seller message shown from the thread source with honest states, Dashboard + Conversations, real App (INV-107, B15-08) — 38 checks
         run: node app/scripts/test-b15-08-inbound-visibility.cjs
-      - name: Dashboard Unanswered Inbound row opens its own conversation (existing Conversations route; two contacts, missing id, unchanged sidebar route) (B15-08, Spock G5 finding 2) — 9 checks
+      - name: Dashboard Unanswered Inbound row opens its own conversation (existing Conversations route; two contacts, missing id incl. on an already-open page, unchanged sidebar route) (B15-08, Spock G5 finding 2) — 10 checks
         run: node app/scripts/test-b15-08-dashboard-thread-link.cjs
       - name: Dashboard thread link applied once per id -- a hand-picked thread survives the thread-list re-read after read-session recovery (B15-08) — 4 checks
         run: node app/scripts/test-b15-08-thread-link-recovery.cjs
