@@ -432,7 +432,7 @@ jobs:
         run: node app/scripts/test-deal-calculator-drafts.cjs
       - name: Deal Calculator ARV source and draft ownership — 33 checks
         run: node app/scripts/test-b15-22-arv-source.cjs
-      - name: Deal Calculator repairs from the chosen deal first, contact fallback, field by field; drafts, Clear and deal isolation (B15-24, PB-D55) — 18 checks
+      - name: Deal Calculator repairs from the chosen deal first, contact fallback, field by field; drafts, Clear and deal isolation, pending-link ownership (B15-24, PB-D55) — 22 checks
         run: node app/scripts/test-b15-24-repair-source.cjs
       - name: Deal Calculation ledger carrier and server guard -- registered v1 note, ownership, no silent overwrite, fresh basis, Production refused, separate from approvals, malformed basis refused, runtime projection (B15-25 Phase 2 r2) — 42 checks
         run: node app/scripts/test-deal-calculation.cjs

@@ -13,6 +13,9 @@
  *          deal and return -> reload, all restored
  *   C1-C2  Clear: blank, kept blank through reload (the deal's figure never refills it); other deals untouched
  *   I1     isolation: no deal's figures appear on another deal
+ *   P1-P4  (Bones REVISE R1 on 1a66237) while the link's pipeline read is HELD: a repair-only Clear (P1) or a mode
+ *          toggle there and back (P2) leaves Quick Repairs the operator's blank when the read lands; an untouched field
+ *          still takes the deal's value (P3); a previous operator's action does not carry over to the new operator (P4)
  *   G1     approval gates: the page has no repairs/ARV write; reads only; nothing left the page; no page errors
  *
  * Offline: every /.netlify/functions request is answered here; only GETs are modelled. Synthetic records only.
@@ -37,7 +40,11 @@ const before = { name: 'b15-24-before', enforce: 'pre', load(id) {
 } };
 
 /** Literal check() call sites in this file. */
-const FLOOR = 18;
+const FLOOR = 22;
+/** Held pipeline read (Bones's reproduction): `hold()` returns { reached, release }. */
+let pipelineHold = null;
+const hold = () => { let release, seen; const gate = new Promise((r) => { release = r; }); const reached = new Promise((r) => { seen = r; });
+  pipelineHold = { gate, seen }; return { reached, release: () => { pipelineHold = null; release(); } }; };
 let checks = 0, failures = 0;
 function check(name, ok, detail) { checks += 1; if (!ok) failures += 1; console[ok ? 'log' : 'error'](`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : `  ${JSON.stringify(detail).slice(0, 500)}`}`); }
 
@@ -88,7 +95,10 @@ async function main() {
       requests.push(`${r.method()} ${fn}`);
       if (r.method() !== 'GET') return json(405, { error: 'fixture: reads only' });
       if (fn === 'ghl-underwriting-policy') return json(200, { values: [] });
-      if (fn === 'ghl-opportunities') return json(200, { pipelineId: 'p1', stages: [], opportunities: opportunities() });
+      if (fn === 'ghl-opportunities') {
+        const h = pipelineHold; if (h) { h.seen(); await h.gate; }
+        return json(200, { pipelineId: 'p1', stages: [], opportunities: opportunities() });
+      }
       const m = fn === 'ghl-proxy' && /^\/contacts\/([^/]+)$/.exec(u.searchParams.get('path') || '');
       if (m && contacts[m[1]]) {
         const c = contacts[m[1]]; const customFields = [];
@@ -182,6 +192,44 @@ async function main() {
       [c1a, c1].every((v) => v.arv === '' && v.rep === '' && v.repLabel !== DEAL && v.arvLabel !== DEAL), { c1a, c1 });
     await go('contactId=c-mix'); const c2 = await view();
     check('C2 Clear on deal A leaves the other deal untouched (45,000 "On the deal in GHL")', c2.rep === '45000' && c2.repLabel === DEAL, c2);
+
+    // ── P: Bones REVISE R1 -- ownership actions while the link's pipeline read is held ──
+    oppFacts['o-ann'].rep = 30000;   // back to the deal's recorded 30,000 (D2 changed it)
+    const signIn = (sub) => page.evaluate(async (s) => {
+      const m = await import('/src/lib/app-write-session.ts');
+      const b64 = (o) => btoa(JSON.stringify(o)).replace(/=+$/, '');
+      m.setAppWriteSession(s ? { token: `${b64({ alg: 'none' })}.${b64({ sub: s })}.x`, expiresAt: new Date(Date.now() + 3600_000).toISOString() } : null);
+    }, sub);
+    const repairAction = async (action) => {
+      if (action === 'repair-clear') { await T('deal-calc-repairs-mode-toggle').click(); await settle(); await T('deal-calc-repairs-clear').click(); await T('deal-calc-repairs-mode-toggle').click(); }
+      else if (action === 'toggle') { await T('deal-calc-repairs-mode-toggle').click(); await settle(); await T('deal-calc-repairs-mode-toggle').click(); }
+      await settle();
+    };
+    /** Clean scratch work, link c-ann with the pipeline read held, act while it is held, release; the view after. */
+    const heldLink = async (action, between, setup) => {
+      await page.evaluate(() => localStorage.clear()); await go();
+      if (setup) await setup();
+      const h = hold();
+      await T('deal-calc-link-input').fill('c-ann'); await T('deal-calc-link-button').click(); await h.reached;
+      await repairAction(action);
+      if (between) await between();
+      const before = await view(); h.release(); await ready(true);
+      return { before, after: await view() };
+    };
+    const p1 = await heldLink('repair-clear');
+    check('P1 repair-only Clear while the link is held: Quick Repairs stays the operator\'s blank (Draft), not the deal\'s 30,000; the untouched ARV takes the deal\'s 320,000',
+      p1.before.rep === '' && p1.after.rep === '' && p1.after.repLabel !== DEAL && p1.after.arv === '320000' && p1.after.arvLabel === DEAL, p1);
+    const p2 = await heldLink('toggle');
+    check('P2 mode toggle there and back while the link is held: Quick Repairs stays the operator\'s blank, not the deal\'s 30,000; the untouched ARV takes 320,000',
+      p2.before.rep === '' && p2.after.rep === '' && p2.after.repLabel !== DEAL && p2.after.arv === '320000' && p2.after.arvLabel === DEAL, p2);
+    const p3 = await heldLink('none');
+    check('P3 control: no repairs action while the link is held -> the untouched Quick Repairs takes the deal\'s 30,000 "On the deal in GHL"',
+      p3.after.rep === '30000' && p3.after.repLabel === DEAL, p3);
+    const p4 = await heldLink('repair-clear', async () => { await signIn('op-b'); await page.waitForTimeout(250); }, async () => { await signIn('op-a'); await settle(); });
+    p4.signedInDuringClear = 'op-a'; p4.signedInAtRelease = 'op-b';
+    await signIn(null); await settle();
+    check('P4 operator-switch control: operator A\'s repair Clear during the held link does not carry over -- after B signs in, the untouched field takes the deal\'s 30,000 for B',
+      p4.after.rep === '30000' && p4.after.repLabel === DEAL, p4);
 
     // ── G: gates ──
     const src = BEFORE ? execFileSync('git', ['show', `${BEFORE}:app/src/pages/DealCalculator.tsx`], { cwd: APP, encoding: 'utf8', maxBuffer: 64 << 20 }) : fs.readFileSync(PAGE_FILE, 'utf8');

@@ -460,6 +460,11 @@ export default function DealCalculator() {
   const own = (field: SeededField) => {
     if (awaitingChoice.current) awaitingChoice.current[field] = true;
     if (!context || context.kind !== "deal") ownedOutsideDeal.current[field] = true;
+    /* B15-24 r2 (Bones REVISE R1): an explicit ownership action while a link is pending is a touch even when the
+       field's text does not change (a repair-only Clear on an already blank figure, a mode toggle there and back), so
+       the link's late read keeps the operator's figure. linkTouched is reset for a new operator, so a previous
+       operator's action never carries over. */
+    if (linkTouched.current) linkTouched.current.add(field);
   };
   const [linkInput, setLinkInput] = useState(linkParam ?? "");
   const [linkBusy, setLinkBusy] = useState(false);
