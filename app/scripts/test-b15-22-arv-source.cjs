@@ -2,7 +2,7 @@
  * B15-22 ARV source (CAPTAIN GO 2026-11-07) -- the REAL Deal Calculator page (scripts/harness/deal-calculator). When a
  * deal is chosen, the ARV starts from that deal's GHL Opportunity ARV (PB-D55: the Opportunity first) and from the
  * contact's ARV only when the deal has none; a typed or kept figure is never overwritten; the source is labelled "On
- * the deal in GHL" / "On the contact in GHL" and never "Approved"; no extra read; Quick Repairs unchanged.
+ * the deal in GHL" / "On the contact in GHL" and never "Approved"; no extra read. B15-24 (Captain GO 2026-11-19): Quick Repairs follows the same order (Q1).
  *
  * Offline: every /.netlify/functions request is answered here (policy, contact detail via ghl-proxy, the pipeline);
  * anything else is aborted and counted; every non-GET is refused and counted (zero required).
@@ -17,8 +17,8 @@
  *   R1  retained draft: 655,000 typed on the deal is kept through reload ("Draft -- Not saved to GHL")
  *   R2  the deal's ARV changes under the kept draft (660,000): both are shown, the draft stays on screen, and the
  *       source line says "On the deal in GHL"; Keep My Draft keeps it
- *   Q1  Quick Repairs unchanged: the contact's 20,000 with its existing label, even when the deal carries a repairs
- *       figure (45,000)
+ *   Q1  B15-24 (Captain GO 2026-11-19, PB-D55): Quick Repairs follows the deal too -- the deal's 45,000 "On the deal in
+ *       GHL", not the contact's 20,000 (before B15-24: the contact's figure, unchanged)
  *   W   reads are only the contact detail, the pipeline and the policy (no new read kind, no single-opportunity read);
  *       no write; nothing left the machine; no page errors
  *
@@ -147,9 +147,9 @@ async function main() {
     const a1 = { arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv'), bar: await barArv() };
     check('A1 stale contact ARV: the deal\'s 640,000 is shown, labelled "On the deal in GHL"', a1.arv === '640000' && a1.label === 'On the deal in GHL', a1);
     check('A1 ...and the calculation uses it (the bar\'s ARV is $640,000)', a1.bar === '$640,000', a1.bar);
-    // Q1 -- Quick Repairs unchanged
+    // Q1 -- B15-24: Quick Repairs from the deal first (was: unchanged, the contact's figure)
     const q1 = { rep: await val('deal-calc-repairs-quick-input'), label: await txt('deal-calc-draft-repairsQuick') };
-    check('Q1 Quick Repairs unchanged: the contact\'s 20,000 with its existing label, even though the deal carries 45,000', q1.rep === '20000' && q1.label === 'From the linked contact in GHL', q1);
+    check('Q1 B15-24: Quick Repairs takes the deal\'s 45,000, labelled "On the deal in GHL" (the contact\'s 20,000 is the fallback only)', q1.rep === '45000' && q1.label === 'On the deal in GHL', q1);
     // A2 -- missing deal ARV
     await go('c-nodeal');
     const a2 = { arv: await val('deal-calc-arv-input'), label: await txt('deal-calc-draft-arv') };

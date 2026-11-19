@@ -149,18 +149,31 @@ const CONTACT_IDS = {
 /* B15-22 ARV source (CAPTAIN GO 2026-11-07; PB-D55 read order: the Opportunity first, the Contact only when the
    Opportunity has none). A chosen deal's ARV is that deal's GHL Opportunity ARV, read from the deal row the existing
    pipeline read already returned -- exactly as Underwriting reads it (fieldValueNumber) -- and the contact's ARV only
-   when the deal has none. No extra read. Never called "approved": approval evidence is not read here. Quick Repairs is
-   unchanged (the contact's figure). */
-type ArvSource = "deal" | "contact" | null;
-function dealArv(deal: OpportunityRow): number | null {
-  return readOpportunityNumber(deal.customFields, CONFIG.opportunityFacts.arv);
+   when the deal has none. No extra read. Never called "approved": approval evidence is not read here.
+   B15-24 (CAPTAIN GO 2026-11-19): Quick Repairs follows the same PB-D55 order, field by field -- the chosen deal's
+   Opportunity repairs (opportunityFacts.repairs, the carrier Underwriting writes and reads) first, the contact's
+   legacy figure only when the deal has none -- with the same ownership rules as ARV (r2-r4). */
+type SeedSource = "deal" | "contact" | null;
+type SeededField = "arv" | "repairsQuick";
+const SEEDED_FIELDS: readonly SeededField[] = ["arv", "repairsQuick"];
+const NO_SOURCES: Record<SeededField, SeedSource> = { arv: null, repairsQuick: null };
+const DEAL_FACT_IDS: Record<SeededField, string> = { arv: CONFIG.opportunityFacts.arv, repairsQuick: CONFIG.opportunityFacts.repairs };
+const isSeeded = (f: DraftField): f is SeededField => (SEEDED_FIELDS as readonly string[]).includes(f);
+function dealFact(deal: OpportunityRow, field: SeededField): number | null {
+  return readOpportunityNumber(deal.customFields, DEAL_FACT_IDS[field]);
 }
-function ghlForDeal(deal: OpportunityRow, contactGhl: GhlNow): { ghl: GhlNow; arvSource: ArvSource } {
-  if (contactGhl.kind !== "ok") return { ghl: contactGhl, arvSource: null };
-  const n = dealArv(deal);
-  if (n !== null) return { ghl: { kind: "ok", values: { ...contactGhl.values, arv: { kind: "value", value: String(n) } } }, arvSource: "deal" };
-  return { ghl: contactGhl, arvSource: contactGhl.values.arv?.kind === "value" ? "contact" : null };
+function ghlForDeal(deal: OpportunityRow, contactGhl: GhlNow): { ghl: GhlNow; sources: Record<SeededField, SeedSource> } {
+  if (contactGhl.kind !== "ok") return { ghl: contactGhl, sources: NO_SOURCES };
+  const values = { ...contactGhl.values };
+  const sources = { ...NO_SOURCES };
+  for (const f of SEEDED_FIELDS) {
+    const n = dealFact(deal, f);
+    if (n !== null) { values[f] = { kind: "value", value: String(n) }; sources[f] = "deal"; }
+    else sources[f] = contactGhl.values[f]?.kind === "value" ? "contact" : null;
+  }
+  return { ghl: { kind: "ok", values }, sources };
 }
+const ownedNone = (): Record<SeededField, boolean> => ({ arv: false, repairsQuick: false });
 
 const PANEL_STYLE: React.CSSProperties = {
   padding: "16px 18px", background: "#0F172A", border: "1px solid #1E293B", borderRadius: "10px",
@@ -307,6 +320,7 @@ export default function DealCalculator() {
      it did not move. Itemized -> quick changes nothing. */
   const [repairTransferNote, setRepairTransferNote] = useState<string | null>(null);
   function handleRepairsModeToggle() {
+    own("repairsQuick");   // B15-24: working the repairs (either direction) makes them the operator's
     if (repairsMode === "detailed") {
       setRepairTransferNote(null);
       setRepairsMode("quick");
@@ -331,6 +345,7 @@ export default function DealCalculator() {
      and its amount reset, so retained text cannot restore an old amount.
      The quick figure is a repair amount too, so it is cleared as well. */
   function handleRepairClear() {
+    own("repairsQuick");   // B15-24: a deliberate repair Clear is the operator's (the quick figure is cleared too)
     const cleared = clearRepairAnswers(repairMisc);
     setRepairAnswers(cleared.answers);
     setRepairMisc(cleared.misc);
@@ -432,19 +447,19 @@ export default function DealCalculator() {
      Opportunity resolution happens here at all. */
   const [linkedContactId, setLinkedContactId] = useState<string | null>(null);
   const [linkedContactName, setLinkedContactName] = useState<string | null>(null);
-  /* B15-22: the source of the ARV baseline shown now. */
-  const [arvSource, setArvSource] = useState<ArvSource>(null);
-  /* B15-22 r2 (Bones REVISE P2-1, P2-2): while a linked contact awaits a deal choice, whether the operator OWNS the
-     ARV on screen -- set by their own actions (typing, Clear) or a touch while the link was pending, never inferred
-     from the value. null = not awaiting a choice. */
-  const arvAwaitingChoice = useRef<{ owned: boolean } | null>(null);
-  /* B15-22 r3: whether the operator owns the ARV on a screen that is NOT a deal's (unlinked scratch work, or a contact
-     awaiting a deal choice) -- set by their own ARV actions and by entering scratch work whose kept draft holds an ARV,
-     carried into a link started from that screen, cleared when the operator changes. */
-  const arvOwnedOutsideDeal = useRef(false);
-  const ownArv = () => {
-    if (arvAwaitingChoice.current) arvAwaitingChoice.current.owned = true;
-    if (!context || context.kind !== "deal") arvOwnedOutsideDeal.current = true;
+  /* B15-22 / B15-24: the source of each seeded baseline (ARV, Quick Repairs) shown now. */
+  const [seedSources, setSeedSources] = useState<Record<SeededField, SeedSource>>(NO_SOURCES);
+  /* B15-22 r2 (Bones REVISE P2-1, P2-2), per field since B15-24: while a linked contact awaits a deal choice, whether
+     the operator OWNS each seeded figure on screen -- set by their own actions (typing, Clear) or a touch while the
+     link was pending, never inferred from the value. null = not awaiting a choice. */
+  const awaitingChoice = useRef<Record<SeededField, boolean> | null>(null);
+  /* B15-22 r3, per field since B15-24: whether the operator owns a seeded figure on a screen that is NOT a deal's
+     (unlinked scratch work, or a contact awaiting a deal choice) -- set by their own actions and by entering scratch
+     work whose kept draft holds it, carried into a link started from that screen, cleared when the operator changes. */
+  const ownedOutsideDeal = useRef<Record<SeededField, boolean>>(ownedNone());
+  const own = (field: SeededField) => {
+    if (awaitingChoice.current) awaitingChoice.current[field] = true;
+    if (!context || context.kind !== "deal") ownedOutsideDeal.current[field] = true;
   };
   const [linkInput, setLinkInput] = useState(linkParam ?? "");
   const [linkBusy, setLinkBusy] = useState(false);
@@ -529,11 +544,13 @@ export default function DealCalculator() {
     const carry = opts.carry ?? (!context || context.kind === "scratch");
     const overrides = opts.overrides ?? {};
     const kept = new Set(Object.keys(overrides) as DraftField[]);
-    /* r3: scratch work's ARV is the operator's when its kept draft holds one, an override holds one, or an owned ARV is
-       carried in from a screen that was not a deal's. */
+    /* r3 (per field): scratch work's seeded figure is the operator's when its kept draft holds one, an override holds
+       one, or an owned figure is carried in from a screen that was not a deal's. */
     if (id.kind === "scratch") {
       const stored = loaded.ok && loaded.draft ? loaded.draft : null;
-      arvOwnedOutsideDeal.current = !!(stored && stored.fields.arv) || kept.has("arv") || (carry && !stored && arvOwnedOutsideDeal.current);
+      for (const f of SEEDED_FIELDS) {
+        ownedOutsideDeal.current[f] = !!(stored && stored.fields[f]) || kept.has(f) || (carry && !stored && ownedOutsideDeal.current[f]);
+      }
     }
     setContext(id);
     setNotKept(null);
@@ -560,7 +577,7 @@ export default function DealCalculator() {
     return { values, kept };
   }
   function leaveContext(reason: string) {
-    setArvSource(null);
+    setSeedSources(NO_SOURCES);
     setContext(null);
     setDraft(null);
     setGhlNow(NO_GHL);
@@ -572,18 +589,21 @@ export default function DealCalculator() {
   function chooseDeal(deal: OpportunityRow, contactId: string, ghl: GhlNow, screen: Record<DraftField, string>, overrides?: Partial<Record<DraftField, string>>) {
     setSelectedDealId(deal.id);
     const id: DraftIdentity = { kind: "deal", env: CONFIG.locationId, operator: draftOperator(), contactId, propertyId: deal.id, opportunityId: deal.id };
-    /* B15-22: this deal's ARV first, the contact's only when the deal has none. */
+    /* B15-22 / B15-24: this deal's ARV and repairs first, the contact's only when the deal has none (per field). */
     const forDeal = ghlForDeal(deal, ghl);
-    setArvSource(forDeal.arvSource);
-    /* r2: an ARV the operator does not own (awaiting a choice, never typed or cleared by them) takes this deal's
-       resolved ARV -- also when the screen was blank (P2-1). One they own stays exactly as left (P2-2). A kept or
-       restored figure stays too (enterContext never overwrites one). */
+    setSeedSources(forDeal.sources);
+    /* r2 (per field): a figure the operator does not own (awaiting a choice, never typed or cleared by them) takes this
+       deal's resolved value -- also when the screen was blank (P2-1). One they own stays exactly as left (P2-2). A kept
+       or restored figure stays too (enterContext never overwrites one). */
     let shown = screen;
-    const awaiting = arvAwaitingChoice.current;
-    arvAwaitingChoice.current = null;
-    if (awaiting && !awaiting.owned && !(overrides && "arv" in overrides)) {
-      shown = { ...screen, arv: baselineFor("arv", forDeal.ghl) };
-      if (shown.arv !== screen.arv) setArvInput(shown.arv);
+    const awaiting = awaitingChoice.current;
+    awaitingChoice.current = null;
+    for (const f of SEEDED_FIELDS) {
+      if (!awaiting || awaiting[f] || (overrides && f in overrides)) continue;
+      const next = baselineFor(f, forDeal.ghl);
+      if (next === shown[f]) continue;
+      shown = { ...shown, [f]: next };
+      if (f === "arv") setArvInput(next); else setRepairsQuickInput(next);
     }
     return enterContext(id, forDeal.ghl, "this deal", shown, { overrides });
   }
@@ -612,8 +632,8 @@ export default function DealCalculator() {
     applyValues(defaults);
     notKeptOwner.current = operator;
     if (linkTouched.current) { linkTouched.current = new Set(); linkOperator.current = operator; }
-    if (arvAwaitingChoice.current) arvAwaitingChoice.current = { owned: false };   // B15-22 r2: the new operator has not touched it
-    arvOwnedOutsideDeal.current = false;   // B15-22 r3: nor anything on this cleared screen
+    if (awaitingChoice.current) awaitingChoice.current = ownedNone();   // B15-22 r2: the new operator has not touched it
+    ownedOutsideDeal.current = ownedNone();   // B15-22 r3: nor anything on this cleared screen
     setRestoreNote("The signed-in operator changed, so the previous operator's figures, which were not kept, were cleared from the screen.");
     return true;
   }
@@ -657,8 +677,8 @@ export default function DealCalculator() {
   function draftStatus(field: DraftField) {
     const s = fieldStates[field];
     if (!context || !s) return null;
-    /* B15-22: ARV names its source (the deal or the contact); Quick Repairs keeps its existing label. */
-    const source = field === "arv" ? (arvSource === "deal" ? "On the deal in GHL" : "On the contact in GHL") : "From the linked contact in GHL";
+    /* B15-22 / B15-24: ARV and Quick Repairs each name their source (the deal or the contact). */
+    const source = isSeeded(field) ? (seedSources[field] === "deal" ? "On the deal in GHL" : "On the contact in GHL") : "From the linked contact in GHL";
     if (s.state === "ghl") return <div data-testid={`deal-calc-draft-${field}`} style={{ ...DRAFT_STATUS_STYLE, color: "#64748B" }}>{source}</div>;
     if (s.state === "draft") return <div data-testid={`deal-calc-draft-${field}`} style={DRAFT_STATUS_STYLE}>Draft -- Not saved to GHL</div>;
     if (s.state !== "conflict" && s.state !== "unchecked") return null;
@@ -668,7 +688,7 @@ export default function DealCalculator() {
         {s.state === "conflict" ? (
           <>
             <div data-testid={`deal-calc-draft-${field}-ghl`}>GHL now: {ghlText(s.ghl)} (changed since your draft)</div>
-            {field === "arv" ? <div data-testid="deal-calc-draft-arv-ghl-source">{source}</div> : null}
+            {isSeeded(field) ? <div data-testid={`deal-calc-draft-${field}-ghl-source`}>{source}</div> : null}
             <div data-testid={`deal-calc-draft-${field}-mine`}>Your draft: {s.draft} -- Not saved to GHL</div>
           </>
         ) : (
@@ -690,8 +710,9 @@ export default function DealCalculator() {
     if (contactId.trim() === "") return;
     const generation = ++linkGeneration.current;
     const start = latest.current ?? snapshot();
-    /* B15-22 r3: an ARV the operator owned on a screen that was not a deal's stays theirs through this link. */
-    const arvOwnedBefore = (!context || context.kind !== "deal") && arvOwnedOutsideDeal.current;
+    /* B15-22 r3 (per field): a seeded figure the operator owned on a screen that was not a deal's stays theirs through this link. */
+    const outsideDeal = !context || context.kind !== "deal";
+    const ownedBefore: Record<SeededField, boolean> = { arv: outsideDeal && ownedOutsideDeal.current.arv, repairsQuick: outsideDeal && ownedOutsideDeal.current.repairsQuick };
     /* r2 finding 2: every field touched during the wait, with its value now (typed-then-cleared included). */
     const editedSinceStart = (): Partial<Record<DraftField, string>> => {
       const now = latest.current ?? start;
@@ -699,7 +720,7 @@ export default function DealCalculator() {
     };
     linkTouched.current = new Set();
     linkOperator.current = draftOperator();
-    arvAwaitingChoice.current = null;
+    awaitingChoice.current = null;
     previousScreen.current = start;
     setLinkBusy(true);
     setLinkError(null);
@@ -738,22 +759,26 @@ export default function DealCalculator() {
       else leaveContext(mine === null ? "This contact's deals could not be loaded, so figures here are not kept."
         : mine.length === 0 ? "This contact has no deal, so figures here are not kept."
         : "Choose a deal below to keep these figures. Until then they are not kept.");
-      /* B15-22: with exactly one deal (chosen above), its ARV first and the contact's only when it has none; with no
-         deal chosen yet, the contact's -- remembered as the link's prefill, so choosing a deal can replace it. */
+      /* B15-22 / B15-24: with exactly one deal (chosen above), its ARV and repairs first and the contact's only where it
+         has none; with no deal chosen yet, the contact's -- remembered as the link's prefill, so choosing a deal can
+         replace it. */
       const single = !!mine && mine.length === 1;
-      const singleDealArv = single && mine ? dealArv(mine[0]) : null;
-      const seeds = { ...contactSeeds, arv: singleDealArv ?? contactSeeds.arv };
-      /* B15-22 r4: an ARV the operator owned before linking (typed, cleared, Clear, restored) is theirs here too -- with
-         one deal or several, the prefill below never fills it, even blank, and a deal choice keeps it. Only while that
-         ownership still holds: an operator change during the wait clears it (and rebinds linkOperator). */
-      if (!operatorChanged && arvOwnedBefore && arvOwnedOutsideDeal.current) kept.add("arv");
+      const singleDeal = single && mine ? mine[0] : null;
+      const seeds = { ...contactSeeds,
+        arv: (singleDeal ? dealFact(singleDeal, "arv") : null) ?? contactSeeds.arv,
+        repairs: (singleDeal ? dealFact(singleDeal, "repairsQuick") : null) ?? contactSeeds.repairs };
+      /* B15-22 r4 (per field): a seeded figure the operator owned before linking (typed, cleared, Clear, restored) is
+         theirs here too -- with one deal or several, the prefill below never fills it, even blank, and a deal choice
+         keeps it. Only while that ownership still holds: an operator change during the wait clears it. */
+      for (const f of SEEDED_FIELDS) if (!operatorChanged && ownedBefore[f] && ownedOutsideDeal.current[f]) kept.add(f);
       // Prepopulate ONLY fields still empty -- linking is a one-time
       // convenience (PB-D55), never a silent overwrite of a typed value.
       // B15-25 (finding 2): nor of a value the operator owns -- a kept or
       // just-edited field, even one deliberately left blank.
       if (!kept.has("arv") && screen.arv.trim() === "" && seeds.arv !== null) setArvInput(String(seeds.arv));
-      /* r2: no deal chosen yet -- the ARV awaits a choice, owned only if the operator touched it while the link was pending. */
-      if (!single) arvAwaitingChoice.current = { owned: kept.has("arv") };   // r4: pre-link ownership is in `kept`
+      /* r2: no deal chosen yet -- each seeded figure awaits a choice, owned only if the operator touched it while the
+         link was pending (r4: pre-link ownership is in `kept`). */
+      if (!single) awaitingChoice.current = { arv: kept.has("arv"), repairsQuick: kept.has("repairsQuick") };
       if (!kept.has("repairsQuick") && screen.repairsQuick.trim() === "" && seeds.repairs !== null) setRepairsQuickInput(String(seeds.repairs));
     } catch (e: any) {
       if (generation !== linkGeneration.current) return;
@@ -781,7 +806,7 @@ export default function DealCalculator() {
   }
 
   function handleUnlink() {
-    arvAwaitingChoice.current = null;
+    awaitingChoice.current = null;
     setLinkedContactId(null);
     setLinkedContactName(null);
     setLinkError(null);
@@ -813,7 +838,7 @@ export default function DealCalculator() {
   }
 
   function handleClear() {
-    ownArv();   // B15-22 r2: a deliberate blank is the operator's
+    own("arv"); own("repairsQuick");   // B15-22 r2 / B15-24: a deliberate blank is the operator's
     setArvInput("");
     setRepairsQuickInput("");
     setTestPriceInput("");
@@ -906,7 +931,7 @@ export default function DealCalculator() {
           <input
             data-testid="deal-calc-arv-input"
             value={arvInput}
-            onChange={(e) => { ownArv(); setArvInput(e.target.value); }}
+            onChange={(e) => { own("arv"); setArvInput(e.target.value); }}
             placeholder="Not yet entered"
             style={{ ...INPUT_STYLE, width: "100%" }}
           />
@@ -932,7 +957,7 @@ export default function DealCalculator() {
               <input
                 data-testid="deal-calc-repairs-quick-input"
                 value={repairsQuickInput}
-                onChange={(e) => { setRepairsQuickInput(e.target.value); bumpRepairRevision(); }}
+                onChange={(e) => { own("repairsQuick"); setRepairsQuickInput(e.target.value); bumpRepairRevision(); }}
                 placeholder="Not yet entered"
                 style={{ ...INPUT_STYLE, width: "100%" }}
               />
