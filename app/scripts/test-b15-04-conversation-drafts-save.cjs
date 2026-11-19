@@ -9,6 +9,9 @@
  *       empty conversation; typing again keeps a new draft (persistence still works after a clear)
  *   C2  confirmed with "not saved" items present (address and reason are carried by the note only): the draft is
  *       still removed once every write is confirmed
+ *   C3  (Bones REVISE R1) a confirmed save, then a 17,013-character note (the note becomes "not saved: too long"):
+ *       the new text is KEPT; a reload restores all of it; nothing is sent automatically
+ *   C4  a confirmed save, then a Skip mark (a change the saved note does not carry): KEPT
  *   R1  the conversation note REFUSED (409 not_sent): the draft is kept exactly; a reload brings the answers back;
  *       nothing is re-sent by the reload
  *   U1  the conversation note UNCERTAIN (network abort): the draft is kept; a reload brings the answers back; nothing
@@ -31,8 +34,8 @@ const NOTES_TEXT = 'Seller prefers mornings. Dog on site.';
 const json = (status, body) => ({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const watchdog = setTimeout(() => { console.error('FAIL  did not finish within 8 minutes'); process.exit(1); }, 8 * 60_000);
 
-/** Literal check() call sites: C1 x4, C2, R1 x3, U1 x3, W = 12. */
-const FLOOR = 12;
+/** Literal check() call sites: C1 x4, C2, C3 x2, C4, R1 x3, U1 x3, W = 15. */
+const FLOOR = 15;
 let checks = 0; let failures = 0;
 function check(name, ok, detail) {
   checks += 1; if (!ok) failures += 1;
@@ -125,6 +128,8 @@ async function main() {
     await fill(page, 'sc-call-notes', NOTES_TEXT);
     await page.waitForTimeout(500);
   }
+  /** The kept record's draft (a JSON string inside the JSON record) marks Ownership skipped. */
+  const skippedOwnership = (raw) => { try { return JSON.parse(JSON.parse(raw).values.v).answers.ownership.mark === 'skipped'; } catch { return false; } };
   const conversationNotes = (writes) => writes.filter((w) => w.operation === 'note.create' && /conversation/i.test(String(w.args && w.args.body))).length;
 
   try {
@@ -160,6 +165,39 @@ async function main() {
       await press(s.page, 'sc-save'); await s.page.waitForTimeout(300); await waitIdle(s.page); await s.page.waitForTimeout(800);
       const res = await results(s.page);
       check('C2 with "not saved" items (address, reason) present, every write confirmed removes the draft', notSaved >= 1 && res.every((r) => r === 'confirmed') && (await kept(s.page)).length === 0, { notSaved, res });
+      await s.context.close();
+    }
+    // ── C3 (Bones REVISE R1 on a5f10b8): a confirmed save, then an OVERSIZED note edit (the note becomes not_saved) ──
+    fx.reset();
+    {
+      const s = await session((w) => land(w));
+      await s.open();
+      await typeCall(s.page);
+      await press(s.page, 'sc-nav-summary'); await press(s.page, 'sc-save'); await s.page.waitForTimeout(300); await waitIdle(s.page); await s.page.waitForTimeout(800);
+      const cleared = (await kept(s.page)).length === 0;
+      const n0 = s.writes.length;
+      const LONG = `${NOTES_TEXT} ${'x'.repeat(17013 - NOTES_TEXT.length - 1)}`;
+      await T(s.page, 'sc-call-notes').fill(LONG); await s.page.waitForTimeout(1200);
+      const noteAction = await s.page.getByTestId('sc-save-item-note').getAttribute('data-action').catch(() => null);
+      const keptNow = await kept(s.page);
+      await s.open();
+      const r = await shown(s.page);
+      check('C3 a confirmed save, then a 17,013-character note (the note is now "not saved"): the new text is KEPT as a draft',
+        cleared && noteAction === 'not_saved' && keptNow.length === 1 && keptNow[0].includes('x'.repeat(200)), { cleared, noteAction, kept: keptNow.length, longLen: LONG.length });
+      check('C3 a reload restores the full 17,013-character note, and nothing was sent automatically', (r.notes || '').length === LONG.length && s.writes.length === n0, { restored: (r.notes || '').length, extra: s.writes.slice(n0).map((w) => w.operation) });
+      await s.context.close();
+    }
+    // ── C4: a confirmed save, then a change the note does not carry (a Skip mark) ──
+    fx.reset();
+    {
+      const s = await session((w) => land(w));
+      await s.open();
+      await typeCall(s.page);
+      await press(s.page, 'sc-nav-summary'); await press(s.page, 'sc-save'); await s.page.waitForTimeout(300); await waitIdle(s.page); await s.page.waitForTimeout(800);
+      const cleared = (await kept(s.page)).length === 0;
+      await press(s.page, 'sc-nav-ownership'); await press(s.page, 'sc-skip'); await s.page.waitForTimeout(1000);
+      const keptNow = await kept(s.page);
+      check('C4 a confirmed save, then a Skip mark (not part of the saved note): the change is KEPT as a draft', cleared && keptNow.length === 1 && skippedOwnership(keptNow[0]), { cleared, kept: keptNow.length });
       await s.context.close();
     }
     // ── R1: refused ──

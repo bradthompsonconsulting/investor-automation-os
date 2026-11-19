@@ -111,11 +111,20 @@ export function SellerConversation({ dealKey, env, record, firstName, street, on
   const keptWhere = persistent ? "in this browser for this deal" : "on this page while it is open";
   /* B15-04: a Save that confirmed EVERY item removes the kept draft (nothing left to write, nothing blocked, every
      result confirmed). A refused, uncertain or still-running save keeps it. Items that are never saved as fields
-     ("not saved": address, reason) are carried by the confirmed conversation note. */
+     ("not saved": address, reason) are carried by the confirmed conversation note.
+     r2 (Bones REVISE R1 on a5f10b8): only content the confirmed save COVERS is cleared -- the plan's conversation
+     note must be "done" (a confirmed note matches the current one) AND the draft's content (everything but the
+     current-question position) must equal what it was when Save was pressed. An edit after the save (an oversized
+     note that cannot be saved, a Skip mark the note does not carry) keeps the draft. */
+  const [savedContent, setSavedContent] = useState<Record<string, string>>({});
+  const contentOf = (cd: ConversationDraft) => serializeConversationDraft({ ...cd, current: 0 });
   const dealResults = dealKey && save ? save.coordinator.results(dealKey) : null;
   const resultStates = dealResults ? Object.values(dealResults).map((r) => r?.status) : [];
+  const noteCovered = !!savePlan && savePlan.items.some((i) => i.id === "note" && i.action === "done");
+  const contentAsSaved = !!dealKey && savedContent[dealKey] !== undefined && savedContent[dealKey] === contentOf(drafts[dealKey] ?? EMPTY_CONVERSATION);
   const savedEveryItem = !!save?.enabled && !!savePlan && !save.coordinator.busy() && resultStates.length > 0
-    && resultStates.every((s) => s === "confirmed") && !savePlan.items.some((i) => i.action === "write" || i.action === "blocked");
+    && resultStates.every((s) => s === "confirmed") && !savePlan.items.some((i) => i.action === "write" || i.action === "blocked")
+    && noteCovered && contentAsSaved;
   useEffect(() => {
     if (savedEveryItem && keptDraft.owner) keptDraft.clearSent(keptDraft.owner, { v: draftValue });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -259,6 +268,7 @@ export function SellerConversation({ dealKey, env, record, firstName, street, on
 
           {q.id === "summary" && save && savePlan ? (
             <SavePanel dealKey={key} save={save} plan={savePlan} results={save.coordinator.results(key)}
+              onSaving={() => setSavedContent((m) => ({ ...m, [key]: contentOf(d) }))}
               notEnabledShown={notEnabledShown === key} onNotEnabled={() => setNotEnabledShown(key)} />
           ) : null}
 
@@ -364,14 +374,18 @@ function DraftField({ qid, field, value, onChange, prefix = "sc", compact = fals
  * item offers Check again (a read) and is never re-sent by Save: only finding it on the record, or the original
  * request's own answer, settles it (an empty read proves nothing; Bones C1).
  */
-function SavePanel({ dealKey, save, plan, results, notEnabledShown, onNotEnabled }: {
-  dealKey: string; save: ConversationSave; plan: SavePlan; results: DealResults; notEnabledShown: boolean; onNotEnabled: () => void;
+function SavePanel({ dealKey, save, plan, results, onSaving, notEnabledShown, onNotEnabled }: {
+  dealKey: string; save: ConversationSave; plan: SavePlan; results: DealResults;
+  /** B15-04 r2: records what the draft held when this Save started (what a confirmed save covers). */
+  onSaving: () => void;
+  notEnabledShown: boolean; onNotEnabled: () => void;
 }) {
   const busy = save.coordinator.busy();
   const offNoteId = useId();
   const hooks = { onConfirmed: (item: { id: SaveItemId; signature: string }, sent: SentRecord) => save.onConfirmed(dealKey, item, sent) };
   const onSave = () => {
     if (!save.enabled) { onNotEnabled(); return; }
+    onSaving();
     void save.coordinator.save(dealKey, save.contactId, plan, save.client, hooks);
   };
   const shown: PlanItem[] = plan.items;
