@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useReadRecovered } from "../components/access-status";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   MessageSquare, Mail, ArrowDownLeft, ArrowUpRight, Loader2, ExternalLink, FileText, Phone,
 } from "lucide-react";
@@ -246,6 +246,22 @@ export default function Conversations() {
       .catch((e: Error) => setThreadsError(e.message));
   }, [readRecovered]);
 
+  /* B15-08 (Spock G5 finding 2): a link from the Dashboard's Unanswered Inbound row names its conversation
+     (?conversation=<GHL conversation id>). Once the thread list has loaded, the matching thread is selected exactly as a
+     click would select it -- no new read. Applied once per id, so a later hand-picked thread is never pulled back. An id
+     not in the list is said plainly and nothing is selected (no guess). */
+  const [searchParams] = useSearchParams();
+  const linkedConversation = searchParams.get("conversation");
+  const linkApplied = useRef<string | null>(null);
+  const [linkMissing, setLinkMissing] = useState(false);
+  useEffect(() => {
+    if (!threads || !linkedConversation || linkApplied.current === linkedConversation) return;
+    linkApplied.current = linkedConversation;
+    const match = threads.find((t) => t.conversationId === linkedConversation);
+    if (match) setSelected(match);
+    setLinkMissing(!match);
+  }, [threads, linkedConversation]);
+
   // Load the selected thread's messages (scoped by explicit contactId; never
   // listAll, so §11 lag/drop doesn't apply). Read-only GET.
   // B15-23: only the CURRENT selection's reads may change the thread pane. The
@@ -396,6 +412,11 @@ export default function Conversations() {
           <div style={{ padding: "10px 14px", borderBottom: "1px solid rgba(255,255,255,0.08)", fontSize: "12px", fontWeight: 600, color: "#94A3B8" }}>
             {threads ? `${threads.length} thread${threads.length === 1 ? "" : "s"}` : "Threads"}
           </div>
+          {linkMissing ? (
+            <div data-testid="conv-link-missing" role="status" style={{ padding: "8px 14px", fontSize: "11px", color: "#F59E0B", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+              That conversation isn't in the list right now. Choose a thread below.
+            </div>
+          ) : null}
           <div style={{ overflowY: "auto", flex: 1 }}>
             {threadsError ? (
               <div style={{ padding: "16px", fontSize: "12px", color: "#F87171" }}>Failed to load threads: {threadsError}</div>
@@ -412,7 +433,7 @@ export default function Conversations() {
                 return (
                   <button
                     key={t.conversationId}
-                    onClick={() => setSelected(t)}
+                    onClick={() => { setSelected(t); setLinkMissing(false); }}
                     style={{
                       display: "block", width: "100%", textAlign: "left", cursor: "pointer",
                       padding: "10px 14px", border: "none", borderBottom: "1px solid rgba(255,255,255,0.04)",

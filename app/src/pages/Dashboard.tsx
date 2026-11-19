@@ -1089,6 +1089,13 @@ export default function Dashboard() {
                     {/* B15-08: the latest inbound message from the thread's own source; an older response falls back to F51. */}
                     {r.latestInbound ? <InboundPreview li={r.latestInbound} testId={`unanswered-preview-${r.conversationId}`} /> : <>{r.preview || <em style={{ color: "#334155" }}>{NO_MESSAGE_TEXT}</em>}</>}
                   </span>
+                  {/* B15-08 (Spock G5 finding 2): the row says "open the conversation" -- this opens THAT conversation, through
+                      the existing Conversations route, by the row's own GHL conversation id (the same id the thread list carries). */}
+                  <Link to={`/conversations?conversation=${encodeURIComponent(r.conversationId)}`} data-testid={`unanswered-open-${r.conversationId}`}
+                    title="Open this conversation"
+                    style={{ flexShrink: 0, fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "7px", border: "1px solid rgba(30,200,255,0.25)", background: "rgba(30,200,255,0.06)", color: "#1EC8FF", textDecoration: "none", whiteSpace: "nowrap" }}>
+                    Open conversation
+                  </Link>
                   <span style={{
                     marginLeft: "auto", fontSize: "11px", fontWeight: 600, padding: "3px 9px", borderRadius: "999px",
                     background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.35)", color: "#F59E0B",
