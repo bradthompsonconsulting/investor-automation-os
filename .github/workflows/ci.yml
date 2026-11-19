@@ -299,6 +299,8 @@ jobs:
 
       - name: Next best question, incl. operator checklist routing (Pass 1 F34) — 66 offline checks
         run: node app/scripts/test-next-best-question.cjs
+      - name: Guided next step per deal -- derived from records, an override never skips an input, offer review is the operator decision (B15-30, INV-140) — 16 checks
+        run: node app/scripts/test-b15-30-deal-next-step-model.cjs
 
       - name: Call log, call-outcome wording, queue placement, contact isolation and Do Not Call wiring — 84 offline checks
         run: node app/scripts/test-call-outcome-copy.cjs
@@ -456,6 +458,8 @@ jobs:
         run: node app/scripts/test-seller-conversation-rendered.cjs
       - name: Seller conversation Save at Summary on the real Seller Call page -- flag off shows the plan with zero writes; harness-enabled save writes in order and reports confirmed/refused/uncertain per item; drafts kept; no automatic or duplicate resend; Check again; leave warning; autosave sections integrated when on, unchanged when off (INV-103, B15-03 slice C) — 64 checks
         run: node app/scripts/test-seller-conversation-save-rendered.cjs
+      - name: Seller Call guided step panel, two deals of one seller -- own step after switch and reload, no stale-deal flash, deep links focus the exact field, zero guidance writes (B15-30, INV-140) — 11 checks
+        run: node app/scripts/test-b15-30-deal-next-step.cjs
       - name: B1 repair approval ENABLED path on the real page, offline (committed switch on for Test; legacy viewer served the switch-off capability) (INV-134) — 81 checks
         run: node app/scripts/test-repair-approval-browser.cjs
       # Both Production negotiation settings against the real write scope and barrier rules; floor 105

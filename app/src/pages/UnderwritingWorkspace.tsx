@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import RefreshReadError from "../components/RefreshReadError";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
+import { useFocusParam } from "../lib/focus-target";
+import { STEP_TARGET } from "../lib/deal-next-step";
 import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Check, Loader2 } from "lucide-react";
 import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
@@ -697,7 +699,7 @@ function RepairEstimator({ opportunityId, onPersisted }: {
     approval.kind === "approved" && approval.revision === revision && approval.total === total;
 
   return (
-    <div style={{ marginTop: "22px" }}>
+    <div data-testid="underwriting-repair-estimator" style={{ marginTop: "22px" }}>
       <div style={{ fontSize: "11px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "10px" }}>
         Repair estimate — seller call
       </div>
@@ -931,7 +933,12 @@ export default function UnderwritingWorkspace() {
   const [opps, setOpps] = useState<OpportunityRow[] | null>(null);
   const [policyValues, setPolicyValues] = useState<{ id: string; value: string }[] | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [chosenId, setChosenId] = useState<string | null>(null);
+  /* B15-30 / INV-140: a guided step from Seller Call opens THIS deal (`?deal=<opportunityId>`, preselected only when it
+     is one of this contact's deals -- selectOpportunity returns null for anything else, so the picker shows) and the
+     exact field (`?focus=<step>`). */
+  const [searchParams] = useSearchParams();
+  const [chosenId, setChosenId] = useState<string | null>(() => searchParams.get("deal"));
+  useFocusParam({ repairs: STEP_TARGET.repairs, arv: STEP_TARGET.arv, assignment_mode: STEP_TARGET.assignment_mode });
 
   /* PB-D59. The Approve attempt's state, held here because the view model
      owns the RESULT and never the call -- the page performs the write and

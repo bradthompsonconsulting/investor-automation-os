@@ -85,6 +85,8 @@ import { runConfirmAcceptWrites, confirmAcceptOffered, recoverLastCallAttempt } 
 import { createOfferSaveCoordinator, classifyOfferWriteError, OfferSaveBlocked, UNRESOLVED_ACCEPT_MESSAGE, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
 import { beginReservation, reconcileReservation, readReservationStatus, newRequestIds, RESERVATION_FAILED_MESSAGE } from "../lib/current-offer-barrier-client";
 import { AppWriteSignInRequired } from "../lib/app-write-session";
+import { nextDealStep, type NextDealStep } from "../lib/deal-next-step";
+import DealNextStepPanel from "../components/DealNextStepPanel";
 import "./SellerCallWorkspace.css";
 
 /**
@@ -2008,6 +2010,28 @@ export default function SellerCallWorkspace() {
      Offer keeps its own deliberate save (Jess, 2026-10-10). */
   const sellerLoading = (screen.state === "resolved" || screen.state === "unresolved") && writeTarget === null;
 
+  /* B15-30 / INV-140 -- the selected deal's next unfinished step, derived fresh from the records already read (no new
+     read, nothing written). The deal's own Opportunity says whether a repair total and an Assignment Mode are recorded
+     (the same raw fields the resolver above reads). Until THIS route's deal is loaded (writeTarget) the step is
+     "checking"; a failed read is "unreadable" -- never a skipped step. */
+  const selectedDealFields = useMemo((): { ok: true; repairs: boolean; assignmentMode: boolean } | { ok: false } | null => {
+    if (!opps || !selected) return null;
+    const opp = opps.find((o) => o.id === selected.id);
+    if (!opp) return null;
+    try {
+      const v = parseOpportunityValues(opp.customFields, OPP_IDS);
+      return { ok: true, repairs: v.repairs.kind === "value", assignmentMode: v.assignmentMode.kind === "value" };
+    } catch { return { ok: false }; }
+  }, [opps, selected]);
+  const nextStep: NextDealStep = useMemo(() => nextDealStep({
+    records: fetchError !== null || (selectedDealFields !== null && !selectedDealFields.ok) ? "unreadable"
+      : writeTarget === null || sellerLoading || selectedDealFields === null ? "loading" : "ready",
+    readiness: writeTarget !== null && !sellerLoading ? readiness : null,
+    economics: writeTarget !== null && !sellerLoading ? board8 : null,
+    dealRepairsRecorded: selectedDealFields && selectedDealFields.ok ? selectedDealFields.repairs : null,
+    dealAssignmentModeRecorded: selectedDealFields && selectedDealFields.ok ? selectedDealFields.assignmentMode : null,
+  }), [fetchError, selectedDealFields, writeTarget, sellerLoading, readiness, board8]);
+
   /* Seller Position's durable value: the newer of its own ledger entry and the
      latest outcome record's snapshot (outcomes recorded before the ledger
      existed). `null` means none, or cleared. */
@@ -2969,6 +2993,9 @@ export default function SellerCallWorkspace() {
               </div>
             </div>
           </div>
+
+          {/* B15-30 / INV-140 -- the one guided step panel for the selected deal (lib/deal-next-step.ts). */}
+          {selected ? <DealNextStepPanel next={nextStep} contactId={contactId} dealId={selected.id} /> : null}
 
           {/* B15-03 / INV-103 (Rev 6 slices 1-2) -- the guided seller conversation.
               Its controls never write; the one write path is Save at Summary
