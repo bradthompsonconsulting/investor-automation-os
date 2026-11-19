@@ -27,7 +27,7 @@ export type ConversationSave = {
 };
 const LEAVE_MESSAGE = "This call has unsaved work (the conversation, or answers not yet saved). Leave the Seller Call page anyway? Unsaved answers will be lost.";
 /* B15-04: with the draft kept in this browser, leaving does not lose the answers; they are still not saved to GHL. */
-const LEAVE_MESSAGE_KEPT = "This call has answers not yet saved to GHL. Leave the Seller Call page anyway? Your answers stay as a draft in this browser for this deal.";
+const LEAVE_MESSAGE_KEPT = "This call has unsaved work (answers not yet saved to GHL). Leave the Seller Call page anyway? Your answers stay as a draft in this browser for this deal.";
 const STATE_WORD: Record<SaveAction, [string, string]> = {
   write: ["Will save", "Would save"], done: ["Saved", "Saved"], none: ["No change", "No change"], not_saved: ["Not saved", "Not saved"], blocked: ["Uncertain", "Uncertain"],
 };
