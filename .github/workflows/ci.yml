@@ -365,6 +365,8 @@ jobs:
         run: node app/scripts/test-system-note-summary.cjs
       - name: Operator copy, remaining engineer wording on Seller Call and Contract (INV-126, B15-17) — 14 checks
         run: node app/scripts/test-b15-17-operator-copy-r3.cjs
+      - name: Contract panel copy source integrity -- copy table, persisted GHL strings, later reviewed edits incl. B15-21 undone exactly (B15-17) — 13 checks
+        run: node app/scripts/test-contract-panel-copy.cjs
       - name: B15 display follow-ups, Disposition words + Notes header loading (Spock Addendum 2)
         run: node app/scripts/test-b15-display-followups.cjs
       - name: Repair policy, known-only zero start (INV-100, B15-01/02)
