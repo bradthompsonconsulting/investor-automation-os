@@ -416,6 +416,8 @@ jobs:
         run: node app/scripts/test-b15-08-inbound-visibility.cjs
       - name: Dashboard Unanswered Inbound row opens its own conversation (existing Conversations route; two contacts, missing id, unchanged sidebar route) (B15-08, Spock G5 finding 2) — 9 checks
         run: node app/scripts/test-b15-08-dashboard-thread-link.cjs
+      - name: Dashboard thread link applied once per id -- a hand-picked thread survives the thread-list re-read after read-session recovery (B15-08) — 4 checks
+        run: node app/scripts/test-b15-08-thread-link-recovery.cjs
       - name: Shell labels on the real page -- no Phase A badge, Conversations heading (INV-126, B15-17)
         run: node app/scripts/test-b15-shell-labels.cjs
       - name: Conversations property context on the real page, stale thread results (INV-132, B15-23) — 12 checks
