@@ -2977,6 +2977,8 @@ export default function SellerCallWorkspace() {
               and then no control shows and nothing can be saved). */}
           <SellerConversation
             dealKey={writeTarget && !sellerLoading ? `${writeTarget.contactId}|${writeTarget.opportunityId}` : null}
+            env={CONFIG.locationId}
+            record={writeTarget && !sellerLoading ? writeTarget : null}
             firstName={contact?.id === contactId ? contact.firstName : null}
             street={contact?.id === contactId ? contact.address1 : null}
             onRecord={conversationOnRecord}
