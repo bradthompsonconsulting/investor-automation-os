@@ -498,6 +498,8 @@ jobs:
         run: node app/scripts/test-f5-message-status.cjs
       - name: Latest from seller hidden when a thread has no inbound message (F1) — 8 checks
         run: node app/scripts/test-f1-latest-inbound.cjs
+      - name: An open conversation never says "open the conversation"; the Dashboard row keeps it; seller text and thread isolation (B15-08, Spock G5 finding 1) — 8 checks
+        run: node app/scripts/test-b15-08-open-thread-prompt.cjs
       - name: Every identifiable Dashboard contact opens its workspace (R1) — 12 checks
         run: node app/scripts/test-r1-dashboard-contact-links.cjs
       - name: Every identifiable Mailers contact opens its workspace (R2) — 7 checks

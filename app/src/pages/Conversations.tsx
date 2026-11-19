@@ -483,11 +483,12 @@ export default function Conversations() {
                       {preview}
                     </div>
                   );
-                  if (messagesError) return strip("read-failed", <InboundPreview li={{ state: "unavailable", reason: "read_failed", channel: null, at: null }} testId="thread-latest-inbound-preview" />);
+                  // B15-08 (Spock G5 finding 1): this IS the open conversation, so the strip never says "open the conversation".
+                  if (messagesError) return strip("read-failed", <InboundPreview li={{ state: "unavailable", reason: "read_failed", channel: null, at: null }} testId="thread-latest-inbound-preview" inThread />);
                   if (messages === null) return strip("loading", <em data-testid="thread-latest-inbound-loading" style={{ color: "#64748B" }}>Loading…</em>);
                   const li = latestInboundFrom(messages, { contactId: selected.contactId, conversationId: selected.conversationId });
                   if (li.state === "unavailable" && li.reason === "not_found") return null;
-                  return strip("loaded", <InboundPreview li={li} testId="thread-latest-inbound-preview" />);
+                  return strip("loaded", <InboundPreview li={li} testId="thread-latest-inbound-preview" inThread />);
                 })()}
                 {/* Top row — Notes (left) | Text (right), §8.2. §8.3: 60% pane height (Email fills the rest). */}
                 <div style={{ display: "flex", gap: "12px", flex: "0 0 60%", minHeight: 0 }}>
