@@ -295,20 +295,27 @@ export default function DealCalculator() {
     [repairAnswers, repairMisc],
   );
 
-  /* October 19: itemized sums only known amounts, initially zero/incomplete. */
+  /* October 19: itemized sums only known amounts, initially zero/incomplete.
+     B15-24 (CAPTAIN GO 2026-11-19): a BLANK Quick figure (nothing recorded or entered) deducts $0 -- the same known-only
+     zero start as a fresh itemized estimate -- so Max Offer is calculated once every other required input is present.
+     The box stays blank (nothing is invented into it or kept as a draft); an invalid entry is still an error, never $0. */
+  const quickBlank = repairsMode === "quick" && repairsQuickParsed.kind === "empty";
   const repairs =
     repairsMode === "quick"
-      ? (repairsQuickParsed.kind === "value" ? repairsQuickParsed.value : null)
+      ? (repairsQuickParsed.kind === "value" ? repairsQuickParsed.value : quickBlank ? 0 : null)
       : detailedEstimate.total;
 
   /* Jess ruling 2026-10-21 (B15-26 with B15-01): while the itemized estimate
      is incomplete, the spread, bar and net are presented as provisional.
      Completeness is the estimate's own flag -- never inferred from a $0
      total (explicit $0/Good answers are complete). A Quick total is an
-     operator-entered whole figure, so it is not "incomplete"; a missing or
-     invalid Quick total already leaves Repairs missing (neutral status). */
-  const repairCompleteness: RepairCompleteness | null =
-    repairsMode === "detailed" ? { incomplete: detailedEstimate.incomplete, knownRepairs: detailedEstimate.total } : null;
+     operator-entered whole figure, so it is not "incomplete"; an invalid
+     Quick total leaves Repairs missing (neutral status). B15-24: a blank Quick
+     figure is $0 KNOWN and incomplete, exactly like a fresh itemized estimate,
+     so its spread is provisional and never a green Meets. */
+  const repairCompleteness: RepairCompleteness | null = quickBlank
+    ? { incomplete: true, knownRepairs: 0 }
+    : repairsMode === "detailed" ? { incomplete: detailedEstimate.incomplete, knownRepairs: detailedEstimate.total } : null;
 
   function bumpRepairRevision() {
     setRepairRevision((r) => r + 1);

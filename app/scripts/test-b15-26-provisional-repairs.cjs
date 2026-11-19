@@ -181,13 +181,14 @@ async function partB() {
     const PLAIN = ['ARV', 'Repairs', 'Test Price', 'Target', 'Max', 'Spread'];
     const PROV = ['ARV', 'Known repairs (incomplete)', 'Test Price', 'Provisional target', 'Provisional max', 'Provisional spread'];
 
-    // B0 -- quick mode, nothing entered: Repairs Unknown keeps the neutral "enter Repairs" status.
+    // B0 -- quick mode, nothing entered. B15-24 (Captain GO 2026-11-19): a blank Quick figure deducts $0 known and is
+    // incomplete, like a fresh itemized estimate (was: neutral "enter Repairs"), so the status is provisional at $0.
     await fresh();
     await T('deal-calc-arv-input').fill('300000');
     await T('deal-calc-test-price-input').fill('100000');
     await settle();
     const b0 = await status();
-    check('B0 quick mode, no repairs: neutral status naming Repairs (Unknown preserved)', b0.kind === 'neutral' && /Repairs/.test(b0.text), b0);
+    check('B0 quick mode, no repairs (B15-24): provisional at known repairs $0, never a green Meets', b0.kind === 'provisional' && b0.text === `${HEADLINE} ${support('$0')}`, b0);
 
     // Reference: quick total $0 (an operator-entered complete figure) -- the unchanged green meets.
     await T('deal-calc-repairs-quick-input').fill('0');
