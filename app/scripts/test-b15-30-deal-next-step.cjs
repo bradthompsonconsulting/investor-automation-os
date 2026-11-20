@@ -166,8 +166,10 @@ async function main() {
       const main = document.querySelector('main'); return { scrollTop: main ? main.scrollTop : null, vh: innerHeight, vw: innerWidth, go: R('deal-next-step-go'), row: R('deal-next-step'), strip: R('seller-call-deal-strip'), bar: R('seller-call-sticky-bar'), conv: R('seller-conversation') }; });
     check('L1 1440x900, not scrolled: the one Next action is fully on screen; the conversation starts right under the sticky bar (<80 px below the strip, above y=450) and is not covered',
       L.scrollTop === 0 && L.go && L.go.y >= 0 && L.go.bottom <= L.vh && L.go.right <= L.vw && L.conv && L.strip && L.conv.y - L.strip.bottom < 80 && L.conv.y < 450 && L.bar.bottom <= L.conv.y + 1, L);
+    await shot(page, '00-deal-a-top-of-page-not-scrolled-1440x900');
     await page.evaluate(() => { const m = document.querySelector('main'); if (m) m.scrollTop = 600; });
     await page.waitForTimeout(300);
+    await shot(page, '00b-deal-a-scrolled-600px-into-conversation');
     const L2 = await page.evaluate(() => { const e = document.querySelector('[data-testid="deal-next-step-go"]'); const r = e && e.getBoundingClientRect(); const m = document.querySelector('main');
       const hit = r ? document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) : null; return { scrollTop: m ? m.scrollTop : null, y: r && r.y, bottom: r && r.bottom, onTop: !!hit && !!e && e.contains(hit) }; });
     check('L2 scrolled 600 px into the conversation: the Next action is still on screen and on top (sticky bar)', L2.scrollTop >= 500 && L2.y >= 0 && L2.bottom <= 900 && L2.onTop, L2);
