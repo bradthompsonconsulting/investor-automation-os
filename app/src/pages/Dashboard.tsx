@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isLifecycleBlur } from "../lib/lifecycle-blur";
 import { useReadRecovered } from "../components/access-status";
 import { Link } from "react-router-dom";
@@ -809,6 +809,24 @@ export default function Dashboard() {
     });
   }, [contacts, coldOutreachExcludedIds, overdueContactIds, attemptOverride, nowTick]);
 
+  /* B15-19 (INV-128; Spock hosted finding "Showing 1 of 1 — scroll for the rest."): the scroll instruction is shown
+     only when the Lead Queue list really overflows its box -- measured on the element, again whenever the queue or
+     the box size changes. Not a count rule: the box also holds the header, so its last rows can already be hidden
+     at fewer than RESURFACE_VISIBLE_ROWS. Display only; the queue itself is unchanged. */
+  const leadListRef = useRef<HTMLDivElement | null>(null);
+  const [leadListOverflows, setLeadListOverflows] = useState(false);
+  useLayoutEffect(() => {
+    const el = leadListRef.current;
+    if (!el) { setLeadListOverflows(false); return; }
+    const measure = () => setLeadListOverflows(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    if (el.firstElementChild) ro.observe(el.firstElementChild);
+    return () => ro.disconnect();
+  }, [leadQueue]);
+
   // PB-D50 — a contact who texted STOP. Matched on message, never on status
   // and never on the top-level dnd boolean, which reads false even for a
   // permanent STOP_KEYWORD entry.
@@ -1304,9 +1322,11 @@ export default function Dashboard() {
 
       {/* 4. Lead Queue (renamed from Call Queue) — cold outreach, the long list at the bottom */}
       <SectionHeading count={leadQueue.length} href="/contacts">Lead Queue</SectionHeading>
-      <p style={{ fontSize: "12px", color: "#64748B", margin: "0 0 6px", maxWidth: CONTENT_MAX_WIDTH }}>
-        Sellers to cold-call next, top of the list first. Save a note after each call to mark the attempt. Showing{" "}
-        {Math.min(RESURFACE_VISIBLE_ROWS, leadQueue.length)} of {leadQueue.length} — scroll for the rest.
+      <p data-testid="dashboard-lead-queue-showing" style={{ fontSize: "12px", color: "#64748B", margin: "0 0 6px", maxWidth: CONTENT_MAX_WIDTH }}>
+        Sellers to cold-call next, top of the list first. Save a note after each call to mark the attempt.
+        {/* B15-19 Option B (Captain, 2026-11-14): no "Showing X of Y" -- X was the box-height constant, not a count;
+            the heading carries the count. "Scroll for the rest." only while the list below really has more than fits. */}
+        {leadListOverflows ? " Scroll for the rest." : ""}
       </p>
       {!loading && (
         <p data-testid="dashboard-lead-queue-accounting" style={{ fontSize: "11px", color: "#475569", margin: "0 0 6px", maxWidth: CONTENT_MAX_WIDTH }}>
@@ -1330,7 +1350,7 @@ export default function Dashboard() {
         </p>
       </details>
       <div style={{ background: "#0D1B3E", borderRadius: "10px", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden", maxWidth: CONTENT_MAX_WIDTH }}>
-        <div style={{ overflow: "auto", maxHeight: `${RESURFACE_VISIBLE_ROWS * 44}px` }}>
+        <div ref={leadListRef} data-testid="dashboard-lead-queue-list" style={{ overflow: "auto", maxHeight: `${RESURFACE_VISIBLE_ROWS * 44}px` }}>
           <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
             <colgroup>
               <col style={{ width: "19%" }} /> {/* Name — full names */}

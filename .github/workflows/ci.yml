@@ -371,6 +371,8 @@ jobs:
         run: node app/scripts/test-wholesaler-net-proceeds.cjs
       - name: Count labels and accounting (INV-128, B15-19)
         run: node app/scripts/test-b15-19-count-accounting.cjs
+      - name: Lead Queue sentence, no "Showing X of Y", scroll instruction only on real overflow (INV-128, B15-19) — 25 checks
+        run: node app/scripts/test-b15-19-lead-queue-showing.cjs
       - name: Contacts stage and last call attempt columns (INV-129, B15-20)
         run: node app/scripts/test-b15-20-contacts-columns.cjs
       - name: Contract Workspace display, combined invariants and checked-in slice provenance (B15-21)
