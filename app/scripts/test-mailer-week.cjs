@@ -14,8 +14,8 @@
  *     13:00 UTC Friday of 2026-2027 gives the same window both ways);
  *   - the REAL buildMailerDigest with fetch stubbed in memory (no network),
  *     showing the This Week / Overdue buckets follow the corrected window and
- *     that every other rule (completion, address, business flag, undated
- *     tasks) is unchanged. Reads only: the stub records every request.
+ *     that every other rule (completion, address, business flag) is
+ *     unchanged; undated tasks are under Needs due date since B15-12 item 12. Reads only: the stub records every request.
  *
  * NEGATIVE CONTROL: the previous rule is reproduced below (previousWindow)
  * and must show the reported dates; run against the previous module, this
@@ -154,7 +154,7 @@ async function digestAt(nowIso) {
   try {
     const d = await buildMailerDigest('fixture-token', new Date(nowIso));
     const ids = (groups) => groups.flatMap((g) => g.rows.map((r) => r.taskId)).sort();
-    return { window: `${d.weekStartCT}..${d.weekEndCT}`, ready: ids(d.thisWeekReady), business: ids(d.thisWeekBusiness), overdue: ids(d.overdue), noAddress: d.noAddress.map((r) => r.taskId).sort(), totals: d.totals, requests };
+    return { window: `${d.weekStartCT}..${d.weekEndCT}`, ready: ids(d.thisWeekReady), business: ids(d.thisWeekBusiness), overdue: ids(d.overdue), noAddress: d.noAddress.map((r) => r.taskId).sort(), needsDueDate: (d.needsDueDate || []).map((r) => r.taskId).sort(), totals: d.totals, requests };
   } finally {
     global.fetch = realFetch;
   }
@@ -164,17 +164,18 @@ async function digestAt(nowIso) {
   const d = await digestAt('2026-10-07T17:00:00Z');
   check('Wed Oct 7: the digest window is the current week', d.window, '2026-10-03..2026-10-09');
   check('This Week — Ready holds the tasks due Mon Oct 5 and Fri Oct 9 (23:30 CDT)', d.ready, ['due-fri-oct9-late', 'due-mon-oct5']);
-  check('Overdue holds last week\'s Fri Oct 2 (23:30 CDT) task, and the undated task as before', d.overdue, ['due-fri-oct2-late', 'undated']);
+  // B15-12 item 12 (Captain GO 2026-11-18): an undated task is no longer Overdue; it is listed under Needs due date.
+  check('Overdue holds last week\'s Fri Oct 2 (23:30 CDT) task; the undated task is under Needs due date (B15-12)', [d.overdue, d.needsDueDate], [['due-fri-oct2-late'], ['undated']]);
   check('a task due next Saturday is in neither bucket', [...d.ready, ...d.business, ...d.overdue].includes('due-sat-oct10'), false);
   check('business-flag, completion, no-address and non-mailer rules are unchanged',
     [d.business, d.noAddress, [...d.ready, ...d.overdue].includes('done-oct6'), [...d.ready, ...d.overdue].includes('not-a-mailer')],
     [['business-oct8'], ['noaddr-oct7'], false, false]);
-  check('totals agree with the buckets', [d.totals.ready, d.totals.business, d.totals.overdue, d.totals.noAddress], [2, 1, 2, 1]);
+  check('totals agree with the buckets', [d.totals.ready, d.totals.business, d.totals.overdue, d.totals.noAddress, d.totals.needsDueDate], [2, 1, 1, 1, 1]);
   const fri = await digestAt('2026-10-09T13:00:00Z');
-  check('the Friday digest run (Fri Oct 9, 13:00 UTC) buckets the same week', [fri.window, fri.ready, fri.overdue], ['2026-10-03..2026-10-09', ['due-fri-oct9-late', 'due-mon-oct5'], ['due-fri-oct2-late', 'undated']]);
+  check('the Friday digest run (Fri Oct 9, 13:00 UTC) buckets the same week', [fri.window, fri.ready, fri.overdue, fri.needsDueDate], ['2026-10-03..2026-10-09', ['due-fri-oct9-late', 'due-mon-oct5'], ['due-fri-oct2-late'], ['undated']]);
   const sat = await digestAt('2026-10-10T05:00:00Z');
   check('Sat Oct 10 00:00 CDT: the week rolls over; the Oct 10 task is This Week and the previous week\'s tasks (incl. business-flagged) are overdue',
-    [sat.window, sat.ready, sat.overdue], ['2026-10-10..2026-10-16', ['due-sat-oct10'], ['business-oct8', 'due-fri-oct2-late', 'due-fri-oct9-late', 'due-mon-oct5', 'undated']]);
+    [sat.window, sat.ready, sat.overdue, sat.needsDueDate], ['2026-10-10..2026-10-16', ['due-sat-oct10'], ['business-oct8', 'due-fri-oct2-late', 'due-fri-oct9-late', 'due-mon-oct5'], ['undated']]);
   check('reads only: every request is a GET of contacts or a contact\'s tasks', [...new Set([...d.requests, ...fri.requests, ...sat.requests])].every((r) => /^GET \/contacts(\/c\d\/tasks)?$/.test(r)), true);
 
   console.log('');

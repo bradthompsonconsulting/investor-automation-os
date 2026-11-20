@@ -39,8 +39,11 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// B15-12: the edges are "no word character on either side" rather than \b. \b after a token that ENDS in a
+// non-word character ("L.L.C.") demands a following word character, so "Smith Family L.L.C." never matched.
+// For every token that starts and ends with a letter the two forms are identical.
 const BUSINESS_ENTITY_RE = new RegExp(
-  `\\b(?:${BUSINESS_ENTITY_TOKENS.map(escapeRegExp).join("|")})\\b`,
+  `(?<!\\w)(?:${BUSINESS_ENTITY_TOKENS.map(escapeRegExp).join("|")})(?!\\w)`,
   "i",
 );
 
@@ -80,11 +83,14 @@ export interface MailerDigest {
   thisWeekBusiness: MailerGroup[];
   overdue:          MailerGroup[];
   noAddress:        MailerTaskRow[];
+  /** B15-12: incomplete mailer tasks WITH an address but no (readable) due date -- never "Overdue". */
+  needsDueDate:     MailerTaskRow[];
   totals: {
     ready:     number;
     business:  number;
     overdue:   number;
     noAddress: number;
+    needsDueDate: number;
     byMailerType: Record<string, number>; // across ready+business+overdue
   };
 }
@@ -244,7 +250,8 @@ export async function fetchAllMailerTaskRows(token: string, ghlFetch: typeof fet
         mailerType,
         touchNumber,
         dueDate,
-        dueDateCT:       dueDate ? toCentralDateString(new Date(dueDate)) : "",
+        // B15-12: an unreadable due date is treated as no due date (it used to throw and fail the whole digest).
+        dueDateCT:       dueDate && !Number.isNaN(new Date(dueDate).getTime()) ? toCentralDateString(new Date(dueDate)) : "",
         completed:       !!t.completed,
         hasBusinessName: !!companyName || looksLikeBusinessName(c.contactName),
         companyName,
@@ -286,8 +293,11 @@ export async function buildMailerDigest(token: string, now: Date = new Date(), g
 
   const incomplete = allRows.filter((r) => !r.completed);
 
-  const noAddress = incomplete.filter((r) => !r.hasAddress);
-  const addressed = incomplete.filter((r) => r.hasAddress);
+  // Every incomplete row lands in exactly one list. No Address first (unchanged rule, whatever the due date);
+  // B15-12: an addressed row with no due date is "Needs due date" -- "" sorted before every date and was Overdue.
+  const noAddress    = incomplete.filter((r) => !r.hasAddress);
+  const needsDueDate = incomplete.filter((r) => r.hasAddress && r.dueDateCT === "");
+  const addressed    = incomplete.filter((r) => r.hasAddress && r.dueDateCT !== "");
 
   const inWeek = (r: MailerTaskRow) => r.dueDateCT >= weekStartCT && r.dueDateCT <= weekEndCT;
 
@@ -308,11 +318,13 @@ export async function buildMailerDigest(token: string, now: Date = new Date(), g
     thisWeekBusiness: groupBy(businessRows),
     overdue:          groupBy(overdueRows),
     noAddress,
+    needsDueDate,
     totals: {
       ready:     readyRows.length,
       business:  businessRows.length,
       overdue:   overdueRows.length,
       noAddress: noAddress.length,
+      needsDueDate: needsDueDate.length,
       byMailerType,
     },
   };
