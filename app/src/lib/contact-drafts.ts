@@ -44,13 +44,16 @@ import { confirmedOperatorTag } from "./operator-partition";
 export const CONTACT_DRAFT_VERSION = 1;
 export const CONTACT_DRAFT_PREFIX = "iaos-contact-draft:v1:";
 
-export type DraftScope = "note" | "calllog" | "outcome" | "readiness";
+/* B15-04 (Captain GO 2026-11-19): "conversation" -- the Seller Call conversation draft, one serialized value per deal
+   (SellerConversation validates it strictly before using it; lib/seller-conversation-draft.ts). */
+export type DraftScope = "note" | "calllog" | "outcome" | "readiness" | "conversation";
 /** Every value a draft of each kind holds (all strings). */
 export const SCOPE_FIELDS: Record<DraftScope, readonly string[]> = {
   note: ["text"],
   calllog: ["result", "text"],
   outcome: ["form", "passReason", "followUpAt"],
   readiness: ["reason"],
+  conversation: ["v"],
 };
 /** The values that make a draft worth keeping. An empty one is removed (a choice alone is not kept). */
 const CONTENT_FIELDS: Record<DraftScope, readonly string[]> = {
@@ -58,8 +61,9 @@ const CONTENT_FIELDS: Record<DraftScope, readonly string[]> = {
   calllog: ["result", "text"],
   outcome: ["passReason", "followUpAt"],
   readiness: ["reason"],
+  conversation: ["v"],
 };
-const DEAL_SCOPES: ReadonlySet<DraftScope> = new Set<DraftScope>(["outcome", "readiness"]);
+const DEAL_SCOPES: ReadonlySet<DraftScope> = new Set<DraftScope>(["outcome", "readiness", "conversation"]);
 
 export type DraftRecord = { contactId: string; opportunityId?: string };
 export type ContactDraftIdentity = { scope: DraftScope; env: string; operator: string; contactId: string; opportunityId?: string };

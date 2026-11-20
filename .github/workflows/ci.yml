@@ -475,6 +475,10 @@ jobs:
         run: node app/scripts/test-seller-conversation-rendered.cjs
       - name: Seller conversation Save at Summary on the real Seller Call page -- flag off shows the plan with zero writes; harness-enabled save writes in order and reports confirmed/refused/uncertain per item; drafts kept; no automatic or duplicate resend; Check again; leave warning; autosave sections integrated when on, unchanged when off (INV-103, B15-03 slice C) — 64 checks
         run: node app/scripts/test-seller-conversation-save-rendered.cjs
+      - name: Seller Call conversation drafts kept per deal and operator through reload, closed tab and another seller; corrupted records refused (B15-04) — 17 checks
+        run: node app/scripts/test-b15-04-conversation-drafts.cjs
+      - name: Seller Call conversation draft removed only when Save confirms every item; refused or uncertain keeps it; only content the confirmed save covers (B15-04) — 15 checks
+        run: node app/scripts/test-b15-04-conversation-drafts-save.cjs
       - name: B1 repair approval ENABLED path on the real page, offline (committed switch on for Test; legacy viewer served the switch-off capability) (INV-134) — 81 checks
         run: node app/scripts/test-repair-approval-browser.cjs
       # Both Production negotiation settings against the real write scope and barrier rules; floor 105

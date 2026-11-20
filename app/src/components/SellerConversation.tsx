@@ -1,4 +1,6 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
+import { contactDraftStore, useRecordDraft } from "../lib/contact-drafts";
+import { parseConversationDraft, serializeConversationDraft } from "../lib/seller-conversation-draft";
 import {
   OPENINGS, OPENING_THEN, QUESTIONS, SOURCE_LABEL, STATUS_LABEL, EMPTY_CONVERSATION,
   fillLine, withField, withMark, moveTo, questionStatus, nextOpenQuestion, noteFor,
@@ -24,6 +26,8 @@ export type ConversationSave = {
   onConfirmed: (dealKey: string, item: { id: SaveItemId; signature: string }, sent: SentRecord) => void;
 };
 const LEAVE_MESSAGE = "This call has unsaved work (the conversation, or answers not yet saved). Leave the Seller Call page anyway? Unsaved answers will be lost.";
+/* B15-04: with the draft kept in this browser, leaving does not lose the answers; they are still not saved to GHL. */
+const LEAVE_MESSAGE_KEPT = "This call has unsaved work (answers not yet saved to GHL). Leave the Seller Call page anyway? Your answers stay as a draft in this browser for this deal.";
 const STATE_WORD: Record<SaveAction, [string, string]> = {
   write: ["Will save", "Would save"], done: ["Saved", "Saved"], none: ["No change", "No change"], not_saved: ["Not saved", "Not saved"], blocked: ["Uncertain", "Uncertain"],
 };
@@ -50,9 +54,17 @@ const RESULT_WORD: Record<ItemResult["status"], string> = {
  * NEVER BLOCKING. Previous, Next, jump, Skip, Seller doesn't know and Return to
  * unanswered never depend on an answer.
  *
- * Drafts are kept per deal (`dealKey` = contact + opportunity) for as long as
- * the page stays open; another deal or contact never sees them. `dealKey` is
- * null while the page has no fully loaded deal, and then no control renders.
+ * Drafts are kept per deal (`dealKey` = contact + opportunity); another deal or
+ * contact never sees them. `dealKey` is null while the page has no fully loaded
+ * deal, and then no control renders.
+ *
+ * B15-04 (Captain GO 2026-11-19): the draft is also kept in this browser, per
+ * environment, operator, contact and deal (the accepted B15-27b draft store,
+ * scope "conversation"), so a reload, a closed tab or a visit to another seller
+ * returns to the same answers and question. A stored value is used only if it is
+ * exactly a valid draft (lib/seller-conversation-draft.ts). The draft is removed
+ * once a Save confirms every item; a refused or uncertain save keeps it. A draft
+ * is never sent: Save at Summary remains the only write path.
  */
 const STATUS_CLASS: Record<AnswerStatus, string> = {
   draft: "sc-chip sc-chip-draft", seller_doesnt_know: "sc-chip sc-chip-dk", skipped: "sc-chip sc-chip-skip",
@@ -60,8 +72,11 @@ const STATUS_CLASS: Record<AnswerStatus, string> = {
 };
 const READINESS_TEXT = { NOT_READY: "Not ready", REVIEW_NEEDED: "Review needed", OFFER_READY: "Offer ready (evidence)" } as const;
 
-export function SellerConversation({ dealKey, firstName, street, onRecord, readiness, recommended, staleRead, repairsHref, save = null }: {
+export function SellerConversation({ dealKey, env, record, firstName, street, onRecord, readiness, recommended, staleRead, repairsHref, save = null }: {
   dealKey: string | null;
+  /** B15-04: the GHL location the draft belongs to, and the deal `dealKey` names (null while no deal is loaded). */
+  env: string;
+  record: { contactId: string; opportunityId: string } | null;
   firstName: string | null;
   street: string | null;
   onRecord: OnRecord;
@@ -80,6 +95,41 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
   const [notEnabledShown, setNotEnabledShown] = useState<string | null>(null);
   const savePlan = dealKey && save ? save.plan(drafts[dealKey] ?? EMPTY_CONVERSATION, callIdFor(dealKey)) : null;
   const leaveGuarded = !!savePlan && (savePlan.unsaved || !!save?.coordinator.busy());
+
+  /* B15-04: this deal's draft, kept in this browser (loaded before paint when the deal or operator changes). */
+  const draftValue = dealKey ? serializeConversationDraft(drafts[dealKey] ?? EMPTY_CONVERSATION) : "";
+  const keptDraft = useRecordDraft({
+    scope: "conversation", env, record: dealKey ? record : null, values: { v: draftValue },
+    apply: (v) => {
+      if (!dealKey) return;
+      const k = dealKey;
+      const restored = v ? parseConversationDraft(v.v) : null;   // anything not exactly a valid draft: refused whole
+      setDrafts((all) => ({ ...all, [k]: restored ?? EMPTY_CONVERSATION }));
+    },
+  });
+  const persistent = contactDraftStore().persistent;
+  const keptWhere = persistent ? "in this browser for this deal" : "on this page while it is open";
+  /* B15-04: a Save that confirmed EVERY item removes the kept draft (nothing left to write, nothing blocked, every
+     result confirmed). A refused, uncertain or still-running save keeps it. Items that are never saved as fields
+     ("not saved": address, reason) are carried by the confirmed conversation note.
+     r2 (Bones REVISE R1 on a5f10b8): only content the confirmed save COVERS is cleared -- the plan's conversation
+     note must be "done" (a confirmed note matches the current one) AND the draft's content (everything but the
+     current-question position) must equal what it was when Save was pressed. An edit after the save (an oversized
+     note that cannot be saved, a Skip mark the note does not carry) keeps the draft. */
+  const [savedContent, setSavedContent] = useState<Record<string, string>>({});
+  const contentOf = (cd: ConversationDraft) => serializeConversationDraft({ ...cd, current: 0 });
+  const dealResults = dealKey && save ? save.coordinator.results(dealKey) : null;
+  const resultStates = dealResults ? Object.values(dealResults).map((r) => r?.status) : [];
+  const noteCovered = !!savePlan && savePlan.items.some((i) => i.id === "note" && i.action === "done");
+  const contentAsSaved = !!dealKey && savedContent[dealKey] !== undefined && savedContent[dealKey] === contentOf(drafts[dealKey] ?? EMPTY_CONVERSATION);
+  const savedEveryItem = !!save?.enabled && !!savePlan && !save.coordinator.busy() && resultStates.length > 0
+    && resultStates.every((s) => s === "confirmed") && !savePlan.items.some((i) => i.action === "write" || i.action === "blocked")
+    && noteCovered && contentAsSaved;
+  useEffect(() => {
+    if (savedEveryItem && keptDraft.owner) keptDraft.clearSent(keptDraft.owner, { v: draftValue });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedEveryItem, draftValue]);
+
   if (!dealKey) {
     return (
       <section className="sc-wrap" data-testid="seller-conversation" aria-label="Seller conversation">
@@ -108,7 +158,7 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
 
   return (
     <section className="sc-wrap" data-testid="seller-conversation" data-deal={key} aria-label="Seller conversation">
-      <LeaveGuard active={leaveGuarded} message={LEAVE_MESSAGE} />
+      <LeaveGuard active={leaveGuarded} message={persistent ? LEAVE_MESSAGE_KEPT : LEAVE_MESSAGE} />
       <div className="sc-grid">
         <nav className="sc-nav" aria-label="Conversation questions" data-testid="sc-nav">
           <div className="sc-heading">Conversation</div>
@@ -206,8 +256,8 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
                 onChange={(v) => update((p) => withField(p, q.id, f.id, v))} />
             ))}
             <div className="sc-muted" data-testid="sc-draft-note">{save?.enabled
-              ? "Draft: kept on this page while it is open, and saved only when you press Save at Summary & next step."
-              : "Draft only: kept on this page while it is open. Nothing here is saved to GHL."}</div>
+              ? `Draft: kept ${keptWhere}, and saved only when you press Save at Summary & next step.`
+              : `Draft only: kept ${keptWhere}. Nothing here is saved to GHL.`}</div>
           </div>
           {answer?.mark ? (
             <div className="sc-marked" data-testid="sc-mark">
@@ -218,6 +268,7 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
 
           {q.id === "summary" && save && savePlan ? (
             <SavePanel dealKey={key} save={save} plan={savePlan} results={save.coordinator.results(key)}
+              onSaving={() => setSavedContent((m) => ({ ...m, [key]: contentOf(d) }))}
               notEnabledShown={notEnabledShown === key} onNotEnabled={() => setNotEnabledShown(key)} />
           ) : null}
 
@@ -256,7 +307,7 @@ export function SellerConversation({ dealKey, firstName, street, onRecord, readi
             know" is printed as the answer; a heading opens its question. Draft only -- nothing here is saved. */}
         <aside className="sc-side sc-notes" aria-label="Call notes" data-testid="sc-notes-panel">
           <div className="sc-heading">Call notes</div>
-          <div className="sc-muted sc-notes-unsaved" data-testid="sc-notes-unsaved">NOT SAVED — kept on this page while it is open.</div>
+          <div className="sc-muted sc-notes-unsaved" data-testid="sc-notes-unsaved">NOT SAVED — kept {keptWhere}.</div>
           <ol className="sc-note-list">
             {note.map((row, i) => row.kind === "general" ? (
               <li key={row.id} data-testid="sc-note-general">
@@ -323,14 +374,18 @@ function DraftField({ qid, field, value, onChange, prefix = "sc", compact = fals
  * item offers Check again (a read) and is never re-sent by Save: only finding it on the record, or the original
  * request's own answer, settles it (an empty read proves nothing; Bones C1).
  */
-function SavePanel({ dealKey, save, plan, results, notEnabledShown, onNotEnabled }: {
-  dealKey: string; save: ConversationSave; plan: SavePlan; results: DealResults; notEnabledShown: boolean; onNotEnabled: () => void;
+function SavePanel({ dealKey, save, plan, results, onSaving, notEnabledShown, onNotEnabled }: {
+  dealKey: string; save: ConversationSave; plan: SavePlan; results: DealResults;
+  /** B15-04 r2: records what the draft held when this Save started (what a confirmed save covers). */
+  onSaving: () => void;
+  notEnabledShown: boolean; onNotEnabled: () => void;
 }) {
   const busy = save.coordinator.busy();
   const offNoteId = useId();
   const hooks = { onConfirmed: (item: { id: SaveItemId; signature: string }, sent: SentRecord) => save.onConfirmed(dealKey, item, sent) };
   const onSave = () => {
     if (!save.enabled) { onNotEnabled(); return; }
+    onSaving();
     void save.coordinator.save(dealKey, save.contactId, plan, save.client, hooks);
   };
   const shown: PlanItem[] = plan.items;
