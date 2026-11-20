@@ -423,6 +423,10 @@ jobs:
         run: node app/scripts/test-dashboard-callback-popover.cjs
       - name: Latest inbound seller message shown from the thread source with honest states, Dashboard + Conversations, real App (INV-107, B15-08) — 38 checks
         run: node app/scripts/test-b15-08-inbound-visibility.cjs
+      - name: Dashboard Unanswered Inbound row opens its own conversation (existing Conversations route; two contacts, missing id incl. on an already-open page, unchanged sidebar route) (B15-08, Spock G5 finding 2) — 10 checks
+        run: node app/scripts/test-b15-08-dashboard-thread-link.cjs
+      - name: Dashboard thread link applied once per id -- a hand-picked thread survives the thread-list re-read after read-session recovery (B15-08) — 4 checks
+        run: node app/scripts/test-b15-08-thread-link-recovery.cjs
       - name: Shell labels on the real page -- no Phase A badge, Conversations heading (INV-126, B15-17)
         run: node app/scripts/test-b15-shell-labels.cjs
       - name: Conversations property context on the real page, stale thread results (INV-132, B15-23) — 12 checks
@@ -509,6 +513,8 @@ jobs:
         run: node app/scripts/test-f5-message-status.cjs
       - name: Latest from seller hidden when a thread has no inbound message (F1) — 8 checks
         run: node app/scripts/test-f1-latest-inbound.cjs
+      - name: An open conversation never says "open the conversation"; the Dashboard row keeps it; seller text and thread isolation (B15-08, Spock G5 finding 1) — 8 checks
+        run: node app/scripts/test-b15-08-open-thread-prompt.cjs
       - name: Every identifiable Dashboard contact opens its workspace (R1) — 12 checks
         run: node app/scripts/test-r1-dashboard-contact-links.cjs
       - name: Every identifiable Mailers contact opens its workspace (R2) — 7 checks

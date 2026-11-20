@@ -18,6 +18,18 @@ export const INBOUND_UNAVAILABLE_TEXT: Record<InboundUnavailableReason, string> 
   unsupported: "This message type isn't shown here — open the conversation",
 };
 
+/** B15-08 (Spock G5 finding 1): inside an ALREADY-OPEN conversation the same state, without the instruction to open it.
+ *  Only the "— open the conversation" tail is removed; the Dashboard row (not a conversation) keeps the text above. */
+export const INBOUND_UNAVAILABLE_TEXT_IN_THREAD: Record<InboundUnavailableReason, string> = {
+  read_failed: "Message text couldn't be read",
+  timed_out: "Message text didn't load in time",
+  rate_limited: "Message text not loaded (GHL is busy)",
+  not_loaded: "Message text not loaded here",
+  no_body: "Message text isn't available here",
+  not_found: "Latest inbound message not found",
+  unsupported: "This message type isn't shown here",
+};
+
 export function inboundNoTextLabel(channel: string): string {
   return `Inbound ${channel.toLowerCase()} — no message text`;
 }
@@ -29,7 +41,7 @@ export function receivedAt(at: string | null): string | null {
   return `Received ${d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`;
 }
 
-export function InboundPreview({ li, testId = "inbound-preview" }: { li: LatestInbound; testId?: string }) {
+export function InboundPreview({ li, testId = "inbound-preview", inThread = false }: { li: LatestInbound; testId?: string; inThread?: boolean }) {
   const when = receivedAt(li.at);
   const chip = (label: string) => (
     <span data-testid={`${testId}-channel`} style={{
@@ -48,7 +60,7 @@ export function InboundPreview({ li, testId = "inbound-preview" }: { li: LatestI
       ) : li.state === "no_text" ? (
         <em data-testid={`${testId}-text`} style={{ color: "#64748B" }}>{inboundNoTextLabel(li.channel)}</em>
       ) : (
-        <em data-testid={`${testId}-text`} style={{ color: "#F59E0B" }}>{INBOUND_UNAVAILABLE_TEXT[li.reason]}</em>
+        <em data-testid={`${testId}-text`} style={{ color: "#F59E0B" }}>{(inThread ? INBOUND_UNAVAILABLE_TEXT_IN_THREAD : INBOUND_UNAVAILABLE_TEXT)[li.reason]}</em>
       )}
       {when ? <span data-testid={`${testId}-time`} style={{ marginLeft: "8px", fontSize: "11px", color: "#475569", whiteSpace: "nowrap" }}>{when}</span> : null}
     </span>
