@@ -3183,11 +3183,12 @@ export default function SellerCallWorkspace() {
                     fontSize: "11px", color: "#FCA5A5",
                   }}
                 >
-                  ⚠ Current Offer carrier mismatch —{" "}
+                  {/* B15-17 (INV-126): operator wording; the integrity check and its two cases are unchanged. */}
+                  ⚠ Current Offer doesn't match the agreed price —{" "}
                   {currentOfferIntegrity.reason === "opportunity_field_empty"
-                    ? `the Opportunity's Current Offer field is empty, but this deal has an accepted price of ${moneyOrUnknown(currentOfferIntegrity.acceptedValue)} on record.`
-                    : `the Opportunity's Current Offer field reads ${moneyOrUnknown(currentOfferIntegrity.opportunityValue)}, which disagrees with the accepted price of ${moneyOrUnknown(currentOfferIntegrity.acceptedValue)} on record.`}
-                  {" "}The accepted price above is the immutable Agreement Reached record and governs; this is a reconciliation flag on the queryable field, not a request to re-confirm the agreement.
+                    ? `the deal's Current Offer field in GHL is empty, but the agreed price on record is ${moneyOrUnknown(currentOfferIntegrity.acceptedValue)}.`
+                    : `the deal's Current Offer field in GHL shows ${moneyOrUnknown(currentOfferIntegrity.opportunityValue)}, but the agreed price on record is ${moneyOrUnknown(currentOfferIntegrity.acceptedValue)}.`}
+                  {" "}The agreed price above comes from the Agreement Reached record and is the one that counts. This only flags that the GHL field is out of date; you don't need to re-confirm the agreement.
                 </div>
               ) : null}
 

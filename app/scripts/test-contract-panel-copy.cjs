@@ -59,6 +59,38 @@ check('no old string remains', leftOld.length === 0, leftOld);
 
 // ── 2. Copy only: undoing the table reproduces the base file exactly ────────
 let undone = src;
+/* B15-21 / INV-130 (later, separately reviewed; Bones ACCEPT 23d93d6, integrated in c026442): the Contract Workspace
+   current-status display -- commits 5deab52, b082897, 0127362, 23d93d6, i.e. exactly the six hunks of
+   `git diff c7b09bc c026442 -- app/src/pages/ContractWorkspace.tsx` (+52/-8). Undone first, new -> old, each exact
+   text expected once (absent -> skipped), so the sha256 below still fails on anything not modelled here. Undoing
+   these rows is not proof the B15-21 display is present; its own suite (test-b15-21-contract-current-status) checks that. */
+const B15_21_UNDO = [
+  [
+    "  formatUnderContractNote, parseUnderContractNote, allUnderContractRecordsForOpportunity,\n} from \"../lib/contract-execution-carriers\";\nimport { allContractLifecycleRecordsForOpportunity } from \"../lib/contract-lifecycle-carriers\";\nimport { allowsNewSend, deriveContractCurrentStatus, LOWER_NO_RESEND, needsReadinessFirst, notReadyLowerText, notReadyRecordText, RECORD_SEND_NO_RESEND, resolvedSendAttemptsForOpportunity } from \"../lib/contract-current-status\";\nimport { matchingArvApprovalForOpportunity } from \"../lib/arv-approval-note\";\nimport { DISPOSITION_ARV_LABEL, DISPOSITION_REPAIRS_LABEL } from \"../lib/authoritative-figures\";\nimport {\n",
+    "  formatUnderContractNote, parseUnderContractNote, allUnderContractRecordsForOpportunity,\n} from \"../lib/contract-execution-carriers\";\nimport { allContractLifecycleRecordsForOpportunity } from \"../lib/contract-lifecycle-carriers\";\nimport { matchingArvApprovalForOpportunity } from \"../lib/arv-approval-note\";\nimport { DISPOSITION_ARV_LABEL, DISPOSITION_REPAIRS_LABEL } from \"../lib/authoritative-figures\";\nimport {\n"
+  ],
+  [
+    "    }).ok) ?? null;\n  }, [screen, documentVersion, currentUnderContractRecord, existingDispositionHandoffs]);\n\n  /** B15-21 (Bones B2): every send attempt, each resolved within itself -- display only; existingSend and its gates are unchanged. */\n  const sendAttemptsForDisplay = useMemo(() => {\n    if (screen.state !== \"ready\" || !notes) return [];\n    return resolvedSendAttemptsForOpportunity(notes, screen.opportunity.id);\n  }, [screen, notes]);\n\n  /** B15-21 (INV-130): the top status and next instruction follow the latest SUBSTANTIATED state (display only). */\n  const contractCurrentStatus = useMemo(() => {\n    if (screen.state !== \"ready\") return null;\n    return deriveContractCurrentStatus({\n      opportunityId: screen.opportunity.id, agreementAt: screen.economics.agreementAt, version: documentVersion,\n      readinessReady: screen.readiness.ready, underContract: currentUnderContractRecord,\n      dispositionHandoff: currentDispositionHandoff, lifecycleHistory: dispositionLifecycleHistory, sendAttempts: sendAttemptsForDisplay,\n    });\n  }, [screen, documentVersion, currentUnderContractRecord, currentDispositionHandoff, dispositionLifecycleHistory, sendAttemptsForDisplay]);\n  /** B15-21: what remains before Contract Ready -- the same reasons the readiness status lists at the top. */\n  const readinessRemaining = screen.state === \"ready\" ? screen.readiness.reasons : [];\n\n  const dispositionEligibility = useMemo(() => {\n    if (screen.state !== \"ready\" || !documentVersion) return null;\n    return evaluateDispositionHandoffEligibility({\n",
+    "    }).ok) ?? null;\n  }, [screen, documentVersion, currentUnderContractRecord, existingDispositionHandoffs]);\n\n  const dispositionEligibility = useMemo(() => {\n    if (screen.state !== \"ready\" || !documentVersion) return null;\n    return evaluateDispositionHandoffEligibility({\n"
+  ],
+  [
+    "            />\n          ) : null}\n\n          {contractCurrentStatus && contractCurrentStatus.headline ? (\n            <div data-testid=\"contract-current-status\" data-kind={contractCurrentStatus.kind} style={{ marginBottom: \"12px\" }}>\n              <div style={{ display: \"flex\", alignItems: \"center\", gap: \"8px\", fontSize: \"15px\", fontWeight: 700, color: contractCurrentStatus.kind === \"under_contract\" || contractCurrentStatus.kind === \"disposition_started\" ? \"#22C55E\" : \"#F59E0B\" }}>\n                {contractCurrentStatus.kind === \"under_contract\" || contractCurrentStatus.kind === \"disposition_started\" ? <ShieldCheck size={16} /> : <ShieldAlert size={16} />}\n                {contractCurrentStatus.headline}\n              </div>\n              <div data-testid=\"contract-current-status-detail\" style={{ fontSize: \"12px\", color: \"#94A3B8\", marginTop: \"4px\" }}>{contractCurrentStatus.detail}</div>\n            </div>\n          ) : null}\n\n          <div\n            data-testid=\"contract-ready-status\"\n            style={{\n",
+    "            />\n          ) : null}\n\n          <div\n            data-testid=\"contract-ready-status\"\n            style={{\n"
+  ],
+  [
+    "            </div>\n          </div>\n\n          <div data-testid=\"contract-next-action\" data-kind={contractCurrentStatus?.kind ?? \"\"} style={{ fontSize: \"12px\", color: \"#94A3B8\" }}>\n            {contractCurrentStatus?.next}\n          </div>\n\n          {sellerContractFactsReport && sellerContractFactsReadiness ? (\n",
+    "            </div>\n          </div>\n\n          <div data-testid=\"contract-next-action\" style={{ fontSize: \"12px\", color: \"#94A3B8\" }}>\n            {screen.readiness.ready\n              ? \"Contract Ready. Review the populated PDF, then upload and send it manually in GHL.\"\n              : \"Complete the checklist above to reach Contract Ready.\"}\n          </div>\n\n          {sellerContractFactsReport && sellerContractFactsReadiness ? (\n"
+  ],
+  [
+    "            <div data-testid=\"contract-manual-send-notice\"\n              style={{ marginTop: \"24px\" }}>\n              <h3>Manual GHL upload and send</h3>\n              {allowsNewSend(contractCurrentStatus) ? (\n                <p data-testid=\"contract-manual-send-instruction\" data-allows-send=\"true\">Review the populated PDF, then upload it to GHL\n                  Documents &amp; Contracts and send it manually.</p>\n              ) : needsReadinessFirst(contractCurrentStatus) ? (\n                <div data-testid=\"contract-manual-send-instruction\" data-allows-send=\"false\" data-kind=\"not_ready\">\n                  <p>{notReadyLowerText(readinessRemaining.length)}</p>\n                  {readinessRemaining.length > 0 ? (\n                    <ul data-testid=\"contract-manual-send-remaining\">\n                      {readinessRemaining.map((r) => <li key={r.code}>{r.message}</li>)}\n                    </ul>\n                  ) : null}\n                </div>\n              ) : (\n                <p data-testid=\"contract-manual-send-instruction\" data-allows-send=\"false\">{LOWER_NO_RESEND}</p>\n              )}\n              <p>IAOS V1 does not sync contract merge fields, request\n                a GHL template draft, or send contracts automatically.\n                This notice does not record a contract as sent.</p>\n",
+    "            <div data-testid=\"contract-manual-send-notice\"\n              style={{ marginTop: \"24px\" }}>\n              <h3>Manual GHL upload and send</h3>\n              <p>Review the populated PDF, then upload it to GHL\n                Documents &amp; Contracts and send it manually.</p>\n              <p>IAOS V1 does not sync contract merge fields, request\n                a GHL template draft, or send contracts automatically.\n                This notice does not record a contract as sent.</p>\n"
+  ],
+  [
+    "              <div style={{ fontSize: \"14px\", fontWeight: 700, color: \"#E2E8F0\", marginBottom: \"4px\" }}>\n                Record GHL Send\n              </div>\n              <div data-testid=\"contract-manual-send-explanation\" data-allows-send={allowsNewSend(contractCurrentStatus) ? \"true\" : \"false\"} style={{ fontSize: \"11px\", color: \"#64748B\", marginBottom: \"12px\" }}>\n                {allowsNewSend(contractCurrentStatus)\n                  ? \"After you manually upload the authorized PDF to GHL Documents & Contracts and send it, enter exactly what GHL shows you below. IAOS validates this against the currently-authorized PDF's revision and hash before recording it -- nothing is sent to GHL from here.\"\n                  : needsReadinessFirst(contractCurrentStatus)\n                    ? notReadyRecordText(readinessRemaining.length)\n                    : RECORD_SEND_NO_RESEND}\n              </div>\n              <div style={{ ...groupCardStyle, marginBottom: \"12px\" }}>\n                <label style={{ display: \"block\", fontSize: \"11px\", color: \"#94A3B8\", marginBottom: \"10px\" }}>\n",
+    "              <div style={{ fontSize: \"14px\", fontWeight: 700, color: \"#E2E8F0\", marginBottom: \"4px\" }}>\n                Record GHL Send\n              </div>\n              <div style={{ fontSize: \"11px\", color: \"#64748B\", marginBottom: \"12px\" }}>\n                After you manually upload the authorized PDF to GHL Documents &amp; Contracts and send it, enter exactly what GHL shows you below. IAOS validates this against the currently-authorized PDF's revision and hash before recording it -- nothing is sent to GHL from here.\n              </div>\n              <div style={{ ...groupCardStyle, marginBottom: \"12px\" }}>\n                <label style={{ display: \"block\", fontSize: \"11px\", color: \"#94A3B8\", marginBottom: \"10px\" }}>\n"
+  ]
+];
+for (const [now, before] of B15_21_UNDO) if (count(undone, now) === 1) undone = undone.split(now).join(before);
 /* B15-22 / INV-131 (later, separate change): the disposition preview's two
    frozen-snapshot lines were relabelled "ARV / Repairs at acceptance". Undo
    exactly that first, each expected once, so this proof still isolates the
@@ -71,6 +103,37 @@ const B15_22_UNDO = [
   ['<li data-testid="disposition-handoff-preview-repairs">{DISPOSITION_REPAIRS_LABEL}: ', '<li>Approved repairs: '],
 ];
 for (const [now, before] of B15_22_UNDO) if (count(undone, now) === 1) undone = undone.split(now).join(before);
+/* Later, separately reviewed changes to the same file, undone the same way
+   (each exact text expected once; absent -> skipped, so the sha256 below still
+   fails on anything not modelled here):
+   - B15-10 / INV-109 (f5683ec, merged 6188f97): the no-opportunity Notice became
+     the shared NoDealYet card (same test id).
+   - B15-17 / INV-126 (66980f5, pending integration): the disposition preview's
+     Photos/documents display line; the persisted documentReferencesNote is
+     unchanged and is still checked in section 3. */
+const LATER_REVIEWED_UNDO = [
+  ['import NoDealYet from "../components/NoDealYet";\n', ''],
+  ['      {/* B15-10 / Pass 1 F19 (INV-109): the same no-deal card as the Contact, Seller Call and Underwriting\n'
+    + '          pages, with the way to fix it: "Open this contact in GHL". Navigation only; IAOS creates no deal.\n'
+    + '          (F19 replaced the other pages\' "Create an opportunity in GHL" notices; this one was missed.) */}\n', ''],
+  ['        <div data-testid="contract-no-opportunity">\n'
+    + '          <NoDealYet contactId={contactId} reason="A seller contract belongs to the deal, not the person." />\n'
+    + '        </div>\n',
+   '        <Notice\n'
+    + '          testId="contract-no-opportunity"\n'
+    + '          tone="info"\n'
+    + '          title="No opportunity on this contact"\n'
+    + '          body="A seller contract belongs to the deal, not the person. Create an opportunity in GHL first."\n'
+    + '        />\n'],
+  ['/** B15-17 (INV-126): what the disposition preview shows when no photos/documents exist. Display only -- the\n'
+    + ' *  handoff record\'s documentReferencesNote (written to GHL) is unchanged. */\n'
+    + 'const DISPOSITION_NO_DOCUMENTS_TEXT = "not stored in IAOS yet.";\n'
+    + '\n', ''],
+  ['                              {/* B15-17 (INV-126): operator wording; the persisted documentReferencesNote is unchanged. */}\n'
+    + '                              <li data-testid="disposition-handoff-preview-documents">Photos/documents: {pkg.documentReferences.length === 0 ? DISPOSITION_NO_DOCUMENTS_TEXT : pkg.documentReferencesNote}</li>',
+   '                              <li>Photos/documents: {pkg.documentReferencesNote}</li>'],
+];
+for (const [now, before] of LATER_REVIEWED_UNDO) if (count(undone, now) === 1) undone = undone.split(now).join(before);
 for (const p of [...FX.pairs].reverse()) undone = undone.split(p.new).join(p.old);
 check('undoing the table reproduces the 2c07d75 file byte-for-byte (LF-normalized sha256)', sha(undone) === BASE_SHA256, sha(undone));
 const idPattern = /data-testid|testId|\bon[A-Z][a-zA-Z]+=|disabled=|setUnderContractWriteState|setDispositionWriteState|kind:/;

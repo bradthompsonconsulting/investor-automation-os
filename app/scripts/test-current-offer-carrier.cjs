@@ -321,8 +321,9 @@ const FIELD_ID = 'opp-field-under-test';
     true);
   check('the warning names the opportunity_field_empty case explicitly',
     /currentOfferIntegrity\.reason === "opportunity_field_empty"/.test(pageSrc), true);
+  /* B15-17 (INV-126): same meaning, operator wording (the agreed price governs; no re-confirmation requested). */
   check('the warning states the accepted price still governs -- not a request to re-confirm the agreement',
-    /this is a reconciliation flag on the queryable field, not a request to re-confirm the agreement/.test(pageSrc), true);
+    /The agreed price above comes from the Agreement Reached record and is the one that counts\. This only flags that the GHL field is out of date; you don't need to re-confirm the agreement\./.test(pageSrc), true);
   check('no ok:true integrity status ever renders the warning div (gated strictly on the negative branch)',
     (() => {
       const idx = pageSrc.indexOf('data-testid="current-offer-integrity-warning"');
