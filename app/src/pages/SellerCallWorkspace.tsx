@@ -38,6 +38,7 @@ import { OCCUPANCY_STATUS_ID, OCCUPANCY_OPTIONS } from "../lib/ghl";
 import { useRailClearance } from "../lib/rail-clearance";
 import { SellerCallVoiceControls } from "../components/SellerCallVoiceControls";
 import { buildDealBarCells, type DealBarCell } from "../lib/seller-call-deal-bar";
+import { buildSpreadStatus, SPREAD_STATUS_COLOR, type SpreadStatus } from "../lib/deal-calculator-bar";
 import { buildOfferReadinessInputs } from "../lib/seller-call-readiness-inputs";
 import { latestArvApprovalForOpportunity, matchingArvApprovalForOpportunity } from "../lib/arv-approval-note";
 import {
@@ -405,8 +406,10 @@ function Notice({ tone, title, body }: { tone: "error" | "warn" | "info"; title:
   );
 }
 
-/** Renders exactly what `buildDealBarCells` returns -- no formatting decision is made here. */
-function DealBar({ cells, compact = false }: { cells: DealBarCell[]; compact?: boolean }) {
+/** Renders exactly what `buildDealBarCells` returns -- no formatting decision is made here.
+ *  B15-26: `spreadStatus` colors the Spread figure by the shared classification (never color alone: the
+ *  status text renders beside the strip). */
+function DealBar({ cells, compact = false, spreadStatus = null }: { cells: DealBarCell[]; compact?: boolean; spreadStatus?: SpreadStatus | null }) {
   /* B15-03 slice A (Captain 2026-11-03): `compact` is the thin deal strip -- same cells, labels and values
      from buildDealBarCells, smaller spacing and type. Nothing is computed or reformatted here. */
   return (
@@ -422,7 +425,10 @@ function DealBar({ cells, compact = false }: { cells: DealBarCell[]; compact?: b
           </span>
           {cell.value.kind === "value" ? (
             <span style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-              <span style={{ fontSize: compact ? "13px" : "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace", color: "#E2E8F0" }}>
+              <span
+                data-testid={cell.key === "spread" ? "deal-bar-value-spread" : undefined}
+                style={{ fontSize: compact ? "13px" : "18px", fontWeight: 700, fontFamily: "Space Grotesk, monospace",
+                  color: cell.key === "spread" && spreadStatus && spreadStatus.kind !== "neutral" ? SPREAD_STATUS_COLOR[spreadStatus.kind] : "#E2E8F0" }}>
                 {cell.value.text}
               </span>
               {/* Board 15 / Pass 1 F31: a recorded Current Offer says whether it is supported. */}
@@ -972,6 +978,24 @@ export default function SellerCallWorkspace() {
       ? computeExpectedSpread({ endBuyerMaxPrice: board8.endBuyerMaxPrice, referenceKind: "current_offer", referencePrice: currentOffer })
       : null,
     [board8, currentOffer],
+  );
+
+  /* B15-26 (INV-134): the Deal Calculator's spread classifier, unchanged, at
+     the Current Offer. The active mode's required spread is the engine's own
+     resolved figures.assignmentSpread and its mode the resolved assignment --
+     read, never recomputed. No repair-completeness flag exists on this page. */
+  const spreadStatus: SpreadStatus = useMemo(
+    () => buildSpreadStatus(
+      board8,
+      expectedSpread,
+      pipeline.result && pipeline.result.status === "resolved" && pipeline.assignment && pipeline.assignment.kind !== "unresolved"
+        ? { mode: pipeline.assignment.kind, requiredSpread: pipeline.result.figures.assignmentSpread }
+        : null,
+      null,
+      null,
+      "current_offer",
+    ),
+    [board8, expectedSpread, pipeline.result, pipeline.assignment],
   );
 
   /* B8-08 / INV-51. Classifies Current Offer against board8's OWN
@@ -2940,7 +2964,15 @@ export default function SellerCallWorkspace() {
                 without covering anything the bar does not already cover. */}
             <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
               <div style={{ flex: "1 1 auto", minWidth: 0 }}>
-                <DealBar cells={dealBarCells} compact />
+                <DealBar cells={dealBarCells} compact spreadStatus={spreadStatus} />
+                {/* B15-26 (INV-134): the spread warning at the Current Offer, as text. Only once a spread exists;
+                    before that the Spread cell already names what is missing. */}
+                {spreadStatus.kind !== "neutral" ? (
+                  <div data-testid="seller-call-spread-status" data-spread-status={spreadStatus.kind} role="status"
+                    style={{ fontSize: "11px", fontWeight: 600, lineHeight: 1.4, color: SPREAD_STATUS_COLOR[spreadStatus.kind], margin: "-2px 0 4px" }}>
+                    {spreadStatus.text}
+                  </div>
+                ) : null}
                 {sellerLoading ? (
                   <div role="status" data-testid="seller-call-loading-seller"
                     style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#F59E0B", margin: "-8px 0 10px" }}>
