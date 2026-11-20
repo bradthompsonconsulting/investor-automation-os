@@ -26,6 +26,11 @@
  *       "Back to Seller Call" reopens Deal B (no picker) whose Next is now the offer review, your decision
  *   R10 Arv deal: "Next: approve the ARV (Underwriting)" opens Underwriting on that deal with the focus on Get Comps,
  *       the ARV workflow's first control; the guided bar returns to that deal
+ *   Q1  Underwriting, link names Deal A, A unavailable: told, offered Deal B, never an editor / guided bar / focus;
+ *       choosing Deal B deliberately opens it without Deal A's guided bar or focus
+ *   Q2  Seller Call, return link names Deal A, A unavailable: told, offered Deal B, never a Next action; choosing Deal B
+ *       gives its own Next action
+ *   Q3  nothing named: the single-deal rule is unchanged on both routes
  *   R8  switching to another seller never shows the previous seller's deal or step
  *   R9  a Seller Call step focuses its panel in place (no navigation)
  *   W1  the only writes in the run are the two the operator made (the override note; the Assignment Mode choice)
@@ -33,6 +38,8 @@
  *
  * NEGATIVE CONTROLS (B1530_MUTATION=...; source rewritten IN THE DEV SERVER ONLY; each must exit 1):
  *   override_skips_inputs | wrong_deal | drop_guard | nbq_inconsistent | return_without_deal | focus_container |
+ *   old_fallback_underwriting | old_fallback_seller_call | old_fallback_helper (Bones R1: the named-but-unavailable
+ *   deal silently replaced by the only other deal, on each route and in the shared rule) |
  *   focus_first_control (the first focusable control, the repair estimator's "Not asked" default, instead of the field)
  */
 'use strict';
@@ -49,6 +56,9 @@ const MODEL = '/src/lib/deal-next-step.ts';
 const PAGE = '/src/pages/SellerCallWorkspace.tsx';
 const PANEL = '/src/components/DealNextStepPanel.tsx';
 const FOCUS = '/src/lib/focus-target.ts';
+const UW = '/src/pages/UnderwritingWorkspace.tsx';
+const REQ = '/src/lib/requested-deal.ts';
+const OLD_FALLBACK = 'const selected: SelectedOpportunity | null = candidates.length === 1 ? candidates[0] : chosenId === null ? null : candidates.find((c) => c.id === chosenId) ?? null;';
 const MUTATIONS = {
   override_skips_inputs: [[MODEL, 'const next = DEAL_STEP_ORDER.find((id) => !isDone[id])!;', 'const next = r.humanAction.kind === "overridden" ? "offer_review" : DEAL_STEP_ORDER.find((id) => !isDone[id])!;']],
   wrong_deal: [[PAGE, '    const opp = opps.find((o) => o.id === selected.id);\n    if (!opp) return null;\n    try {\n      const v = parseOpportunityValues', '    const opp = opps[0];\n    if (!opp) return null;\n    try {\n      const v = parseOpportunityValues']],
@@ -57,6 +67,9 @@ const MUTATIONS = {
   nbq_inconsistent: [[PAGE, ') : nextBestQuestion.kind === "offer_ready" && openStepInstruction(nextStep) !== null ? (', ') : nextBestQuestion.kind === "offer_ready" && false ? (']],
   return_without_deal: [[PANEL, 'to={`/contacts/${encodeURIComponent(contactId)}/seller-call?deal=${encodeURIComponent(dealId)}`}>', 'to={`/contacts/${encodeURIComponent(contactId)}/seller-call`}>']],
   focus_container: [[FOCUS, 'const control = preferred ?? (el.matches(FOCUSABLE) ? el : el.querySelector<HTMLElement>(FOCUSABLE));', 'const control = null as HTMLElement | null;']],
+  old_fallback_underwriting: [[UW, 'const selected: SelectedOpportunity | null = requestedDeal.selected;', OLD_FALLBACK]],
+  old_fallback_seller_call: [[PAGE, 'const selected: SelectedOpportunity | null = requestedDeal.selected;', OLD_FALLBACK]],
+  old_fallback_helper: [[REQ, 'if (requestedId === null || chosenId !== requestedId) return', 'if (true) return']],
   focus_first_control: [[FOCUS, 'const control = preferred ?? (el.matches(FOCUSABLE)', 'const control = (el.matches(FOCUSABLE)']],
 };
 const MUTATION = process.env.B1530_MUTATION || '';
@@ -65,7 +78,7 @@ if (MUTATION && !MUTATIONS[MUTATION]) { console.error(`FAIL  unknown mutation ${
 
 let checks = 0, failures = 0;
 function check(name, ok, detail) { checks += 1; if (!ok) failures += 1; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : ` -- ${JSON.stringify(detail).slice(0, 600)}`}`); }
-const FLOOR = 21;
+const FLOOR = 26;
 const SHOTS = process.env.B1530_SHOTS || '';   // optional: a folder for 1440x900 screenshots (evidence only)
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${name}.png`) }).catch(() => {}); };
 const watchdog = setTimeout(() => { console.error('FAIL  did not finish within 10 minutes'); process.exit(1); }, 10 * 60_000);
@@ -266,6 +279,66 @@ async function main() {
     check('R10 the ARV Next opens Underwriting on that deal with the focus on Get Comps (the ARV workflow\'s first control); the guided bar returns to that deal',
       r10 && r10.path === `/contacts/${V}/underwriting?deal=${encodeURIComponent(OPP_V)}&focus=arv` && !r10.picker && r10.applied === 'true' && r10.activeTestId === 'arv-get-comps'
         && r10.barDeal === OPP_V && /approve the ARV/.test(r10.barText || '') && r10.backHref === back(V, OPP_V), r10);
+
+    // Q -- Bones R1 (2026-11-20): the link names Deal A and Deal A is no longer this seller's (only Deal B remains)
+    const startAt = async (route) => { await page.goto(`${base}${HARNESS}?start=${encodeURIComponent(route)}`); await page.waitForFunction(() => typeof window.__iaosAppSource === 'string', null, { timeout: 90000 }); };
+    /** Samples the page every ~15 ms until the deal chooser settles (or 30 s): every state seen. */
+    const sampleChooser = async () => {
+      const seen = []; const t0 = Date.now(); let last = null;
+      while (Date.now() - t0 < 30000) {
+        last = await page.evaluate(() => { const q = (t) => !!document.querySelector(`[data-testid="${t}"]`); const ch = document.querySelector('[data-testid="deal-chooser"]');
+          const nx = document.querySelector('[data-testid="deal-next-step"]');
+          return { requested: ch?.getAttribute('data-requested') ?? null, choices: ch ? [...ch.querySelectorAll('button')].map((b) => b.textContent.trim()) : [],
+            nextDeal: nx ? nx.getAttribute('data-deal') : null, editor: q('underwriting-repair-estimator') || q('assignment-mode-selector') || q('arv-comps-workspace'),
+            guided: q('guided-return'), focused: !!document.querySelector('[data-focus-applied="true"]'), notice: document.body.innerText.includes('The deal this link named is not available') }; });
+        seen.push(last);
+        if (last.requested === 'unavailable' && last.choices.length > 0) break;
+        await page.waitForTimeout(15);
+      }
+      await page.waitForTimeout(800);
+      return { seen, last, settled: await page.evaluate(() => ({ editor: ['underwriting-repair-estimator', 'assignment-mode-selector', 'arv-comps-workspace'].some((t) => !!document.querySelector(`[data-testid="${t}"]`)),
+        guided: !!document.querySelector('[data-testid="guided-return"]'), nextDeal: document.querySelector('[data-testid="deal-next-step"]')?.getAttribute('data-deal') ?? null,
+        requested: document.querySelector('[data-testid="deal-chooser"]')?.getAttribute('data-requested') ?? null })) };
+    };
+    // Q1 Underwriting: Deal A's own Next link, followed after Deal A went away
+    await start();
+    await choose('Deal A', OPP_A);
+    const hrefA = await page.getByTestId('deal-next-step-go').getAttribute('href');
+    fx.state.gone.add(OPP_A);
+    await nav(hrefA);
+    const q1 = await sampleChooser();
+    await shot(page, '06-underwriting-named-deal-unavailable');
+    const q1Bad = q1.seen.filter((x) => x.editor || x.guided || x.focused);
+    check('Q1 Underwriting, link names Deal A, Deal A unavailable: the rep is told, offered Deal B to choose, and NO editor, guided bar or focused field ever shows (sampled every ~15 ms)',
+      hrefA === `/contacts/${G}/underwriting?deal=${encodeURIComponent(OPP_A)}&focus=repairs` && q1.last.requested === 'unavailable' && q1.last.notice && JSON.stringify(q1.last.choices) === '["Deal B"]'
+        && q1Bad.length === 0 && !q1.settled.editor && !q1.settled.guided, { hrefA, last: q1.last, bad: q1Bad.slice(0, 2), settled: q1.settled });
+    await page.getByTestId('deal-chooser').getByRole('button', { name: 'Deal B', exact: true }).click();
+    await page.waitForTimeout(2500);
+    const q2 = await page.evaluate(() => ({ editor: !!document.querySelector('[data-testid="assignment-mode-selector"]'), guided: !!document.querySelector('[data-testid="guided-return"]'),
+      focused: !!document.querySelector('[data-focus-applied="true"]'), names: document.body.innerText.includes('Deal B'), chooser: !!document.querySelector('[data-testid="deal-chooser"]') }));
+    check('Q1 choosing Deal B deliberately opens Deal B; the link\'s guided bar and field focus (Deal A\'s) are not carried over to it',
+      q2.editor && q2.names && !q2.chooser && !q2.guided && !q2.focused, q2);
+    // Q2 Seller Call: the guided return names Deal A, and Deal A is unavailable
+    await startAt(back(G, OPP_A));
+    const q3 = await sampleChooser();
+    await shot(page, '07-seller-call-named-deal-unavailable');
+    const q3Bad = q3.seen.filter((x) => x.nextDeal !== null);
+    check('Q2 Seller Call, return link names Deal A, Deal A unavailable: the rep is told, offered Deal B, and NO Next action (for any deal) ever shows (sampled every ~15 ms)',
+      q3.last.requested === 'unavailable' && q3.last.notice && JSON.stringify(q3.last.choices) === '["Deal B"]' && q3Bad.length === 0 && q3.settled.nextDeal === null,
+      { last: q3.last, bad: q3Bad.slice(0, 2), settled: q3.settled });
+    await page.getByTestId('deal-chooser').getByRole('button', { name: 'Deal B', exact: true }).click();
+    const q4 = await settled(OPP_B);
+    check('Q2 choosing Deal B deliberately gives Deal B\'s own Next action', q4 && q4.deal === OPP_B && q4.step !== 'checking', q4);
+    // Q3 nothing named: the single-deal rule is unchanged on both routes
+    await startAt(`/contacts/${G}/underwriting`);
+    await page.waitForTimeout(3000);
+    const q5u = await page.evaluate(() => ({ editor: !!document.querySelector('[data-testid="assignment-mode-selector"]'), chooser: !!document.querySelector('[data-testid="deal-chooser"]'), names: document.body.innerText.includes('Deal B') }));
+    await startAt(`/contacts/${G}/seller-call`);
+    const q5s = await settled(OPP_B);
+    const q5c = await page.evaluate(() => !!document.querySelector('[data-testid="deal-chooser"]'));
+    check('Q3 with NO deal named and one deal left, both routes open that deal directly (single-deal rule unchanged)',
+      q5u.editor && !q5u.chooser && q5u.names && q5s && q5s.deal === OPP_B && !q5c, { q5u, q5s, q5c });
+    fx.state.gone.delete(OPP_A);
 
     // R8 -- another seller
     await start();

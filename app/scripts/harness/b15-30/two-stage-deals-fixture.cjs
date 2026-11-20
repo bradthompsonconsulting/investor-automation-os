@@ -17,6 +17,9 @@
  *          transaction and seller price recorded, NO ARV (no approval note, no ARV value). Expected next step: approve
  *          the ARV (Underwriting).
  *
+ * `state.gone` (a Set of opportunity ids): deals no longer this contact's -- left out of the pipeline list, and their
+ * own read answers 404. B15-30 R1 uses it for "the link names Deal A and A is unavailable".
+ *
  * Note writes (the override) and the Assignment Mode write are applied in memory and visible on the next read. Every
  * other write is refused (409 not_sent). Nothing leaves the machine. Deterministic seed timestamps (2026-09-30Z).
  */
@@ -100,7 +103,7 @@ function twoStageDeals() {
           [O]: [{ id: 'o-seed', body: 'Seed note for Other', dateAdded: '2026-09-30T12:00:00.000Z' }, ...dealNotes(OPP_O, 'do', { transaction: false })],
           [V]: [{ id: 'v-seed', body: 'Seed note for Arv', dateAdded: '2026-09-30T12:00:00.000Z' }, ...dealNotes(OPP_V, 'dv', { arv: false })],
         },
-        modes: {}, created: 0, writes: [],
+        modes: {}, created: 0, writes: [], gone: new Set(),
       };
     },
     get state() { return state; },
@@ -125,8 +128,8 @@ function twoStageDeals() {
         case 'detail': return SELLERS[req.contact] ? ok({ contact: { ...contact(req.contact), ...ADDRESS, customFields: [] } }) : { status: 404, body: { error: 'fixture: unknown contact' } };
         case 'row': return SELLERS[req.contact] ? ok({ ...contact(req.contact), tags: [] }) : { status: 404, body: { error: 'fixture: unknown contact' } };
         case 'opp-read':
-          return CONTACT_OF[req.target] ? ok({ opportunity: { id: req.target, contactId: CONTACT_OF[req.target], customFields: oppFields(req.target, true) } }) : { status: 404, body: { error: 'fixture: unknown opportunity' } };
-        case 'ghl-opportunities': return ok({ pipelineId: 'fixture-pipeline', stages: [], opportunities: Object.values(SELLERS).flatMap((s) => s.deals.map(([id, name]) => row(id, name))) });
+          return CONTACT_OF[req.target] && !state.gone.has(req.target) ? ok({ opportunity: { id: req.target, contactId: CONTACT_OF[req.target], customFields: oppFields(req.target, true) } }) : { status: 404, body: { error: 'fixture: unknown opportunity' } };
+        case 'ghl-opportunities': return ok({ pipelineId: 'fixture-pipeline', stages: [], opportunities: Object.values(SELLERS).flatMap((s) => s.deals.filter(([id]) => !state.gone.has(id)).map(([id, name]) => row(id, name))) });
         case 'ghl-underwriting-policy': return ok({ values: POLICY_VALUES });
         case 'ghl-contact-conversations': return ok({ messages: [], conversations: [] });
         case 'defs': return ok({ customFields: [] });

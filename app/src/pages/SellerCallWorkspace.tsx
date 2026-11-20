@@ -21,7 +21,7 @@ import {
 } from "../lib/underwriting/resolver";
 import { computeUnderwriting } from "../lib/underwriting/compute";
 import { toViewModel, type ScreenState, type SelectedOpportunity } from "../lib/underwriting/view-model";
-import { opportunitiesForContact, opportunityCandidates, selectOpportunity } from "../lib/underwriting/selectOpportunity";
+import { opportunitiesForContact, opportunityCandidates } from "../lib/underwriting/selectOpportunity";
 import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
 import type { AssignmentResolution, UnderwritingResult, UnderwritingInputs } from "../lib/underwriting/types";
 import { computeBoard8Economics, computeExpectedSpread, type Board8Economics, type ExpectedSpread } from "../lib/underwriting/board8-economics";
@@ -87,6 +87,7 @@ import { beginReservation, reconcileReservation, readReservationStatus, newReque
 import { AppWriteSignInRequired } from "../lib/app-write-session";
 import { nextDealStep, openStepInstruction, type NextDealStep } from "../lib/deal-next-step";
 import DealNextStepPanel from "../components/DealNextStepPanel";
+import { resolveRequestedDeal, requestedDealNotice } from "../lib/requested-deal";
 import "./SellerCallWorkspace.css";
 
 /**
@@ -878,10 +879,15 @@ export default function SellerCallWorkspace() {
   const passCallbackKnown = passCallback !== "unknown";
 
   const candidates: SelectedOpportunity[] = useMemo(() => opportunityCandidates(opps), [opps]);
-  const selected: SelectedOpportunity | null = useMemo(
-    () => selectOpportunity(candidates, chosenId),
-    [candidates, chosenId],
+  /* B15-30 R1: a deal named by the link (the guided return from Underwriting) is opened exactly, or the rep is told it
+     is unavailable and chooses (lib/requested-deal.ts); nothing named keeps selectOpportunity's single-deal rule.
+     "Loaded" means loaded for THIS contact: until then the page may still hold the previous contact's deals. */
+  const requestedDeal = useMemo(
+    () => resolveRequestedDeal(candidates, chosenId, dealParam, loadCompleteFor === contactId),
+    [candidates, chosenId, dealParam, loadCompleteFor, contactId],
   );
+  const selected: SelectedOpportunity | null = requestedDeal.selected;
+  const dealNotice = requestedDealNotice(requestedDeal.requested);
 
   const pipeline = useMemo(() => {
     if (!contact || !opps || !policyValues || !selected) {
@@ -2911,12 +2917,12 @@ export default function SellerCallWorkspace() {
       {screen.state === "awaiting_selection" ? (
         <div>
           <Notice
-            tone="info"
-            title="Select the deal for this call"
-            body="This contact holds more than one opportunity. IAOS does not assume the first one is the deal."
+            tone={dealNotice && requestedDeal.requested === "unavailable" ? "warn" : "info"}
+            title={dealNotice ? dealNotice.title : "Select the deal for this call"}
+            body={dealNotice ? dealNotice.body : "This contact holds more than one opportunity. IAOS does not assume the first one is the deal."}
           />
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" }}>
-            {screen.candidates.map((c) => (
+          <div data-testid="deal-chooser" data-requested={requestedDeal.requested} style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" }}>
+            {requestedDeal.requested === "pending" ? null : screen.candidates.map((c) => (
               <button
                 key={c.id}
                 onClick={() => setChosenId(c.id)}

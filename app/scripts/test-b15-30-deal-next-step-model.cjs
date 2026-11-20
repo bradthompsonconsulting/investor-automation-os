@@ -13,6 +13,8 @@
  *   M8  missing Investor Policy values: an honest GHL step with no IAOS link; PRELIMINARY economics too
  *   M9  a repair total on the deal's own Opportunity completes repairs even while readiness reads repairs UNKNOWN
  *   M10 every label names its destination
+ *   M12 a deal NAMED by a link opens exactly or reads "unavailable" (nothing selected); pending until loaded; a
+ *       deliberate choice and the no-deal-named single-deal rule are unchanged (Bones R1)
  *   M11 one consistent instruction: where Offer Ready would show, an open input step gives the Next action's own reason
  *       and label; only the offer review leaves Offer Ready; loading gives the checking message
  */
@@ -108,7 +110,25 @@ const i11c = M.openStepInstruction(loading);
 check('M11 override + repairs missing: the instruction is the Next action\'s own reason and label; at the offer review there is none (Offer Ready stands); loading says checking',
   i11a === `${M.nextDealStep(o3a).step.reason} Next: enter Estimated Repairs (Underwriting).` && i11b === null && i11c === loading.message, { i11a, i11b, i11c });
 
-const FLOOR = 17;
+// M12 a deal NAMED by a link (Bones R1, 2026-11-20): lib/requested-deal.ts
+const RD = require(path.join(APP, 'src/lib/requested-deal.ts'));
+const dA = { id: 'deal-a', name: 'Deal A' }, dB = { id: 'deal-b', name: 'Deal B' };
+const rUnavail = RD.resolveRequestedDeal([dB], 'deal-a', 'deal-a', true);
+check('M12 the link names Deal A and only Deal B remains: NOTHING is selected and the request reads "unavailable" (never the other deal)',
+  rUnavail.selected === null && rUnavail.requested === 'unavailable', rUnavail);
+const rPending = RD.resolveRequestedDeal([dB], 'deal-a', 'deal-a', false);
+const rFound = RD.resolveRequestedDeal([dA, dB], 'deal-a', 'deal-a', true);
+check('M12 named and not yet loaded for this contact: "pending", nothing selected; named and present: exactly that deal',
+  rPending.selected === null && rPending.requested === 'pending' && rFound.selected === dA && rFound.requested === 'found', { rPending, rFound });
+const rChosen = RD.resolveRequestedDeal([dB], 'deal-b', 'deal-a', true);
+const rNone1 = RD.resolveRequestedDeal([dB], null, null, true);
+const rNone2 = RD.resolveRequestedDeal([dA, dB], null, null, true);
+check('M12 after a deliberate choice the chosen deal opens; with NO deal named the single-deal rule is unchanged (one deal opens, two need a choice)',
+  rChosen.selected === dB && rChosen.requested === 'none' && rNone1.selected === dB && rNone2.selected === null, { rChosen, rNone1, rNone2 });
+check('M12 the notice says the named deal is not available and that no other deal was opened in its place',
+  /not available/i.test(RD.requestedDealNotice('unavailable').title) && /has not opened another one/i.test(RD.requestedDealNotice('unavailable').body) && RD.requestedDealNotice('none') === null);
+
+const FLOOR = 21;
 console.log(`\nB15-30 deal next-step model: ${checks - failures}/${checks} checks passed`);
 if (checks < FLOOR) { console.log(`FAIL  only ${checks} checks ran (floor ${FLOOR})`); process.exit(1); }
 process.exit(failures === 0 ? 0 : 1);
