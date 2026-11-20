@@ -375,6 +375,12 @@ jobs:
         run: node app/scripts/test-wholesaler-net-proceeds.cjs
       - name: Count labels and accounting (INV-128, B15-19)
         run: node app/scripts/test-b15-19-count-accounting.cjs
+      # The real-page suites (Seller Call, Contacts, Pipeline, Mailers, shell labels, Lead Queue) need Chromium.
+      # Installed before the FIRST suite that launches it (B15-19 Lead Queue, next step).
+      # Not retried: a failure is reported as it happened. The Pipeline suite prints its startup
+      # timings and on failure dumps the browser console, page errors, failed requests and the Vite log.
+      - name: Install Chromium for the real-page suites (Seller Call AirDroid, Contacts, Pipeline, Mailers, shell labels)
+        run: pnpm --dir app exec playwright install --with-deps chromium
       - name: Lead Queue sentence, no "Showing X of Y", scroll instruction only on real overflow (INV-128, B15-19) — 25 checks
         run: node app/scripts/test-b15-19-lead-queue-showing.cjs
       - name: Contacts stage and last call attempt columns (INV-129, B15-20)
@@ -401,11 +407,6 @@ jobs:
       - name: Repair save whole-save deadline (B15-26 B1, r4; pinned SDK) — 60 offline checks
         run: node app/scripts/test-repair-save-deadline.cjs
 
-      # The real-page suites (Seller Call, Contacts, Pipeline, Mailers, shell labels) need Chromium.
-      # Not retried: a failure is reported as it happened. The Pipeline suite prints its startup
-      # timings and on failure dumps the browser console, page errors, failed requests and the Vite log.
-      - name: Install Chromium for the real-page suites (Seller Call AirDroid, Contacts, Pipeline, Mailers, shell labels)
-        run: pnpm --dir app exec playwright install --with-deps chromium
       - name: Seller Call AirDroid UI checks
         run: node app/scripts/test-seller-call-airdroid.cjs
       - name: Contacts search matches the Property Address, real page and stylesheet (INV-111, B15-11)
