@@ -699,7 +699,7 @@ function RepairEstimator({ opportunityId, onPersisted }: {
     approval.kind === "approved" && approval.revision === revision && approval.total === total;
 
   return (
-    <div data-testid="underwriting-repair-estimator" style={{ marginTop: "22px" }}>
+    <div style={{ marginTop: "22px" }}>
       <div style={{ fontSize: "11px", color: "#475569", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "10px" }}>
         Repair estimate — seller call
       </div>
@@ -1055,12 +1055,16 @@ export default function UnderwritingWorkspace() {
      submitted under the new one. Nothing is derived from a saved total. A save
      already dispatched is not cancelled; its late result lands on the
      unmounted estimator and changes nothing on screen. */
+  /* B15-30: the wrapper carries the guided step's focus target, so RepairEstimator itself stays byte-identical
+     (B15-22 S3 pin). */
   const repairEstimatorFor = (opportunityId: string) => (contact?.id === contactId ? (
-    <RepairEstimator
-      key={opportunityId}
-      opportunityId={opportunityId}
-      onPersisted={() => setReloadTick((t) => t + 1)}
-    />
+    <div data-testid="underwriting-repair-estimator">
+      <RepairEstimator
+        key={opportunityId}
+        opportunityId={opportunityId}
+        onPersisted={() => setReloadTick((t) => t + 1)}
+      />
+    </div>
   ) : null);
 
   /* B15-22: the Seller MAO Approve last saved -- the selected Opportunity's
