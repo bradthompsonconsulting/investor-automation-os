@@ -4,7 +4,7 @@ import { isLifecycleBlur } from "../lib/lifecycle-blur";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { formatPhone } from "../lib/format";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home, AlertTriangle } from "lucide-react";
 import { ghl, type ContactDetail } from "../lib/ghl";
@@ -21,7 +21,7 @@ import {
 } from "../lib/underwriting/resolver";
 import { computeUnderwriting } from "../lib/underwriting/compute";
 import { toViewModel, type ScreenState, type SelectedOpportunity } from "../lib/underwriting/view-model";
-import { opportunitiesForContact, opportunityCandidates, selectOpportunity } from "../lib/underwriting/selectOpportunity";
+import { opportunitiesForContact, opportunityCandidates } from "../lib/underwriting/selectOpportunity";
 import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
 import type { AssignmentResolution, UnderwritingResult, UnderwritingInputs } from "../lib/underwriting/types";
 import { computeBoard8Economics, computeExpectedSpread, type Board8Economics, type ExpectedSpread } from "../lib/underwriting/board8-economics";
@@ -85,6 +85,9 @@ import { runConfirmAcceptWrites, confirmAcceptOffered, recoverLastCallAttempt } 
 import { createOfferSaveCoordinator, classifyOfferWriteError, OfferSaveBlocked, UNRESOLVED_ACCEPT_MESSAGE, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
 import { beginReservation, reconcileReservation, readReservationStatus, newRequestIds, RESERVATION_FAILED_MESSAGE } from "../lib/current-offer-barrier-client";
 import { AppWriteSignInRequired } from "../lib/app-write-session";
+import { nextDealStep, openStepInstruction, type NextDealStep } from "../lib/deal-next-step";
+import DealNextStepPanel from "../components/DealNextStepPanel";
+import { resolveRequestedDeal, requestedDealNotice } from "../lib/requested-deal";
 import "./SellerCallWorkspace.css";
 
 /**
@@ -600,7 +603,12 @@ export default function SellerCallWorkspace() {
      those updates into one render. */
   const [loadCompleteFor, setLoadCompleteFor] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [chosenId, setChosenId] = useState<string | null>(null);
+  /* B15-30: `?deal=<opportunityId>` (the guided return from Underwriting) reopens that deal -- only when it is one of
+     this contact's deals: selectOpportunity returns null for anything else, so the picker shows. */
+  const [searchParams] = useSearchParams();
+  const dealParam = searchParams.get("deal");
+  const [chosenId, setChosenId] = useState<string | null>(() => dealParam);
+  useEffect(() => { if (dealParam !== null) setChosenId(dealParam); }, [dealParam]);
 
   /* B7-02 — Get Comps handoff state. SESSION-ONLY, same as
      ContactWorkspace.tsx's own copy: no note, no field, nothing persisted.
@@ -871,10 +879,15 @@ export default function SellerCallWorkspace() {
   const passCallbackKnown = passCallback !== "unknown";
 
   const candidates: SelectedOpportunity[] = useMemo(() => opportunityCandidates(opps), [opps]);
-  const selected: SelectedOpportunity | null = useMemo(
-    () => selectOpportunity(candidates, chosenId),
-    [candidates, chosenId],
+  /* B15-30 R1: a deal named by the link (the guided return from Underwriting) is opened exactly, or the rep is told it
+     is unavailable and chooses (lib/requested-deal.ts); nothing named keeps selectOpportunity's single-deal rule.
+     "Loaded" means loaded for THIS contact: until then the page may still hold the previous contact's deals. */
+  const requestedDeal = useMemo(
+    () => resolveRequestedDeal(candidates, chosenId, dealParam, loadCompleteFor === contactId),
+    [candidates, chosenId, dealParam, loadCompleteFor, contactId],
   );
+  const selected: SelectedOpportunity | null = requestedDeal.selected;
+  const dealNotice = requestedDealNotice(requestedDeal.requested);
 
   const pipeline = useMemo(() => {
     if (!contact || !opps || !policyValues || !selected) {
@@ -2008,6 +2021,28 @@ export default function SellerCallWorkspace() {
      Offer keeps its own deliberate save (Jess, 2026-10-10). */
   const sellerLoading = (screen.state === "resolved" || screen.state === "unresolved") && writeTarget === null;
 
+  /* B15-30 / INV-140 -- the selected deal's next unfinished step, derived fresh from the records already read (no new
+     read, nothing written). The deal's own Opportunity says whether a repair total and an Assignment Mode are recorded
+     (the same raw fields the resolver above reads). Until THIS route's deal is loaded (writeTarget) the step is
+     "checking"; a failed read is "unreadable" -- never a skipped step. */
+  const selectedDealFields = useMemo((): { ok: true; repairs: boolean; assignmentMode: boolean } | { ok: false } | null => {
+    if (!opps || !selected) return null;
+    const opp = opps.find((o) => o.id === selected.id);
+    if (!opp) return null;
+    try {
+      const v = parseOpportunityValues(opp.customFields, OPP_IDS);
+      return { ok: true, repairs: v.repairs.kind === "value", assignmentMode: v.assignmentMode.kind === "value" };
+    } catch { return { ok: false }; }
+  }, [opps, selected]);
+  const nextStep: NextDealStep = useMemo(() => nextDealStep({
+    records: fetchError !== null || (selectedDealFields !== null && !selectedDealFields.ok) ? "unreadable"
+      : writeTarget === null || sellerLoading || selectedDealFields === null ? "loading" : "ready",
+    readiness: writeTarget !== null && !sellerLoading ? readiness : null,
+    economics: writeTarget !== null && !sellerLoading ? board8 : null,
+    dealRepairsRecorded: selectedDealFields && selectedDealFields.ok ? selectedDealFields.repairs : null,
+    dealAssignmentModeRecorded: selectedDealFields && selectedDealFields.ok ? selectedDealFields.assignmentMode : null,
+  }), [fetchError, selectedDealFields, writeTarget, sellerLoading, readiness, board8]);
+
   /* Seller Position's durable value: the newer of its own ledger entry and the
      latest outcome record's snapshot (outcomes recorded before the ledger
      existed). `null` means none, or cleared. */
@@ -2882,12 +2917,12 @@ export default function SellerCallWorkspace() {
       {screen.state === "awaiting_selection" ? (
         <div>
           <Notice
-            tone="info"
-            title="Select the deal for this call"
-            body="This contact holds more than one opportunity. IAOS does not assume the first one is the deal."
+            tone={dealNotice && requestedDeal.requested === "unavailable" ? "warn" : "info"}
+            title={dealNotice ? dealNotice.title : "Select the deal for this call"}
+            body={dealNotice ? dealNotice.body : "This contact holds more than one opportunity. IAOS does not assume the first one is the deal."}
           />
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" }}>
-            {screen.candidates.map((c) => (
+          <div data-testid="deal-chooser" data-requested={requestedDeal.requested} style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" }}>
+            {requestedDeal.requested === "pending" ? null : screen.candidates.map((c) => (
               <button
                 key={c.id}
                 onClick={() => setChosenId(c.id)}
@@ -2949,6 +2984,14 @@ export default function SellerCallWorkspace() {
                   </div>
                 ) : null}
                 {readiness ? <ReadinessBadge readiness={readiness} compact /> : null}
+                {/* B15-30 / INV-140 (Captain REVISE 2026-11-19) -- the ONE Next action for the selected deal, in the
+                    sticky bar so it is visible without scrolling; ReadinessBadge above is unchanged. While another
+                    seller's deal is still the "selected" one (this route's seller still loading), it names no deal:
+                    the step is "checking" and it must not point at the previous seller's deal. */}
+                {selected ? (
+                  <DealNextStepPanel next={nextStep} contactId={contactId}
+                    dealId={writeTarget !== null && !sellerLoading && writeTarget.opportunityId === selected.id ? selected.id : null} />
+                ) : null}
               </div>
               <div style={{ flex: "0 0 auto", paddingTop: "10px", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" }}>
                 <div ref={setCompactCallSlot} data-testid="seller-call-compact-call-slot" />
@@ -3698,6 +3741,13 @@ export default function SellerCallWorkspace() {
             {nextBestQuestion === null ? (
               <div style={{ fontSize: "14px", color: "#64748B", lineHeight: 1.6 }}>
                 Underwriting must resolve before a question can be set.
+              </div>
+            ) : nextBestQuestion.kind === "offer_ready" && openStepInstruction(nextStep) !== null ? (
+              /* B15-30 (Captain REVISE 2026-11-19): one consistent instruction. Effective Offer Ready here can come
+                 from an override while an input is still missing; the Next action's own step is shown instead of
+                 "move to presenting the offer". Readiness and the offer approval rules are unchanged. */
+              <div data-testid="next-best-question-open-step" style={{ fontSize: "15px", color: "#F59E0B", fontWeight: 600, lineHeight: 1.6 }}>
+                {openStepInstruction(nextStep)}
               </div>
             ) : nextBestQuestion.kind === "offer_ready" ? (
               <div style={{ fontSize: "16px", color: "#22C55E", fontWeight: 700, lineHeight: 1.6 }}>

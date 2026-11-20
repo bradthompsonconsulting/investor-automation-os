@@ -2,7 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import RefreshReadError from "../components/RefreshReadError";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
+import { useFocusParam } from "../lib/focus-target";
+import { STEP_TARGET, STEP_FOCUS_CONTROL, UNDERWRITING_STEP_ACTION, type DealStepId } from "../lib/deal-next-step";
+import { GuidedReturnBar } from "../components/DealNextStepPanel";
+import { resolveRequestedDeal, requestedDealNotice } from "../lib/requested-deal";
 import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Check, Loader2 } from "lucide-react";
 import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
@@ -21,7 +25,7 @@ import { toViewModel, type ApproveState, type ScreenState, type SelectedOpportun
    answer "which opportunity is this deal" with the same code, not a copy of it.
    Behaviour here is unchanged: these three call sites replace inline logic with
    calls to the identical logic. */
-import { opportunitiesForContact, opportunityCandidates, selectOpportunity } from "../lib/underwriting/selectOpportunity";
+import { opportunitiesForContact, opportunityCandidates } from "../lib/underwriting/selectOpportunity";
 import { OPTION_BY_MODE, ASSIGNMENT_MODE_OPTIONS } from "../lib/underwriting/resolver-types";
 import type { DealFacts, PolicyParseIssue } from "../lib/underwriting/resolver-types";
 import type { AssignmentResolution, UnderwritingResult } from "../lib/underwriting/types";
@@ -931,7 +935,14 @@ export default function UnderwritingWorkspace() {
   const [opps, setOpps] = useState<OpportunityRow[] | null>(null);
   const [policyValues, setPolicyValues] = useState<{ id: string; value: string }[] | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [chosenId, setChosenId] = useState<string | null>(null);
+  /* B15-30 / INV-140: a guided step from Seller Call opens THIS deal (`?deal=<opportunityId>`, preselected only when it
+     is one of this contact's deals -- selectOpportunity returns null for anything else, so the picker shows) and the
+     exact field (`?focus=<step>`). */
+  const [searchParams] = useSearchParams();
+  const dealParam = searchParams.get("deal");
+  const guidedAction = UNDERWRITING_STEP_ACTION[(searchParams.get("focus") ?? "") as DealStepId] ?? null;
+  const [chosenId, setChosenId] = useState<string | null>(() => dealParam);
+  useEffect(() => { if (dealParam !== null) setChosenId(dealParam); }, [dealParam]);
 
   /* PB-D59. The Approve attempt's state, held here because the view model
      owns the RESULT and never the call -- the page performs the write and
@@ -1000,10 +1011,19 @@ export default function UnderwritingWorkspace() {
    * effect so a one-item selector never flashes. More than one requires an
    * explicit choice — PB-D55 forbids assuming the first is the deal.
    */
-  const selected: SelectedOpportunity | null = useMemo(
-    () => selectOpportunity(candidates, chosenId),
-    [candidates, chosenId],
+  /* B15-30 R1: a deal named by the link is opened exactly, or the rep is told it is unavailable and chooses
+     (lib/requested-deal.ts); nothing named keeps selectOpportunity's single-deal rule. */
+  const requestedDeal = useMemo(
+    () => resolveRequestedDeal(candidates, chosenId, dealParam, opps !== null && contact?.id === contactId),
+    [candidates, chosenId, dealParam, opps, contact, contactId],
   );
+  const selected: SelectedOpportunity | null = requestedDeal.selected;
+  const dealNotice = requestedDealNotice(requestedDeal.requested);
+  /* The guided field and return bar belong to the deal the link named -- never to one chosen in its place. */
+  const guidedForThisDeal = dealParam === null || selected?.id === dealParam;
+  useFocusParam(guidedForThisDeal
+    ? { repairs: { testId: STEP_TARGET.repairs, prefer: STEP_FOCUS_CONTROL.repairs }, arv: STEP_TARGET.arv, assignment_mode: STEP_TARGET.assignment_mode }
+    : {});
 
   const pipeline = useMemo(() => {
     if (!contact || !opps || !policyValues || !selected) {
@@ -1048,12 +1068,16 @@ export default function UnderwritingWorkspace() {
      submitted under the new one. Nothing is derived from a saved total. A save
      already dispatched is not cancelled; its late result lands on the
      unmounted estimator and changes nothing on screen. */
+  /* B15-30: the wrapper carries the guided step's focus target, so RepairEstimator itself stays byte-identical
+     (B15-22 S3 pin). */
   const repairEstimatorFor = (opportunityId: string) => (contact?.id === contactId ? (
-    <RepairEstimator
-      key={opportunityId}
-      opportunityId={opportunityId}
-      onPersisted={() => setReloadTick((t) => t + 1)}
-    />
+    <div data-testid="underwriting-repair-estimator">
+      <RepairEstimator
+        key={opportunityId}
+        opportunityId={opportunityId}
+        onPersisted={() => setReloadTick((t) => t + 1)}
+      />
+    </div>
   ) : null);
 
   /* B15-22: the Seller MAO Approve last saved -- the selected Opportunity's
@@ -1247,6 +1271,11 @@ export default function UnderwritingWorkspace() {
         </div>
       </div>
 
+      {/* B15-30: the guided return to Seller Call, on this deal, when Next opened this page. */}
+      {guidedAction && guidedForThisDeal && (screen.state === "resolved" || screen.state === "unresolved" || screen.state === "configuration_error") ? (
+        <GuidedReturnBar contactId={contactId} dealId={screen.opportunity.id} dealName={screen.opportunity.name} action={guidedAction} />
+      ) : null}
+
       {/* B7-07 evidence workspace plus INV-25's bounded persistence boundary.
           Comp detail stays session-only; explicit approval writes the selected
           Opportunity ARV, then appends its Contact-note ledger. */}
@@ -1279,12 +1308,12 @@ export default function UnderwritingWorkspace() {
       {screen.state === "awaiting_selection" ? (
         <div>
           <Notice
-            tone="info"
-            title="Select the deal to underwrite"
-            body="This contact holds more than one opportunity. IAOS does not assume the first one is the deal."
+            tone={dealNotice && requestedDeal.requested === "unavailable" ? "warn" : "info"}
+            title={dealNotice ? dealNotice.title : "Select the deal to underwrite"}
+            body={dealNotice ? dealNotice.body : "This contact holds more than one opportunity. IAOS does not assume the first one is the deal."}
           />
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" }}>
-            {screen.candidates.map((c) => (
+          <div data-testid="deal-chooser" data-requested={requestedDeal.requested} style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" }}>
+            {requestedDeal.requested === "pending" ? null : screen.candidates.map((c) => (
               <button
                 key={c.id}
                 onClick={() => setChosenId(c.id)}
