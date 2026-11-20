@@ -172,8 +172,9 @@ async function main() {
     await go('contactId=c-kay');
     const linked = { arv: await val('deal-calc-arv-input'), rep: await val('deal-calc-repairs-quick-input'), test: await val('deal-calc-test-price-input'),
       arvState: await txt('deal-calc-draft-arv'), repState: await txt('deal-calc-draft-repairsQuick'), deal: await txt('deal-calc-deal-name'), status: await status(), note: await txt('deal-calc-draft-restored') };
-    check('a linked deal starts apart from scratch work; the contact seeds show as From the linked contact in GHL, not as drafts',
-      linked.arv === '310000' && linked.rep === '20000' && linked.test === '' && linked.arvState === 'From the linked contact in GHL' && linked.repState === 'From the linked contact in GHL'
+    /* B15-22 ARV source (CAPTAIN GO 2026-11-07): ARV names its source; this fixture's deals carry no ARV, so it is the contact's. */
+    check('a linked deal starts apart from scratch work; the contact seeds show as GHL values (ARV and Quick Repairs: On the contact in GHL), not as drafts',
+      linked.arv === '310000' && linked.rep === '20000' && linked.test === '' && linked.arvState === 'On the contact in GHL' && linked.repState === 'On the contact in GHL'
       && linked.deal === 'Deal: Kay -- 2623 Greenway' && linked.status === 'Figures you change here are kept in this browser only. Not saved to GHL.' && linked.note === null, linked);
     await T('deal-calc-test-price-input').fill('200000');
     await T('deal-calc-arv-input').fill('305000');
@@ -209,7 +210,7 @@ async function main() {
     await go('contactId=c-kay');
     const usedReload = { rep: await val('deal-calc-repairs-quick-input'), state: await txt('deal-calc-draft-repairsQuick'), arv: await val('deal-calc-arv-input') };
     check('Use GHL takes the contact\'s value for that field only (now From GHL), and the other kept figures stay, through reload',
-      repConflict === 'GHL now: 26000 (changed since your draft)' && [usedNow, usedReload].every((u) => u.rep === '26000' && u.state === 'From the linked contact in GHL' && u.arv === '305000'), { repConflict, usedNow, usedReload });
+      repConflict === 'GHL now: 26000 (changed since your draft)' && [usedNow, usedReload].every((u) => u.rep === '26000' && u.state === 'On the contact in GHL' && u.arv === '305000'), { repConflict, usedNow, usedReload });
 
     fixture.contacts['c-kay'].arv = 'not a number';
     await go('contactId=c-kay');
