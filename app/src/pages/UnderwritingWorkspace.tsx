@@ -4,7 +4,8 @@ import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useFocusParam } from "../lib/focus-target";
-import { STEP_TARGET } from "../lib/deal-next-step";
+import { STEP_TARGET, STEP_FOCUS_CONTROL, UNDERWRITING_STEP_ACTION, type DealStepId } from "../lib/deal-next-step";
+import { GuidedReturnBar } from "../components/DealNextStepPanel";
 import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Check, Loader2 } from "lucide-react";
 import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
@@ -937,8 +938,11 @@ export default function UnderwritingWorkspace() {
      is one of this contact's deals -- selectOpportunity returns null for anything else, so the picker shows) and the
      exact field (`?focus=<step>`). */
   const [searchParams] = useSearchParams();
-  const [chosenId, setChosenId] = useState<string | null>(() => searchParams.get("deal"));
-  useFocusParam({ repairs: STEP_TARGET.repairs, arv: STEP_TARGET.arv, assignment_mode: STEP_TARGET.assignment_mode });
+  const dealParam = searchParams.get("deal");
+  const guidedAction = UNDERWRITING_STEP_ACTION[(searchParams.get("focus") ?? "") as DealStepId] ?? null;
+  const [chosenId, setChosenId] = useState<string | null>(() => dealParam);
+  useEffect(() => { if (dealParam !== null) setChosenId(dealParam); }, [dealParam]);
+  useFocusParam({ repairs: { testId: STEP_TARGET.repairs, prefer: STEP_FOCUS_CONTROL.repairs }, arv: STEP_TARGET.arv, assignment_mode: STEP_TARGET.assignment_mode });
 
   /* PB-D59. The Approve attempt's state, held here because the view model
      owns the RESULT and never the call -- the page performs the write and
@@ -1257,6 +1261,11 @@ export default function UnderwritingWorkspace() {
             : null}
         </div>
       </div>
+
+      {/* B15-30: the guided return to Seller Call, on this deal, when Next opened this page. */}
+      {guidedAction && (screen.state === "resolved" || screen.state === "unresolved" || screen.state === "configuration_error") ? (
+        <GuidedReturnBar contactId={contactId} dealId={screen.opportunity.id} dealName={screen.opportunity.name} action={guidedAction} />
+      ) : null}
 
       {/* B7-07 evidence workspace plus INV-25's bounded persistence boundary.
           Comp detail stays session-only; explicit approval writes the selected

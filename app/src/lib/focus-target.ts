@@ -12,12 +12,15 @@ import { useSearchParams } from "react-router-dom";
 
 const FOCUSABLE = "input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])";
 
-export function focusTestId(testId: string): boolean {
+/** `prefer`: a selector for the exact control to open inside the target (its first enabled match), when the first
+ *  focusable control is not the field (the repair estimator's first control is the "Not asked" default answer). */
+export function focusTestId(testId: string, prefer?: string): boolean {
   if (!testId) return false;
   const el = document.querySelector<HTMLElement>(`[data-testid="${CSS.escape(testId)}"]`);
   if (!el) return false;
   el.scrollIntoView({ block: "center" });
-  const control = el.matches(FOCUSABLE) ? el : el.querySelector<HTMLElement>(FOCUSABLE);
+  const preferred = prefer ? el.querySelector<HTMLElement>(`${prefer}:not([disabled])`) : null;
+  const control = preferred ?? (el.matches(FOCUSABLE) ? el : el.querySelector<HTMLElement>(FOCUSABLE));
   if (control) control.focus({ preventScroll: true });
   else { if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1"); el.focus({ preventScroll: true }); }
   el.setAttribute("data-focus-applied", "true");
@@ -25,18 +28,20 @@ export function focusTestId(testId: string): boolean {
 }
 
 /** Deep link: `?focus=<key>` focuses `targets[key]` once it renders (up to `timeoutMs`). Unknown keys do nothing. */
-export function useFocusParam(targets: Readonly<Record<string, string>>, timeoutMs = 15000): void {
+export function useFocusParam(targets: Readonly<Record<string, string | { testId: string; prefer?: string }>>, timeoutMs = 15000): void {
   const [params] = useSearchParams();
   const key = params.get("focus");
-  const testId = key && Object.prototype.hasOwnProperty.call(targets, key) ? targets[key] : null;
+  const t = key && Object.prototype.hasOwnProperty.call(targets, key) ? targets[key] : null;
+  const testId = t === null ? null : typeof t === "string" ? t : t.testId;
+  const prefer = t !== null && typeof t !== "string" ? t.prefer : undefined;
   useEffect(() => {
     if (!testId) return;
     let done = false;
-    const tryFocus = () => { if (!done && focusTestId(testId)) { done = true; observer.disconnect(); clearTimeout(timer); } };
+    const tryFocus = () => { if (!done && focusTestId(testId, prefer)) { done = true; observer.disconnect(); clearTimeout(timer); } };
     const observer = new MutationObserver(tryFocus);
     observer.observe(document.body, { childList: true, subtree: true });
     const timer = setTimeout(() => { done = true; observer.disconnect(); }, timeoutMs);
     tryFocus();
     return () => { done = true; observer.disconnect(); clearTimeout(timer); };
-  }, [testId, timeoutMs]);
+  }, [testId, prefer, timeoutMs]);
 }

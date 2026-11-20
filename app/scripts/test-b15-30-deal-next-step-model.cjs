@@ -13,6 +13,8 @@
  *   M8  missing Investor Policy values: an honest GHL step with no IAOS link; PRELIMINARY economics too
  *   M9  a repair total on the deal's own Opportunity completes repairs even while readiness reads repairs UNKNOWN
  *   M10 every label names its destination
+ *   M11 one consistent instruction: where Offer Ready would show, an open input step gives the Next action's own reason
+ *       and label; only the offer review leaves Offer Ready; loading gives the checking message
  */
 'use strict';
 const path = require('node:path');
@@ -99,7 +101,14 @@ const labels = order.map(([, s]) => M.nextDealStep(s).step);
 check('M10 every label names its destination: (Underwriting), (Seller Call) or GHL, matching the destination kind',
   labels.every((s) => (s.destination.kind === 'underwriting' && /\(Underwriting\)$/.test(s.label)) || (s.destination.kind === 'seller_call' && /\(Seller Call\)$/.test(s.label)) || (s.destination.kind === 'ghl' && /in GHL$/.test(s.label))), labels.map((s) => s.label));
 
-const FLOOR = 16;
+// M11 consistent instruction (Captain REVISE 2026-11-19)
+const i11a = M.openStepInstruction(M.nextDealStep(o3a));
+const i11b = M.openStepInstruction(M.nextDealStep(state({ human: HA.over })));
+const i11c = M.openStepInstruction(loading);
+check('M11 override + repairs missing: the instruction is the Next action\'s own reason and label; at the offer review there is none (Offer Ready stands); loading says checking',
+  i11a === `${M.nextDealStep(o3a).step.reason} Next: enter Estimated Repairs (Underwriting).` && i11b === null && i11c === loading.message, { i11a, i11b, i11c });
+
+const FLOOR = 17;
 console.log(`\nB15-30 deal next-step model: ${checks - failures}/${checks} checks passed`);
 if (checks < FLOOR) { console.log(`FAIL  only ${checks} checks ran (floor ${FLOOR})`); process.exit(1); }
 process.exit(failures === 0 ? 0 : 1);

@@ -64,6 +64,12 @@ export const STEP_TARGET: Readonly<Record<DealStepId, string>> = {
   offer_review: "negotiation-panel",
 };
 
+/** The exact control to open inside a target when its first focusable control is not the field. Repairs: the first
+ *  row's Known amount (the first control there is the "Not asked" default answer). */
+export const STEP_FOCUS_CONTROL: Readonly<Partial<Record<DealStepId, string>>> = {
+  repairs: 'input[placeholder="Known amount"]',
+};
+
 const supported = (r: ReadinessResult, c: MaterialCategory) => r.categories[c] === "SUPPORTED";
 
 /** Board 8 inputs beyond ARV, repairs and Assignment Mode that it reports missing (Investor Policy values), or the
@@ -109,6 +115,26 @@ function stepFor(id: DealStepId, state: { readiness: ReadinessResult; economics:
             ? "Every input is recorded and the deal reads Offer Ready. Reviewing and approving the offer is your decision."
             : "Every input is recorded. Offer readiness is not complete yet; reviewing the offer is still your decision." };
   }
+}
+
+/** What the operator does at each Underwriting destination, for the guided bar there ("Guided from Seller Call"). */
+export const UNDERWRITING_STEP_ACTION: Readonly<Partial<Record<DealStepId, string>>> = {
+  repairs: "enter Estimated Repairs",
+  arv: "approve the ARV",
+  assignment_mode: "choose Assignment Mode",
+};
+
+/**
+ * Captain REVISE 2026-11-19: one consistent instruction. Where another Seller Call surface would say "Offer Ready --
+ * move to presenting the offer" (the Next Best Question engine stops at an effective OFFER_READY, which an override
+ * produces), this returns what to show INSTEAD while an input step is still open -- the same reason and label as the
+ * Next action -- or null when the offer review really is next. Display only: readiness, the override and every offer
+ * approval rule are unchanged.
+ */
+export function openStepInstruction(next: NextDealStep): string | null {
+  if (next.kind !== "step") return next.message;
+  if (next.step.id === "offer_review") return null;
+  return `${next.step.reason} ${next.step.label}.`;
 }
 
 /** The next unfinished step for the selected deal, derived fresh from its records. */

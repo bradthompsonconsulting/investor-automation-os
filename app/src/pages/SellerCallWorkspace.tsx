@@ -4,7 +4,7 @@ import { isLifecycleBlur } from "../lib/lifecycle-blur";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { formatPhone } from "../lib/format";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home, AlertTriangle } from "lucide-react";
 import { ghl, type ContactDetail } from "../lib/ghl";
@@ -85,7 +85,7 @@ import { runConfirmAcceptWrites, confirmAcceptOffered, recoverLastCallAttempt } 
 import { createOfferSaveCoordinator, classifyOfferWriteError, OfferSaveBlocked, UNRESOLVED_ACCEPT_MESSAGE, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
 import { beginReservation, reconcileReservation, readReservationStatus, newRequestIds, RESERVATION_FAILED_MESSAGE } from "../lib/current-offer-barrier-client";
 import { AppWriteSignInRequired } from "../lib/app-write-session";
-import { nextDealStep, type NextDealStep } from "../lib/deal-next-step";
+import { nextDealStep, openStepInstruction, type NextDealStep } from "../lib/deal-next-step";
 import DealNextStepPanel from "../components/DealNextStepPanel";
 import "./SellerCallWorkspace.css";
 
@@ -602,7 +602,12 @@ export default function SellerCallWorkspace() {
      those updates into one render. */
   const [loadCompleteFor, setLoadCompleteFor] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [chosenId, setChosenId] = useState<string | null>(null);
+  /* B15-30: `?deal=<opportunityId>` (the guided return from Underwriting) reopens that deal -- only when it is one of
+     this contact's deals: selectOpportunity returns null for anything else, so the picker shows. */
+  const [searchParams] = useSearchParams();
+  const dealParam = searchParams.get("deal");
+  const [chosenId, setChosenId] = useState<string | null>(() => dealParam);
+  useEffect(() => { if (dealParam !== null) setChosenId(dealParam); }, [dealParam]);
 
   /* B7-02 — Get Comps handoff state. SESSION-ONLY, same as
      ContactWorkspace.tsx's own copy: no note, no field, nothing persisted.
@@ -2973,6 +2978,14 @@ export default function SellerCallWorkspace() {
                   </div>
                 ) : null}
                 {readiness ? <ReadinessBadge readiness={readiness} compact /> : null}
+                {/* B15-30 / INV-140 (Captain REVISE 2026-11-19) -- the ONE Next action for the selected deal, in the
+                    sticky bar so it is visible without scrolling; ReadinessBadge above is unchanged. While another
+                    seller's deal is still the "selected" one (this route's seller still loading), it names no deal:
+                    the step is "checking" and it must not point at the previous seller's deal. */}
+                {selected ? (
+                  <DealNextStepPanel next={nextStep} contactId={contactId}
+                    dealId={writeTarget !== null && !sellerLoading && writeTarget.opportunityId === selected.id ? selected.id : null} />
+                ) : null}
               </div>
               <div style={{ flex: "0 0 auto", paddingTop: "10px", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" }}>
                 <div ref={setCompactCallSlot} data-testid="seller-call-compact-call-slot" />
@@ -3016,15 +3029,6 @@ export default function SellerCallWorkspace() {
               keep the conversation alone on screen. */}
           <details open className="seller-call-deal-tools" data-testid="seller-call-deal-tools">
             <summary data-testid="seller-call-deal-tools-summary">Deal tools — readiness decision, negotiation, outcome, contract, underwriting</summary>
-
-            {/* B15-30 / INV-140 -- the one guided step panel for the selected deal (lib/deal-next-step.ts). First in
-                Deal tools, so the conversation still comes first, directly under the strip (Release 15-B layout).
-                While another seller's deal is still the "selected" one (this route's seller still loading), the panel
-                names no deal: the step is "checking" and it must not point at the previous seller's deal. */}
-            {selected ? (
-              <DealNextStepPanel next={nextStep} contactId={contactId}
-                dealId={writeTarget !== null && !sellerLoading && writeTarget.opportunityId === selected.id ? selected.id : null} />
-            ) : null}
 
           {/* B8-13 / INV-68 — Offer Ready's OWN human approval/override,
               distinct from the negotiation above-Max override further
@@ -3728,6 +3732,13 @@ export default function SellerCallWorkspace() {
             {nextBestQuestion === null ? (
               <div style={{ fontSize: "14px", color: "#64748B", lineHeight: 1.6 }}>
                 Underwriting must resolve before a question can be set.
+              </div>
+            ) : nextBestQuestion.kind === "offer_ready" && openStepInstruction(nextStep) !== null ? (
+              /* B15-30 (Captain REVISE 2026-11-19): one consistent instruction. Effective Offer Ready here can come
+                 from an override while an input is still missing; the Next action's own step is shown instead of
+                 "move to presenting the offer". Readiness and the offer approval rules are unchanged. */
+              <div data-testid="next-best-question-open-step" style={{ fontSize: "15px", color: "#F59E0B", fontWeight: 600, lineHeight: 1.6 }}>
+                {openStepInstruction(nextStep)}
               </div>
             ) : nextBestQuestion.kind === "offer_ready" ? (
               <div style={{ fontSize: "16px", color: "#22C55E", fontWeight: 700, lineHeight: 1.6 }}>
