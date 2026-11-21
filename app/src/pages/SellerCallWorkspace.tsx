@@ -2302,7 +2302,8 @@ export default function SellerCallWorkspace() {
     if (raw !== "" && offerSaves.statusFor(offerDraftId.opportunityId ?? null, currentOffer) !== "recorded") {
       store.save({ version: CONTACT_DRAFT_VERSION, identity: offerDraftId, savedAt: new Date().toISOString(), values: { currentOffer: currentOfferInput }, notice: null });
     } else {
-      store.remove(offerDraftId);
+      const kept = store.load(offerDraftId);   // remove only a draft that exists: no storage churn for empty fields
+      if (kept.ok && kept.draft) store.remove(offerDraftId);
     }
   }, [currentOfferInput, currentOffer, offerDraftId, offerStatusTick, offerSaves]);
 
