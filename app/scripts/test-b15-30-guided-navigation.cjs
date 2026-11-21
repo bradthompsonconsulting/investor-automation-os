@@ -27,12 +27,15 @@
  *   P9  the review position belongs to its deal (switch away and back)
  *   P10 a reload of Underwriting's return link resumes the position; Next moves forward from it
  *   D1  an OFFER FIELD DRAFT (Current Offer typed, not saved) + Previous and Next: no write, the draft stays in the field
+ *   B1  Bones's exact path (REVISE 2026-11-21): Deal A, 300000 typed in Current Offer, Previous x3 to Assignment Mode on
+ *       Underwriting, return, Next x3 to the offer: still 300000 (unsaved), zero writes; off Deal B; kept across a reload;
+ *       clearing it removes it
  *   W   ZERO writes in the whole run; nothing left the machine; no page errors
  *
  * NEGATIVE CONTROLS (NAV_MUTATION=..., dev server only; each must exit 1):
  *   agreement_ignored | contract_link_without_deal | previous_enabled_at_first | no_policy_skip | review_not_deal_bound |
  *   return_drops_review | review_focuses_button | review_focuses_checkbox | next_ignores_review | navigation_blur_saves |
- *   review_in_url
+ *   review_in_url | offer_draft_not_kept | offer_draft_shared_across_deals
  */
 'use strict';
 const fs = require('node:fs');
@@ -60,6 +63,8 @@ const MUTATIONS = {
   review_focuses_checkbox: [[FOCUS, ':not([type=checkbox]):not([type=radio])', '']],
   next_ignores_review: [[PAGE, '    onForward: () => goToGuidedStep(navForward),', '    onForward: () => goToGuidedStep(null),']],
   navigation_blur_saves: [[BLUR, '  if (guidedNavigationUntil > Date.now()) { guidedNavigationUntil = 0; return true; }', '']],
+  offer_draft_not_kept: [[PAGE, '      store.save({ version: CONTACT_DRAFT_VERSION, identity: offerDraftId,', '      if (false) store.save({ version: CONTACT_DRAFT_VERSION, identity: offerDraftId,']],
+  offer_draft_shared_across_deals: [[PAGE, 'contactId: writeTarget.contactId, opportunityId: writeTarget.opportunityId };\n      contactDraftKey(id);', 'contactId: writeTarget.contactId, opportunityId: "one-for-every-deal" };\n      contactDraftKey(id);']],
   review_in_url: [[PAGE, '    setReviewPosition(review ? { deal: guidedDealId, step: target.id } : null);', '    setReviewPosition(review ? { deal: guidedDealId, step: target.id } : null);\n    navigate({ search: `?deal=${encodeURIComponent(guidedDealId)}${review ? `&step=${target.id}` : ""}` }, { replace: true });']],
 };
 const MUTATION = process.env.NAV_MUTATION || '';
@@ -68,7 +73,7 @@ for (const [file, from] of MUTATIONS[MUTATION] || []) { const t = fs.readFileSyn
 
 let checks = 0, failures = 0;
 function check(name, ok, detail) { checks += 1; if (!ok) failures += 1; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : ` -- ${JSON.stringify(detail).slice(0, 700)}`}`); }
-const FLOOR = 18;
+const FLOOR = 21;
 const SHOTS = process.env.NAV_SHOTS || '';
 const watchdog = setTimeout(() => { console.error('FAIL  did not finish within 12 minutes'); process.exit(1); }, 12 * 60_000);
 
@@ -198,6 +203,33 @@ async function main() {
     check('D1 with a Current Offer draft (typed, not saved), Previous and Next make NO write and the draft stays in the field',
       nonGets() === before && d1a.offer === '300000' && d1b.offer === '300000' && d1a.reviewing === 'seller_price' && d1b.reviewing === '', { writes: nonGets() - before, d1a: d1a.offer, d1b: d1b.offer });
     await page.getByTestId('negotiation-current-offer-input').fill('');   // clear the offer draft so later leaves don't depend on it
+    await page.waitForTimeout(300);
+
+    // B1 -- Bones's exact path (REVISE on 5ae8883, 2026-11-21): an unsaved $300,000 survives the Underwriting round trip
+    const b1Writes = nonGets();
+    await page.getByTestId('negotiation-current-offer-input').fill('300000');      // typed, NOT saved (no blur, no Enter)
+    await click('deal-previous-step-go'); const b1a = await state();               // -> seller's price (in place)
+    await click('deal-previous-step-go'); const b1b = await state();               // -> transaction (in place)
+    await click('deal-previous-step-go');                                          // -> Assignment Mode on Underwriting
+    const tb = Date.now(); let b1c = await state();
+    while (Date.now() - tb < 30000 && !(b1c.bar && b1c.focused)) { await page.waitForTimeout(150); b1c = await state(); }
+    await page.getByTestId('guided-return-back').click();                         // return to Seller Call
+    const b1d = await settledOn(OPP_A);
+    await click('deal-next-step-go'); await click('deal-next-step-go'); await click('deal-next-step-go');   // Next, Next, Next -> the offer
+    const b1e = await state();
+    check('B1 Bones\'s exact path: Deal A, type 300000 in Current Offer, Previous x3 (seller\'s price, transaction, Assignment Mode on Underwriting), return, Next x3 to the offer -- the field still holds 300000 (an unsaved draft), with ZERO writes',
+      b1a.reviewing === 'seller_price' && b1b.reviewing === 'transaction' && b1c.url === `/contacts/${N}/underwriting?deal=${A}&focus=assignment_mode&step=assignment_mode`
+        && b1d.reviewing === 'assignment_mode' && b1d.offer === '300000' && b1e.reviewing === '' && b1e.next === OFFER && b1e.offer === '300000' && nonGets() === b1Writes,
+      { b1a: b1a.reviewing, b1b: b1b.reviewing, b1c: b1c.url, b1d: { reviewing: b1d.reviewing, offer: b1d.offer }, b1e: { reviewing: b1e.reviewing, offer: b1e.offer }, writes: nonGets() - b1Writes });
+    await shot('07-offer-draft-kept-after-round-trip');
+    await start(SELLER_CALL); await pick('Deal B'); const b1f = await settledOn(OPP_B);
+    await start(SELLER_CALL); await pick('Deal A'); const b1g = await settledOn(OPP_A);
+    check('B1 the $300,000 draft stays off Deal B (its Current Offer is empty) and is still Deal A\'s after a reload; no write',
+      b1f.offer === '' && b1g.offer === '300000' && nonGets() === b1Writes, { dealB: b1f.offer, dealA: b1g.offer, writes: nonGets() - b1Writes });
+    await page.getByTestId('negotiation-current-offer-input').fill('');   // Brad clears it: the draft is removed
+    await page.waitForTimeout(300);
+    await start(SELLER_CALL); await pick('Deal A'); const b1h = await settledOn(OPP_A);
+    check('B1 clearing the field removes the draft (Deal A reopens with an empty Current Offer); still no write', b1h.offer === '' && nonGets() === b1Writes, { offer: b1h.offer });
     // a conversation draft, kept in the browser for this deal
     await page.getByTestId('sc-call-notes').fill('Seller wants a 30-day close; tenant leaves in December.');
     const writes0 = nonGets();

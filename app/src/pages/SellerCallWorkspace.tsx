@@ -9,7 +9,7 @@ import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home, AlertTriangle } from "lucide-react";
 import { ghl, type ContactDetail } from "../lib/ghl";
 import { getRuntimeConfig } from "../../shared/ghl-config";
-import { draftOperator, isUncertainFailure, useRecordDraft } from "../lib/contact-drafts";
+import { draftOperator, isUncertainFailure, useRecordDraft, contactDraftStore, contactDraftKey, CONTACT_DRAFT_VERSION, type ContactDraftIdentity } from "../lib/contact-drafts";
 import { DraftNotice } from "../components/DraftNotice";
 import {
   parsePolicy,
@@ -2268,6 +2268,43 @@ export default function SellerCallWorkspace() {
       setNegotiationOverride({ acknowledgedAboveMax: true, ...decision.restoreOverride });
     }
   }, [loading, currentDealId, resumeSnapshot, latestNegotiationOverrideNote, currentOfferFromOpportunity]);
+
+  /* B15-30 navigation (Bones REVISE on 5ae8883, 2026-11-21): a Current Offer typed and NOT yet saved is a draft of THIS
+     deal (lib/contact-drafts, scope "offer": this browser only, keyed by environment, operator, contact and deal; never
+     sent). Previous / Next to Underwriting and back remounts this page, and the hydration above clears the field and
+     restores the deal's SAVED value -- so the unsaved draft is kept on every change and re-applied once per deal right
+     after hydration (this effect is declared after it, so in the same commit it runs after it). It is removed once that
+     amount is recorded for the deal, or the field is emptied. Restoring never saves: only Brad's own blur or Enter does,
+     exactly as before. Another deal never sees it (its key names the deal). */
+  const offerDraftId = useMemo((): ContactDraftIdentity | null => {
+    if (!writeTarget) return null;
+    try {
+      const id: ContactDraftIdentity = { scope: "offer", env: CONFIG.locationId, operator: draftOperator(), contactId: writeTarget.contactId, opportunityId: writeTarget.opportunityId };
+      contactDraftKey(id);
+      return id;
+    } catch { return null; }
+  }, [writeTarget]);
+  const offerDraftRestoredFor = useRef<string | null>(null);
+  const [offerStatusTick, setOfferStatusTick] = useState(0);
+  useEffect(() => offerSaves.subscribe(() => setOfferStatusTick((t) => t + 1)), [offerSaves]);
+  useEffect(() => {
+    if (!offerDraftId || offerDraftId.opportunityId !== currentDealId || loading) return;
+    const key = contactDraftKey(offerDraftId);
+    if (offerDraftRestoredFor.current === key) return;
+    offerDraftRestoredFor.current = key;
+    const loaded = contactDraftStore().load(offerDraftId);
+    if (loaded.ok && loaded.draft && loaded.draft.values.currentOffer) setCurrentOfferInput(loaded.draft.values.currentOffer);
+  }, [offerDraftId, currentDealId, loading]);
+  useEffect(() => {
+    if (!offerDraftId || offerDraftRestoredFor.current !== contactDraftKey(offerDraftId)) return;   // never before this deal's draft was applied
+    const raw = currentOfferInput.trim();
+    const store = contactDraftStore();
+    if (raw !== "" && offerSaves.statusFor(offerDraftId.opportunityId ?? null, currentOffer) !== "recorded") {
+      store.save({ version: CONTACT_DRAFT_VERSION, identity: offerDraftId, savedAt: new Date().toISOString(), values: { currentOffer: currentOfferInput }, notice: null });
+    } else {
+      store.remove(offerDraftId);
+    }
+  }, [currentOfferInput, currentOffer, offerDraftId, offerStatusTick, offerSaves]);
 
   /* Board 14-13 autosave: when the page starts showing a deal (first load or
      a seller switch), fill Transaction assumptions and Seller price position

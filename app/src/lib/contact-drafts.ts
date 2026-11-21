@@ -29,6 +29,7 @@
  *   calllog   the Contact page call log: result + notes     (per contact)
  *   outcome   Seller Call outcome form: form, Pass reason, Follow-Up time (per deal)
  *   readiness Seller Call readiness decision reason         (per deal)
+ *   offer     Seller Call Current Offer typed and NOT yet saved (per deal; B15-30 navigation, Bones REVISE 2026-11-21)
  *
  * A draft also records what happened to its last save, so it is never lost
  * silently and never sent twice blindly:
@@ -46,7 +47,7 @@ export const CONTACT_DRAFT_PREFIX = "iaos-contact-draft:v1:";
 
 /* B15-04 (Captain GO 2026-11-19): "conversation" -- the Seller Call conversation draft, one serialized value per deal
    (SellerConversation validates it strictly before using it; lib/seller-conversation-draft.ts). */
-export type DraftScope = "note" | "calllog" | "outcome" | "readiness" | "conversation";
+export type DraftScope = "note" | "calllog" | "outcome" | "readiness" | "conversation" | "offer";
 /** Every value a draft of each kind holds (all strings). */
 export const SCOPE_FIELDS: Record<DraftScope, readonly string[]> = {
   note: ["text"],
@@ -54,6 +55,7 @@ export const SCOPE_FIELDS: Record<DraftScope, readonly string[]> = {
   outcome: ["form", "passReason", "followUpAt"],
   readiness: ["reason"],
   conversation: ["v"],
+  offer: ["currentOffer"],
 };
 /** The values that make a draft worth keeping. An empty one is removed (a choice alone is not kept). */
 const CONTENT_FIELDS: Record<DraftScope, readonly string[]> = {
@@ -62,8 +64,9 @@ const CONTENT_FIELDS: Record<DraftScope, readonly string[]> = {
   outcome: ["passReason", "followUpAt"],
   readiness: ["reason"],
   conversation: ["v"],
+  offer: ["currentOffer"],
 };
-const DEAL_SCOPES: ReadonlySet<DraftScope> = new Set<DraftScope>(["outcome", "readiness", "conversation"]);
+const DEAL_SCOPES: ReadonlySet<DraftScope> = new Set<DraftScope>(["outcome", "readiness", "conversation", "offer"]);
 
 export type DraftRecord = { contactId: string; opportunityId?: string };
 export type ContactDraftIdentity = { scope: DraftScope; env: string; operator: string; contactId: string; opportunityId?: string };
