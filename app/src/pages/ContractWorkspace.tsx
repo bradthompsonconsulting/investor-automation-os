@@ -828,7 +828,6 @@ export default function ContractWorkspace() {
   const [searchParams] = useSearchParams();
   const dealParam = searchParams.get("deal");
   const [chosenId, setChosenId] = useState<string | null>(() => dealParam);
-  useEffect(() => { if (dealParam !== null) setChosenId(dealParam); }, [dealParam]);
 
   const [checklistBusy, setChecklistBusy] = useState<ContractReadyItemKey | null>(null);
   const [checklistError, setChecklistError] = useState<string | null>(null);
@@ -894,6 +893,8 @@ export default function ContractWorkspace() {
     return () => { cancelled = true; };
     // Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse.
   }, [contactId, readRecovered]);
+  /* B15-30 navigation: a later `?deal=` (another Contract Ready link while mounted) selects that deal. */
+  useEffect(() => { if (dealParam !== null) setChosenId(dealParam); }, [dealParam]);
 
   const loading = fetchError === null && (contact === null || opps === null || notes === null);
   const candidates = useMemo(() => opportunityCandidates(opps), [opps]);

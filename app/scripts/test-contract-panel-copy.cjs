@@ -59,6 +59,29 @@ check('no old string remains', leftOld.length === 0, leftOld);
 
 // ── 2. Copy only: undoing the table reproduces the base file exactly ────────
 let undone = src;
+/* B15-30 guided navigation (Captain 2026-11-20; later, separately reviewed): ContractWorkspace honours `?deal=` from
+   Seller Call's "Next: open Contract Ready" (lib/requested-deal.ts) -- exactly the 4 hunks of
+   `git diff 53b7298 -- app/src/pages/ContractWorkspace.tsx`. Undone first (newest), new -> old, each exact text
+   expected once (absent -> skipped), so the sha256 below still fails on anything not modelled here. */
+const B15_30_NAV_UNDO = [
+  [
+    "import { useReadRecovered } from \"../components/access-status\";\nimport { UNNAMED_CONTACT, contractTemplateDisplayName, AGREEMENT_REACHED_OPERATOR_MEANING } from \"../lib/operator-display\";\nimport { Link, useParams, useSearchParams } from \"react-router-dom\";\nimport { resolveRequestedDeal, requestedDealNotice } from \"../lib/requested-deal\";\nimport { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ArrowRight } from \"lucide-react\";\nimport { ghl, type ContactDetail, type OpportunityRow } from \"../lib/ghl\";\n",
+    "import { useReadRecovered } from \"../components/access-status\";\nimport { UNNAMED_CONTACT, contractTemplateDisplayName, AGREEMENT_REACHED_OPERATOR_MEANING } from \"../lib/operator-display\";\nimport { Link, useParams } from \"react-router-dom\";\nimport { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ArrowRight } from \"lucide-react\";\nimport { ghl, type ContactDetail, type OpportunityRow } from \"../lib/ghl\";\n"
+  ],
+  [
+    "  const [notes, setNotes] = useState<{ id: string; body: string; dateAdded: string }[] | null>(null);\n  const [fetchError, setFetchError] = useState<string | null>(null);\n  /* B15-30 navigation (Captain 2026-11-20): Seller Call's \"Next: open Contract Ready\" opens THIS deal (`?deal=`) --\n     honoured exactly or reported unavailable, never silently replaced (lib/requested-deal.ts, as B15-30 R1). Nothing\n     named keeps the existing single-deal rule. */\n  const [searchParams] = useSearchParams();\n  const dealParam = searchParams.get(\"deal\");\n  const [chosenId, setChosenId] = useState<string | null>(() => dealParam);\n\n  const [checklistBusy, setChecklistBusy] = useState<ContractReadyItemKey | null>(null);\n",
+    "  const [notes, setNotes] = useState<{ id: string; body: string; dateAdded: string }[] | null>(null);\n  const [fetchError, setFetchError] = useState<string | null>(null);\n  const [chosenId, setChosenId] = useState<string | null>(null);\n\n  const [checklistBusy, setChecklistBusy] = useState<ContractReadyItemKey | null>(null);\n"
+  ],
+  [
+    "    // Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse.\n  }, [contactId, readRecovered]);\n  /* B15-30 navigation: a later `?deal=` (another Contract Ready link while mounted) selects that deal. */\n  useEffect(() => { if (dealParam !== null) setChosenId(dealParam); }, [dealParam]);\n\n  const loading = fetchError === null && (contact === null || opps === null || notes === null);\n  const candidates = useMemo(() => opportunityCandidates(opps), [opps]);\n  const requestedDeal = useMemo(\n    () => resolveRequestedDeal(candidates, chosenId, dealParam, opps !== null && contact?.id === contactId),\n    [candidates, chosenId, dealParam, opps, contact, contactId],\n  );\n  const selected = requestedDeal.selected;\n  const dealNotice = requestedDealNotice(requestedDeal.requested);\n  const propertyAddress = useMemo(() => formatAddress(contact), [contact]);\n\n",
+    "    // Board 15 cleanup: re-read (never remount) when read sign-in returns after a lapse.\n  }, [contactId, readRecovered]);\n\n  const loading = fetchError === null && (contact === null || opps === null || notes === null);\n  const candidates = useMemo(() => opportunityCandidates(opps), [opps]);\n  const selected = useMemo(() => selectOpportunity(candidates, chosenId), [candidates, chosenId]);\n  const propertyAddress = useMemo(() => formatAddress(contact), [contact]);\n\n"
+  ],
+  [
+    "            testId=\"contract-awaiting-selection\"\n            tone=\"info\"\n            title={dealNotice ? dealNotice.title : \"Select the deal\"}\n            body={dealNotice ? dealNotice.body : \"This contact holds more than one opportunity. IAOS does not assume the first one is the deal.\"}\n          />\n          <div data-testid=\"deal-chooser\" data-requested={requestedDeal.requested} style={{ display: \"flex\", flexDirection: \"column\", gap: \"8px\" }}>\n            {requestedDeal.requested === \"pending\" ? null : screen.candidates.map((c) => (\n              <button\n                key={c.id}\n",
+    "            testId=\"contract-awaiting-selection\"\n            tone=\"info\"\n            title=\"Select the deal\"\n            body=\"This contact holds more than one opportunity. IAOS does not assume the first one is the deal.\"\n          />\n          <div style={{ display: \"flex\", flexDirection: \"column\", gap: \"8px\" }}>\n            {screen.candidates.map((c) => (\n              <button\n                key={c.id}\n"
+  ]
+];
+for (const [now, before] of B15_30_NAV_UNDO) if (count(undone, now) === 1) undone = undone.split(now).join(before);
 /* B15-21 / INV-130 (later, separately reviewed; Bones ACCEPT 23d93d6, integrated in c026442): the Contract Workspace
    current-status display -- commits 5deab52, b082897, 0127362, 23d93d6, i.e. exactly the six hunks of
    `git diff c7b09bc c026442 -- app/src/pages/ContractWorkspace.tsx` (+52/-8). Undone first, new -> old, each exact
