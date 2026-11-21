@@ -3,7 +3,8 @@ import RefreshReadError from "../components/RefreshReadError";
 import NoDealYet from "../components/NoDealYet";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT, contractTemplateDisplayName, AGREEMENT_REACHED_OPERATOR_MEANING } from "../lib/operator-display";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
+import { resolveRequestedDeal, requestedDealNotice } from "../lib/requested-deal";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ArrowRight } from "lucide-react";
 import { ghl, type ContactDetail, type OpportunityRow } from "../lib/ghl";
 import {
@@ -821,7 +822,13 @@ export default function ContractWorkspace() {
   const [opps, setOpps] = useState<OpportunityRow[] | null>(null);
   const [notes, setNotes] = useState<{ id: string; body: string; dateAdded: string }[] | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [chosenId, setChosenId] = useState<string | null>(null);
+  /* B15-30 navigation (Captain 2026-11-20): Seller Call's "Next: open Contract Ready" opens THIS deal (`?deal=`) --
+     honoured exactly or reported unavailable, never silently replaced (lib/requested-deal.ts, as B15-30 R1). Nothing
+     named keeps the existing single-deal rule. */
+  const [searchParams] = useSearchParams();
+  const dealParam = searchParams.get("deal");
+  const [chosenId, setChosenId] = useState<string | null>(() => dealParam);
+  useEffect(() => { if (dealParam !== null) setChosenId(dealParam); }, [dealParam]);
 
   const [checklistBusy, setChecklistBusy] = useState<ContractReadyItemKey | null>(null);
   const [checklistError, setChecklistError] = useState<string | null>(null);
@@ -890,7 +897,12 @@ export default function ContractWorkspace() {
 
   const loading = fetchError === null && (contact === null || opps === null || notes === null);
   const candidates = useMemo(() => opportunityCandidates(opps), [opps]);
-  const selected = useMemo(() => selectOpportunity(candidates, chosenId), [candidates, chosenId]);
+  const requestedDeal = useMemo(
+    () => resolveRequestedDeal(candidates, chosenId, dealParam, opps !== null && contact?.id === contactId),
+    [candidates, chosenId, dealParam, opps, contact, contactId],
+  );
+  const selected = requestedDeal.selected;
+  const dealNotice = requestedDealNotice(requestedDeal.requested);
   const propertyAddress = useMemo(() => formatAddress(contact), [contact]);
 
   const screen: ContractScreenState = useMemo(
@@ -2814,11 +2826,11 @@ export default function ContractWorkspace() {
           <Notice
             testId="contract-awaiting-selection"
             tone="info"
-            title="Select the deal"
-            body="This contact holds more than one opportunity. IAOS does not assume the first one is the deal."
+            title={dealNotice ? dealNotice.title : "Select the deal"}
+            body={dealNotice ? dealNotice.body : "This contact holds more than one opportunity. IAOS does not assume the first one is the deal."}
           />
-          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-            {screen.candidates.map((c) => (
+          <div data-testid="deal-chooser" data-requested={requestedDeal.requested} style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {requestedDeal.requested === "pending" ? null : screen.candidates.map((c) => (
               <button
                 key={c.id}
                 onClick={() => setChosenId(c.id)}

@@ -4,7 +4,7 @@ import { isLifecycleBlur } from "../lib/lifecycle-blur";
 import { useReadRecovered } from "../components/access-status";
 import { UNNAMED_CONTACT } from "../lib/operator-display";
 import { formatPhone } from "../lib/format";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import NoDealYet from "../components/NoDealYet";
 import { ArrowLeft, AlertCircle, Loader2, ShieldCheck, ShieldAlert, ShieldQuestion, Copy, ExternalLink, Home, AlertTriangle } from "lucide-react";
 import { ghl, type ContactDetail } from "../lib/ghl";
@@ -85,8 +85,9 @@ import { runConfirmAcceptWrites, confirmAcceptOffered, recoverLastCallAttempt } 
 import { createOfferSaveCoordinator, classifyOfferWriteError, OfferSaveBlocked, UNRESOLVED_ACCEPT_MESSAGE, type OfferSaveCoordinator } from "../lib/current-offer-save-coordinator";
 import { beginReservation, reconcileReservation, readReservationStatus, newRequestIds, RESERVATION_FAILED_MESSAGE } from "../lib/current-offer-barrier-client";
 import { AppWriteSignInRequired } from "../lib/app-write-session";
-import { nextDealStep, openStepInstruction, type NextDealStep } from "../lib/deal-next-step";
-import DealNextStepPanel from "../components/DealNextStepPanel";
+import { nextDealStep, openStepInstruction, dealStepAt, nextGuidedStep, previousGuidedStep, reviewCursor, STEP_TITLE, type DealStepId, type DealStepState, type NextDealStep } from "../lib/deal-next-step";
+import { focusTestId } from "../lib/focus-target";
+import DealNextStepPanel, { type GuidedNav } from "../components/DealNextStepPanel";
 import { resolveRequestedDeal, requestedDealNotice } from "../lib/requested-deal";
 import "./SellerCallWorkspace.css";
 
@@ -606,6 +607,7 @@ export default function SellerCallWorkspace() {
   /* B15-30: `?deal=<opportunityId>` (the guided return from Underwriting) reopens that deal -- only when it is one of
      this contact's deals: selectOpportunity returns null for anything else, so the picker shows. */
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const dealParam = searchParams.get("deal");
   const [chosenId, setChosenId] = useState<string | null>(() => dealParam);
   useEffect(() => { if (dealParam !== null) setChosenId(dealParam); }, [dealParam]);
@@ -2034,14 +2036,66 @@ export default function SellerCallWorkspace() {
       return { ok: true, repairs: v.repairs.kind === "value", assignmentMode: v.assignmentMode.kind === "value" };
     } catch { return { ok: false }; }
   }, [opps, selected]);
-  const nextStep: NextDealStep = useMemo(() => nextDealStep({
+  const stepState: DealStepState = useMemo(() => ({
     records: fetchError !== null || (selectedDealFields !== null && !selectedDealFields.ok) ? "unreadable"
       : writeTarget === null || sellerLoading || selectedDealFields === null ? "loading" : "ready",
     readiness: writeTarget !== null && !sellerLoading ? readiness : null,
     economics: writeTarget !== null && !sellerLoading ? board8 : null,
     dealRepairsRecorded: selectedDealFields && selectedDealFields.ok ? selectedDealFields.repairs : null,
     dealAssignmentModeRecorded: selectedDealFields && selectedDealFields.ok ? selectedDealFields.assignmentMode : null,
-  }), [fetchError, selectedDealFields, writeTarget, sellerLoading, readiness, board8]);
+    /* B15-30 navigation (Captain 2026-11-20, IAOS Test Probe): once THIS deal's latest outcome is an accepted agreement,
+       the guided step is the contract work -- the same accepted outcome and the same agreement-scoped checklist the
+       Contract Ready banner reads (currentContractReadyChecklistForOpportunity), from the notes already read. */
+    agreement: (() => {
+      if (!notes || !(screen.state === "resolved" || screen.state === "unresolved") || latestOutcome?.kind !== "accept" || latestOutcome.snapshot.currentOffer === null) return { kind: "none" as const };
+      const price = latestOutcome.snapshot.currentOffer;
+      const record = currentContractReadyChecklistForOpportunity(notes, screen.opportunity.id, latestOutcome.at, price, formatAddress(contact));
+      const checklistDone = record ? CONTRACT_READY_ITEM_KEYS.filter((k) => record.items[k]).length : 0;
+      const cents = Math.round(price * 100) % 100 !== 0;
+      return { kind: "accepted" as const, checklistDone, checklistTotal: CONTRACT_READY_ITEM_KEYS.length,
+        priceText: price.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: 2 }) };
+    })(),
+  }), [fetchError, selectedDealFields, writeTarget, sellerLoading, readiness, board8, notes, screen, latestOutcome, contact]);
+  const nextStep: NextDealStep = useMemo(() => nextDealStep(stepState), [stepState]);
+
+  /* Previous / Next (Captain 2026-11-20, from Brad's Test walkthrough). The review position belongs to ONE deal and is
+     honoured only for a guided field step BEFORE the next unfinished one; every step is still derived from the records.
+     Moving never writes: it focuses a field in place (page state), or opens the Underwriting deep link with
+     `?deal=&focus=&step=` so Underwriting's return link (and a reload of it) resumes the same position. A step already
+     done is revisited with review focus (a field, never a button); pressing a guided control never blur-saves a draft
+     (lib/lifecycle-blur.ts). */
+  const guidedDealId = writeTarget !== null && !sellerLoading && selected && writeTarget.opportunityId === selected.id ? selected.id : null;
+  /* In-place moves keep the review position in page state, never the URL: a URL change is a router navigation, which
+     the conversation's leave guard would hold behind an "unsaved work" prompt while a draft exists. The URL's
+     `?deal=&step=` (from Underwriting's return link, or a reload of it) only seeds it, for that deal. */
+  const [reviewPosition, setReviewPosition] = useState<{ deal: string; step: string } | null>(() => {
+    const st = searchParams.get("step"); return dealParam && st ? { deal: dealParam, step: st } : null;
+  });
+  const reviewId = guidedDealId !== null && reviewPosition !== null && reviewPosition.deal === guidedDealId ? reviewCursor(nextStep, reviewPosition.step) : null;
+  function goToGuidedStep(id: DealStepId | null) {   // null: the next unfinished (live) step
+    if (guidedDealId === null || nextStep.kind !== "step") return;
+    const target = id === null ? nextStep.step : dealStepAt(stepState, id);
+    if (!target) return;
+    const review = id !== null;
+    if (target.destination.kind === "underwriting") {
+      navigate(`/contacts/${encodeURIComponent(contactId)}/underwriting?deal=${encodeURIComponent(guidedDealId)}&focus=${encodeURIComponent(target.id)}${review ? `&step=${encodeURIComponent(target.id)}` : ""}`);
+      return;
+    }
+    setReviewPosition(review ? { deal: guidedDealId, step: target.id } : null);
+    if (target.destination.kind === "seller_call") {
+      const where = target.destination.target;
+      requestAnimationFrame(() => { focusTestId(where, undefined, { review }); });
+    }
+  }
+  const navFrom: DealStepId | null = reviewId ?? (nextStep.kind === "step" ? nextStep.step.id : null);
+  const navForward: DealStepId | null = reviewId && nextStep.kind === "step" ? nextGuidedStep(reviewId, nextStep.step.id) : null;
+  const guidedNav: GuidedNav | null = guidedDealId !== null && nextStep.kind === "step" && navFrom !== null ? {
+    reviewing: reviewId ? { id: reviewId, title: STEP_TITLE[reviewId] } : null,
+    previous: previousGuidedStep(navFrom),
+    onPrevious: () => { const p = previousGuidedStep(navFrom); if (p) goToGuidedStep(p); },
+    forwardLabel: reviewId ? (navForward ? dealStepAt(stepState, navForward)?.label ?? null : nextStep.step.label) : null,
+    onForward: () => goToGuidedStep(navForward),
+  } : null;
 
   /* Seller Position's durable value: the newer of its own ledger entry and the
      latest outcome record's snapshot (outcomes recorded before the ledger
@@ -2990,7 +3044,7 @@ export default function SellerCallWorkspace() {
                     the step is "checking" and it must not point at the previous seller's deal. */}
                 {selected ? (
                   <DealNextStepPanel next={nextStep} contactId={contactId}
-                    dealId={writeTarget !== null && !sellerLoading && writeTarget.opportunityId === selected.id ? selected.id : null} />
+                    dealId={writeTarget !== null && !sellerLoading && writeTarget.opportunityId === selected.id ? selected.id : null} nav={guidedNav} />
                 ) : null}
               </div>
               <div style={{ flex: "0 0 auto", paddingTop: "10px", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "6px" }}>

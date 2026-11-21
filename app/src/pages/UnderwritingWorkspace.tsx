@@ -941,6 +941,9 @@ export default function UnderwritingWorkspace() {
   const [searchParams] = useSearchParams();
   const dealParam = searchParams.get("deal");
   const guidedAction = UNDERWRITING_STEP_ACTION[(searchParams.get("focus") ?? "") as DealStepId] ?? null;
+  /* Previous / Next onto a step already done (Captain 2026-11-20): `?step=` names the review position; it is kept on the
+     way back to Seller Call only when it is the step this page was opened for. */
+  const reviewStep = searchParams.get("step") !== null && searchParams.get("step") === searchParams.get("focus") ? searchParams.get("step") : null;
   const [chosenId, setChosenId] = useState<string | null>(() => dealParam);
   useEffect(() => { if (dealParam !== null) setChosenId(dealParam); }, [dealParam]);
 
@@ -1273,7 +1276,8 @@ export default function UnderwritingWorkspace() {
 
       {/* B15-30: the guided return to Seller Call, on this deal, when Next opened this page. */}
       {guidedAction && guidedForThisDeal && (screen.state === "resolved" || screen.state === "unresolved" || screen.state === "configuration_error") ? (
-        <GuidedReturnBar contactId={contactId} dealId={screen.opportunity.id} dealName={screen.opportunity.name} action={guidedAction} />
+        <GuidedReturnBar contactId={contactId} dealId={screen.opportunity.id} dealName={screen.opportunity.name} action={guidedAction}
+          reviewStep={reviewStep} />
       ) : null}
 
       {/* B7-07 evidence workspace plus INV-25's bounded persistence boundary.

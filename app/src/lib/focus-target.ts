@@ -12,15 +12,23 @@ import { useSearchParams } from "react-router-dom";
 
 const FOCUSABLE = "input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])";
 
+/** Review (Previous / Next onto a step already done): a text field, never a button or a toggle -- a stray Enter on a
+ *  focused "Withdraw confirmation" or Assignment Mode option, or Space on a checklist box, would be a write. */
+/*  Checkboxes and radios are excluded too: a single Space would toggle -- and save -- them. */
+const FIELD = "input:not([disabled]):not([type=hidden]):not([type=file]):not([type=checkbox]):not([type=radio]), select:not([disabled]), textarea:not([disabled])";
+
 /** `prefer`: a selector for the exact control to open inside the target (its first enabled match), when the first
- *  focusable control is not the field (the repair estimator's first control is the "Not asked" default answer). */
-export function focusTestId(testId: string, prefer?: string): boolean {
+ *  focusable control is not the field (the repair estimator's first control is the "Not asked" default answer).
+ *  `review`: the step is being revisited -- focus a field inside it, else the panel itself; never a button. */
+export function focusTestId(testId: string, prefer?: string, opts?: { review?: boolean }): boolean {
   if (!testId) return false;
   const el = document.querySelector<HTMLElement>(`[data-testid="${CSS.escape(testId)}"]`);
   if (!el) return false;
   el.scrollIntoView({ block: "center" });
   const preferred = prefer ? el.querySelector<HTMLElement>(`${prefer}:not([disabled])`) : null;
-  const control = preferred ?? (el.matches(FOCUSABLE) ? el : el.querySelector<HTMLElement>(FOCUSABLE));
+  const control = opts?.review
+    ? (preferred && preferred.matches(FIELD) ? preferred : el.querySelector<HTMLElement>(FIELD))
+    : preferred ?? (el.matches(FOCUSABLE) ? el : el.querySelector<HTMLElement>(FOCUSABLE));
   if (control) control.focus({ preventScroll: true });
   else { if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1"); el.focus({ preventScroll: true }); }
   el.setAttribute("data-focus-applied", "true");
@@ -34,14 +42,16 @@ export function useFocusParam(targets: Readonly<Record<string, string | { testId
   const t = key && Object.prototype.hasOwnProperty.call(targets, key) ? targets[key] : null;
   const testId = t === null ? null : typeof t === "string" ? t : t.testId;
   const prefer = t !== null && typeof t !== "string" ? t.prefer : undefined;
+  /* Opened by Previous / Next onto a step already done (`?step=` is the review position): review focus. */
+  const review = params.get("step") !== null;
   useEffect(() => {
     if (!testId) return;
     let done = false;
-    const tryFocus = () => { if (!done && focusTestId(testId, prefer)) { done = true; observer.disconnect(); clearTimeout(timer); } };
+    const tryFocus = () => { if (!done && focusTestId(testId, prefer, { review })) { done = true; observer.disconnect(); clearTimeout(timer); } };
     const observer = new MutationObserver(tryFocus);
     observer.observe(document.body, { childList: true, subtree: true });
     const timer = setTimeout(() => { done = true; observer.disconnect(); }, timeoutMs);
     tryFocus();
     return () => { done = true; observer.disconnect(); clearTimeout(timer); };
-  }, [testId, prefer, timeoutMs]);
+  }, [testId, prefer, review, timeoutMs]);
 }

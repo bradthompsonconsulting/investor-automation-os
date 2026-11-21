@@ -128,7 +128,32 @@ check('M12 after a deliberate choice the chosen deal opens; with NO deal named t
 check('M12 the notice says the named deal is not available and that no other deal was opened in its place',
   /not available/i.test(RD.requestedDealNotice('unavailable').title) && /has not opened another one/i.test(RD.requestedDealNotice('unavailable').body) && RD.requestedDealNotice('none') === null);
 
-const FLOOR = 21;
+// M13 Previous / Next (Captain 2026-11-20): pure navigation over the guided field steps
+check('M13 Previous walks back over the guided field steps, skipping the GHL-only policy step, and stops at the first (null)',
+  JSON.stringify(['offer_review', 'seller_price', 'transaction', 'assignment_mode', 'arv', 'repairs', 'property'].map((id) => M.previousGuidedStep(id)))
+    === JSON.stringify(['seller_price', 'transaction', 'assignment_mode', 'arv', 'repairs', 'property', null]));
+check('M13 Next from a review position moves forward one guided step (skipping policy) and returns null on reaching the live step',
+  M.nextGuidedStep('assignment_mode', 'offer_review') === 'transaction' && M.nextGuidedStep('transaction', 'offer_review') === 'seller_price' && M.nextGuidedStep('seller_price', 'offer_review') === null
+    && M.nextGuidedStep('contract_checklist', 'contract_ready') === null);
+{
+  const live = M.nextDealStep(state({ price: false }));   // live: seller_price
+  check('M13 a review position is honoured only for a guided field step BEFORE the live step (not policy, not the live step, not later, not unknown)',
+    M.reviewCursor(live, 'transaction') === 'transaction' && M.reviewCursor(live, 'policy') === null && M.reviewCursor(live, 'seller_price') === null
+      && M.reviewCursor(live, 'offer_review') === null && M.reviewCursor(live, 'nonsense') === null && M.reviewCursor(live, null) === null && M.reviewCursor(loading, 'transaction') === null);
+}
+// M14 after an agreement (Captain 2026-11-20, IAOS Test Probe)
+{
+  const done = M.nextDealStep({ ...state({ price: false }), agreement: { kind: 'accepted', priceText: '$415,000', checklistDone: 5, checklistTotal: 5 } });
+  const open = M.nextDealStep({ ...state({ price: false }), agreement: { kind: 'accepted', priceText: '$415,000', checklistDone: 3, checklistTotal: 5 } });
+  const none = M.nextDealStep({ ...state({ price: false }), agreement: { kind: 'none' } });
+  check('M14 agreement reached, checklist complete: "Next: open Contract Ready" with "Agreement reached at $415,000. Your contract checklist is complete." -- never the seller\'s price',
+    done.step.id === 'contract_ready' && done.step.label === 'Next: open Contract Ready' && done.step.reason === 'Agreement reached at $415,000. Your contract checklist is complete.' && done.step.destination.kind === 'contract', done.step);
+  check('M14 agreement reached, checklist incomplete: finish it on Seller Call ("3 of 5 contract checklist items done"); no agreement: the deal\'s own step (the seller\'s price)',
+    open.step.id === 'contract_checklist' && /3 of 5 contract checklist items done/.test(open.step.reason) && open.step.destination.kind === 'seller_call' && none.step.id === 'seller_price', { open: open.step, none: none.step.id });
+  check('M14 Previous from Contract Ready is the contract checklist; from the checklist, the offer review', M.previousGuidedStep('contract_ready') === 'contract_checklist' && M.previousGuidedStep('contract_checklist') === 'offer_review');
+}
+
+const FLOOR = 27;
 console.log(`\nB15-30 deal next-step model: ${checks - failures}/${checks} checks passed`);
 if (checks < FLOOR) { console.log(`FAIL  only ${checks} checks ran (floor ${FLOOR})`); process.exit(1); }
 process.exit(failures === 0 ? 0 : 1);
