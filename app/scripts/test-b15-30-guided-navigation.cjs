@@ -64,7 +64,9 @@ const MUTATIONS = {
   next_ignores_review: [[PAGE, '    onForward: () => goToGuidedStep(navForward),', '    onForward: () => goToGuidedStep(null),']],
   navigation_blur_saves: [[BLUR, '  if (guidedNavigationUntil > Date.now()) { guidedNavigationUntil = 0; return true; }', '']],
   offer_draft_not_kept: [[PAGE, '      store.save({ version: CONTACT_DRAFT_VERSION, identity: offerDraftId,', '      if (false) store.save({ version: CONTACT_DRAFT_VERSION, identity: offerDraftId,']],
-  offer_draft_shared_across_deals: [[PAGE, 'contactId: writeTarget.contactId, opportunityId: writeTarget.opportunityId };\n      contactDraftKey(id);', 'contactId: writeTarget.contactId, opportunityId: "one-for-every-deal" };\n      contactDraftKey(id);']],
+  offer_draft_shared_across_deals: [[PAGE, 'contactId: writeTarget.contactId, opportunityId: writeTarget.opportunityId };\n      contactDraftKey(id);', 'contactId: writeTarget.contactId, opportunityId: "one-for-every-deal" };\n      contactDraftKey(id);'],
+    /* the restore guard also binds the draft to the deal on screen: drop it too, so this control shows a shared draft LEAKING */
+    [PAGE, '    if (!offerDraftId || offerDraftId.opportunityId !== currentDealId || loading) return;', '    if (!offerDraftId || loading) return;']],
   review_in_url: [[PAGE, '    setReviewPosition(review ? { deal: guidedDealId, step: target.id } : null);', '    setReviewPosition(review ? { deal: guidedDealId, step: target.id } : null);\n    navigate({ search: `?deal=${encodeURIComponent(guidedDealId)}${review ? `&step=${target.id}` : ""}` }, { replace: true });']],
 };
 const MUTATION = process.env.NAV_MUTATION || '';
